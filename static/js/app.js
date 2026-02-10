@@ -48,6 +48,11 @@ const removeImageBtn = document.getElementById('remove-image');
 
 let currentImage = null; // Store current image as base64
 
+// Browser sidebar elements
+const toggleBrowserBtn = document.getElementById('toggle-browser');
+const closeBrowserSidebarBtn = document.getElementById('close-browser-sidebar');
+const browserSidebar = document.getElementById('browser-sidebar');
+
 // Editor tabs and file explorer (with null checks)
 const fileExplorer = document.getElementById('file-explorer');
 const fileList = document.getElementById('file-list');
@@ -414,6 +419,14 @@ runTestBtn.addEventListener('click', () => {
     browserStatus.textContent = 'Running';
     browserStatus.classList.add('running');
     browserStatus.style.background = '';
+
+    // Automatically open browser sidebar when test starts
+    if (!browserSidebar.classList.contains('open')) {
+        browserSidebar.classList.add('open');
+        codeEditorSection.classList.add('browser-open');
+        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
+        toggleBrowserBtn.classList.add('active');
+    }
 
     // Send test to server
     socket.emit('run_test', { task });
@@ -985,6 +998,28 @@ closeChatSidebarBtn.addEventListener('click', () => {
     codeEditorSection.classList.remove('chat-open');
     toggleChatBtn.innerHTML = '<span style="margin-right: 4px;">💬</span> Chat';
     toggleChatBtn.classList.remove('active');
+});
+
+// Live Browser Sidebar Toggle
+toggleBrowserBtn.addEventListener('click', () => {
+    const isOpen = browserSidebar.classList.toggle('open');
+    codeEditorSection.classList.toggle('browser-open');
+
+    // Update button appearance
+    if (isOpen) {
+        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
+        toggleBrowserBtn.classList.add('active');
+    } else {
+        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
+        toggleBrowserBtn.classList.remove('active');
+    }
+});
+
+closeBrowserSidebarBtn.addEventListener('click', () => {
+    browserSidebar.classList.remove('open');
+    codeEditorSection.classList.remove('browser-open');
+    toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
+    toggleBrowserBtn.classList.remove('active');
 });
 
 // Tab switching (log tabs)

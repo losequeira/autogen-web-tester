@@ -62,20 +62,8 @@ Example:
                 </div>
             </div>
 
-            <!-- Right Panel: Browser Preview & Logs -->
+            <!-- Right Panel: Agent Logs -->
             <div class="panel results-panel">
-                <!-- Browser Preview -->
-                <div class="browser-preview">
-                    <div class="panel-header">
-                        <h2>🌐 Live Browser</h2>
-                        <span id="browser-status" class="status-badge">Idle</span>
-                    </div>
-                    <div class="screenshot-container">
-                        <img id="browser-screenshot" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='600'%3E%3Crect fill='%23f0f0f0' width='800' height='600'/%3E%3Ctext x='50%25' y='50%25' font-family='Arial' font-size='24' fill='%23999' text-anchor='middle' dy='.3em'%3EBrowser will appear here%3C/text%3E%3C/svg%3E" alt="Browser preview">
-                        <div id="screenshot-timestamp"></div>
-                    </div>
-                </div>
-
                 <!-- Agent Log -->
                 <div class="agent-log">
                     <div class="panel-header">
@@ -99,12 +87,30 @@ Example:
             <div class="panel-header">
                 <h2>💻 Playwright Code Editor</h2>
                 <div class="button-group">
+                    <button id="toggle-browser" class="btn btn-small">🌐 Browser</button>
                     <button id="toggle-chat" class="btn btn-small">💬 Chat</button>
                     <button id="save-test" class="btn btn-small">💾 Save</button>
                     <button id="copy-code" class="btn btn-small">📋 Copy</button>
                 </div>
             </div>
             <div class="panel-body code-editor-container">
+                <!-- Live Browser Sidebar (Left) -->
+                <div id="browser-sidebar" class="browser-sidebar">
+                    <div class="browser-sidebar-header">
+                        <h3>🌐 Live Browser</h3>
+                        <div class="browser-controls">
+                            <span id="browser-status" class="status-badge">Idle</span>
+                            <button id="close-browser-sidebar" class="btn-icon">✕</button>
+                        </div>
+                    </div>
+                    <div class="browser-sidebar-body">
+                        <div class="browser-screenshot-container">
+                            <img id="browser-screenshot" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='600'%3E%3Crect fill='%231e1e1e' width='800' height='600'/%3E%3Ctext x='50%25' y='50%25' font-family='Segoe UI' font-size='20' fill='%23858585' text-anchor='middle' dy='.3em'%3EBrowser will appear here%3C/text%3E%3C/svg%3E" alt="Browser preview">
+                            <div id="screenshot-timestamp" class="screenshot-timestamp"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- File Explorer Sidebar (Left) -->
                 <div id="file-explorer" class="file-explorer">
                     <div class="file-explorer-header">
