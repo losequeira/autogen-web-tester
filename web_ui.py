@@ -730,19 +730,24 @@ def run_playwright_code_with_streaming(code: str):
         async def send_screenshot(page, action_name='action'):
             """Capture and send screenshot to browser sidebar."""
             try:
+                print(f"📸 Capturing screenshot for action: {action_name}")
                 screenshot_bytes = await page.screenshot(
                     type='jpeg',
                     quality=40,
                     full_page=False
                 )
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+                print(f"✅ Screenshot captured ({len(screenshot_b64)} bytes), sending to browser...")
                 socketio.emit('screenshot', {
                     'action': action_name,
                     'image': screenshot_b64,
                     'timestamp': datetime.now().isoformat()
                 })
+                print(f"✅ Screenshot sent for action: {action_name}")
             except Exception as e:
-                print(f"Screenshot error: {e}")
+                print(f"❌ Screenshot error: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Page wrapper that automatically captures screenshots
         class PageWrapper:
@@ -773,21 +778,25 @@ def run_playwright_code_with_streaming(code: str):
 
             async def goto(self, url, **kwargs):
                 """Navigate and capture screenshot."""
+                print(f"🌐 PageWrapper.goto() called for URL: {url}")
                 result = await self._page.goto(url, **kwargs)
                 await send_screenshot(self._page, 'navigate')
                 # Start streaming after first navigation
                 if not self._stream_task:
+                    print("📹 Starting continuous screenshot streaming at 10 FPS...")
                     self._stream_task = asyncio.create_task(self._start_streaming())
                 return result
 
             async def click(self, selector, **kwargs):
                 """Click and capture screenshot."""
+                print(f"👆 PageWrapper.click() called for selector: {selector}")
                 result = await self._page.click(selector, **kwargs)
                 await send_screenshot(self._page, 'click')
                 return result
 
             async def fill(self, selector, value, **kwargs):
                 """Fill and capture screenshot."""
+                print(f"✍️ PageWrapper.fill() called for selector: {selector}")
                 result = await self._page.fill(selector, value, **kwargs)
                 await send_screenshot(self._page, 'fill')
                 return result
@@ -876,7 +885,10 @@ def run_playwright_code_with_streaming(code: str):
                 self._launcher = launcher
 
             async def launch(self, **kwargs):
-                """Launch browser with wrapper."""
+                """Launch browser with wrapper. Force headless=True to prevent window flickering."""
+                # Override headless to True for smooth streaming without window
+                kwargs['headless'] = True
+                print(f"🚀 Launching browser in HEADLESS mode (streaming to sidebar only)")
                 browser = await self._launcher.launch(**kwargs)
                 return BrowserWrapper(browser)
 
@@ -886,14 +898,38 @@ def run_playwright_code_with_streaming(code: str):
         # Custom async_playwright that returns wrapped version
         class async_playwright_wrapper:
             async def __aenter__(self):
+                print("🎭 async_playwright_wrapper.__aenter__() called - using wrapped Playwright!")
                 self._playwright_context = async_playwright()
                 playwright = await self._playwright_context.__aenter__()
-                return PlaywrightWrapper(playwright)
+                wrapped = PlaywrightWrapper(playwright)
+                print("✅ Playwright wrapped successfully")
+                return wrapped
 
             async def __aexit__(self, *args):
+                print("🎭 async_playwright_wrapper.__aexit__() called")
                 return await self._playwright_context.__aexit__(*args)
 
         try:
+            # Remove the playwright import line and asyncio.run() from user's code
+            # so we can provide our wrapped version
+            modified_code = code.replace('asyncio.run(run())', '')
+
+            # Remove common import patterns
+            import_patterns = [
+                'from playwright.async_api import async_playwright\n',
+                'from playwright.async_api import async_playwright, Playwright\n',
+                'from playwright.async_api import Playwright, async_playwright\n',
+                'import asyncio\n',
+            ]
+            for pattern in import_patterns:
+                modified_code = modified_code.replace(pattern, '')
+
+            # Log the modified code for debugging
+            print("=" * 50)
+            print("Modified code to execute:")
+            print(modified_code)
+            print("=" * 50)
+
             # Execute user's code with wrapped Playwright
             exec_globals = {
                 'asyncio': asyncio,
@@ -902,7 +938,7 @@ def run_playwright_code_with_streaming(code: str):
                 'datetime': datetime,
                 'socketio': socketio,
             }
-            exec(code.replace('asyncio.run(run())', ''), exec_globals)
+            exec(modified_code, exec_globals)
 
             # Get and run the user's run function
             if 'run' not in exec_globals:
@@ -1187,10 +1223,10 @@ def handle_run_saved_test(data):
             code = test_data.get('code')
 
         emit('log', {'type': 'info', 'message': f'Running saved test: {test_data.get("name")}'})
-        emit('log', {'type': 'info', 'message': '🚀 Executing Playwright code (no AI tokens used!)'})
+        emit('log', {'type': 'info', 'message': '🚀 Executing Playwright code with live browser preview...'})
 
-        # Run the saved test in background thread
-        socketio.start_background_task(run_playwright_code, code)
+        # Run the saved test with streaming in background thread
+        socketio.start_background_task(run_playwright_code_with_streaming, code)
 
     except Exception as e:
         emit('log', {'type': 'error', 'message': f'Error running saved test: {str(e)}'})

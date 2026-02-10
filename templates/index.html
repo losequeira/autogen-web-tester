@@ -62,23 +62,9 @@ Example:
                 </div>
             </div>
 
-            <!-- Right Panel: Agent Logs -->
-            <div class="panel results-panel">
-                <!-- Agent Log -->
-                <div class="agent-log">
-                    <div class="panel-header">
-                        <h2>📝 Agent Log</h2>
-                        <div class="button-group">
-                            <button id="clear-log" class="btn btn-small">Clear</button>
-                        </div>
-                    </div>
-                    <div class="log-tabs">
-                        <button class="log-tab active" data-tab="human">👤 Human-Readable</button>
-                        <button class="log-tab" data-tab="technical">🔧 Technical</button>
-                    </div>
-                    <div id="human-log-container" class="log-container active"></div>
-                    <div id="technical-log-container" class="log-container"></div>
-                </div>
+            <!-- Right Panel: Empty (Agent Log moved to editor bottom) -->
+            <div class="panel results-panel" style="display: none;">
+                <!-- Agent Log moved to code editor bottom panel -->
             </div>
         </div>
 
@@ -177,6 +163,29 @@ Example:
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Output Panel (Agent Log) - VS Code Style -->
+            <div id="output-panel" class="output-panel">
+                <div class="output-panel-header">
+                    <div class="output-panel-title">
+                        <button id="toggle-output" class="output-toggle-btn">
+                            <span class="output-toggle-icon">▼</span>
+                            <span class="output-title-text">OUTPUT</span>
+                        </button>
+                    </div>
+                    <div class="output-panel-actions">
+                        <div class="log-tabs">
+                            <button class="log-tab active" data-tab="human">👤 Human-Readable</button>
+                            <button class="log-tab" data-tab="technical">🔧 Technical</button>
+                        </div>
+                        <button id="clear-log" class="btn-icon-small" title="Clear Output">🗑</button>
+                    </div>
+                </div>
+                <div class="output-panel-body">
+                    <div id="human-log-container" class="log-container active"></div>
+                    <div id="technical-log-container" class="log-container"></div>
                 </div>
             </div>
         </div>

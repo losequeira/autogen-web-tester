@@ -54,6 +54,10 @@ const toggleBrowserBtn = document.getElementById('toggle-browser');
 const closeBrowserSidebarBtn = document.getElementById('close-browser-sidebar');
 const browserSidebar = document.getElementById('browser-sidebar');
 
+// Output panel elements
+const outputPanel = document.getElementById('output-panel');
+const toggleOutputBtn = document.getElementById('toggle-output');
+
 // Editor tabs and file explorer (with null checks)
 const fileExplorer = document.getElementById('file-explorer');
 const fileList = document.getElementById('file-list');
@@ -432,6 +436,9 @@ runTestBtn.addEventListener('click', () => {
         toggleBrowserBtn.classList.add('active');
     }
 
+    // Automatically open output panel to show logs
+    openOutputPanel();
+
     // Send test to server
     socket.emit('run_test', { task });
 
@@ -519,6 +526,9 @@ runCodeBtn.addEventListener('click', () => {
         toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
         toggleBrowserBtn.classList.add('active');
     }
+
+    // Automatically open output panel to show logs
+    openOutputPanel();
 
     // Send code to backend for execution
     socket.emit('run_playwright_code', { code });
@@ -692,12 +702,31 @@ function runSavedTest(filename, name) {
         return;
     }
 
+    // Clear previous results
+    humanLogContainer.innerHTML = '';
+    technicalLogContainer.innerHTML = '';
+
     addLogEntry('info', `🚀 Running: ${name} (no AI tokens used!)`, `🚀 Running: ${name}`);
     isTestRunning = true;
     runTestBtn.style.display = 'none';
     stopTestBtn.style.display = 'block';
+    runCodeBtn.disabled = true;
+    runCodeBtn.textContent = '⏳ Running...';
     browserStatus.textContent = 'Running';
     browserStatus.classList.add('running');
+    browserStatus.style.background = '';
+
+    // Automatically open browser sidebar
+    if (!browserSidebar.classList.contains('open')) {
+        const codeEditorContainer = document.querySelector('.code-editor-container');
+        browserSidebar.classList.add('open');
+        codeEditorContainer.classList.add('browser-open');
+        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
+        toggleBrowserBtn.classList.add('active');
+    }
+
+    // Automatically open output panel to show logs
+    openOutputPanel();
 
     socket.emit('run_saved_test', { filename });
 }
@@ -1067,6 +1096,18 @@ closeBrowserSidebarBtn.addEventListener('click', () => {
     toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
     toggleBrowserBtn.classList.remove('active');
 });
+
+// Output Panel Toggle (VS Code style)
+toggleOutputBtn.addEventListener('click', () => {
+    outputPanel.classList.toggle('open');
+});
+
+// Function to open output panel automatically
+function openOutputPanel() {
+    if (!outputPanel.classList.contains('open')) {
+        outputPanel.classList.add('open');
+    }
+}
 
 // Tab switching (log tabs)
 logTabs.forEach(tab => {
