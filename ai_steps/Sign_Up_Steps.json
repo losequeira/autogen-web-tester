@@ -1,8 +1,18 @@
 {
   "name": "Landing Steps",
-  "steps": "Complete the signup process on https://sunny-staging.vercel.app/\n\n1. Go to the website\n2. Verify the success page contains:\n    - AI-Powered Deals for Your Perfect Home",
+  "steps": "Complete the signup process on https://sunny-staging.vercel.app/\n\n1. Go to the website\n2. Click the \"Sign Up\" Button in the header.\n3. Click the \"full name\" input\n4. Fill the with Roliver Hola",
   "created": "2026-02-10T00:49:09.341586",
-  "updated": "2026-02-10T01:59:45.850502",
-  "last_run": "2026-02-10T02:01:04.185583",
-  "status": null
+  "updated": "2026-02-10T14:22:54.889524",
+  "last_run": "2026-02-10T14:24:09.421906",
+  "status": null,
+  "artifacts": [
+    {
+      "timestamp": "2026-02-10_14-23-47",
+      "video_path": "test_artifacts/Sign_Up_Steps/2026-02-10_14-23-47/9292c39f53f19f274b0b40b2e086e41d.webm",
+      "video_size_mb": 1.23,
+      "har_path": "test_artifacts/Sign_Up_Steps/2026-02-10_14-23-47/network.har",
+      "status": "passed"
+    }
+  ],
+  "last_run_status": "passed"
 }

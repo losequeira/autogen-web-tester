@@ -85,6 +85,10 @@ let currentEditingAiStep = null;  // Track if we're editing an existing AI step
 let currentRunningTestFilename = null;  // Track which saved test is currently running
 
 let isTestRunning = false;
+let isBatchRunning = false;
+let runningTestsSet = new Set();
+let batchRunStartTime = null;
+let batchRunResults = [];
 
 // Helper function to update browser status
 function updateBrowserStatus(status, text) {
@@ -302,55 +306,131 @@ socket.on('test_complete', (data) => {
     }
 });
 
+socket.on('batch_test_progress', (data) => {
+    const { filename, name, status } = data;
+    runningTestsSet.delete(filename);
+
+    // Update UI: remove spinner, add status icon
+    const fileItem = document.querySelector(`.file-item[data-filename="${filename}"]`);
+    if (fileItem) {
+        const spinner = fileItem.querySelector('.test-loading-spinner');
+        if (spinner) spinner.remove();
+
+        const statusIcon = status === 'success'
+            ? '<span class="test-status test-status-success">✓</span>'
+            : '<span class="test-status test-status-error">✗</span>';
+        const actions = fileItem.querySelector('.file-item-actions');
+        fileItem.insertAdjacentHTML('beforeend', statusIcon);
+    }
+
+    // Store result
+    batchRunResults.push({ filename, name, status });
+
+    // Log progress
+    const emoji = status === 'success' ? '✅' : '❌';
+    addLogEntry(status === 'success' ? 'success' : 'error', `${emoji} ${name}: ${status}`);
+});
+
+socket.on('batch_run_complete', (data) => {
+    const { total, passed, failed, duration } = data;
+
+    // Reset state
+    isBatchRunning = false;
+    runningTestsSet.clear();
+
+    // Remove batch classes
+    document.querySelectorAll('.file-item').forEach(item => {
+        item.classList.remove('batch-running', 'batch-running-active');
+    });
+
+    // Re-enable button
+    const runAllBtn = document.getElementById('run-all-tests-btn');
+    if (runAllBtn) {
+        runAllBtn.disabled = false;
+        runAllBtn.style.opacity = '1';
+    }
+
+    // Log summary
+    addLogEntry('info', `📊 Batch complete: ${passed}/${total} passed in ${duration.toFixed(1)}s`);
+
+    // Reload file explorer
+    if (hasFileExplorer) loadFileExplorer();
+
+    // Show modal
+    showTestResultsModal(total, passed, failed, duration);
+});
+
 socket.on('ai_step_complete_with_code', (data) => {
     // AI step completed successfully - prompt user to save generated code
     isTestRunning = false;
     updateBrowserStatus('passed', 'PASSED');
     addLogEntry('success', '✅ AI Step completed successfully!', '🎉 AI Step completed!');
 
-    // Show confirmation dialog
-    const aiStepName = data.ai_step_name;
-    const suggestedTestName = `${aiStepName} - Generated Test`;
-
-    if (confirm(`✅ AI Step "${aiStepName}" completed successfully!\n\nWould you like to save the generated Playwright code as a new test?`)) {
-        // User wants to save - prompt for test name
-        const testName = prompt('Enter a name for the generated test:', suggestedTestName);
-
-        if (testName && testName.trim()) {
-            // Save the generated code as a new test
-            fetch('/api/save-test', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: testName.trim(),
-                    code: data.code,
-                    source: 'ai_step'
-                })
-            })
-            .then(res => res.json())
-            .then(result => {
-                if (result.success) {
-                    addLogEntry('success', `💾 Saved generated test: ${testName}`);
-
-                    // Reload file explorer
-                    if (hasFileExplorer) {
-                        loadFileExplorer();
-                    }
-
-                    // Open the new test in a tab
-                    openTab(result.filename, testName, data.code, 'test');
-                } else {
-                    alert('Error saving test: ' + (result.error || 'Unknown error'));
+    // Reload the AI step content to restore it (it may have been cleared during execution)
+    const aiStepFilename = data.ai_step_filename;
+    fetch(`/api/ai-steps/${aiStepFilename}/markdown`)
+        .then(res => res.json())
+        .then(aiStepData => {
+            // Find and restore the AI step tab if it's open
+            const aiStepTab = openTabs.find(t => t.id === aiStepFilename);
+            if (aiStepTab) {
+                aiStepTab.code = aiStepData.markdown;
+                aiStepTab.isDirty = false;
+                // If it's the active tab, update the editor
+                if (activeTabId === aiStepFilename) {
+                    setPlaywrightCode(aiStepData.markdown);
+                    lastSavedCode = aiStepData.markdown;
                 }
-            })
-            .catch(err => {
-                alert('Failed to save test: ' + err);
-            });
-        }
-    } else {
-        // User declined - just show the regular test_complete event
-        addLogEntry('info', 'Generated code not saved (you can still see it in the editor)');
-    }
+            }
+
+            // Show confirmation dialog
+            const aiStepName = data.ai_step_name;
+            const suggestedTestName = `${aiStepName} - Generated Test`;
+
+            if (confirm(`✅ AI Step "${aiStepName}" completed successfully!\n\nWould you like to save the generated Playwright code as a new test?`)) {
+                // User wants to save - prompt for test name
+                const testName = prompt('Enter a name for the generated test:', suggestedTestName);
+
+                if (testName && testName.trim()) {
+                    // Save the generated code as a new test
+                    fetch('/api/save-test', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: testName.trim(),
+                            code: data.code,
+                            source: 'ai_step'
+                        })
+                    })
+                    .then(res => res.json())
+                    .then(result => {
+                        if (result.success) {
+                            addLogEntry('success', `💾 Saved generated test: ${testName}`);
+
+                            // Reload file explorer
+                            if (hasFileExplorer) {
+                                loadFileExplorer();
+                            }
+
+                            // Open the new test in a tab
+                            openTab(result.filename, testName, data.code, 'test');
+                        } else {
+                            alert('Error saving test: ' + (result.error || 'Unknown error'));
+                        }
+                    })
+                    .catch(err => {
+                        alert('Failed to save test: ' + err);
+                    });
+                }
+            } else {
+                // User declined - just show info message
+                addLogEntry('info', 'Generated code not saved');
+            }
+        })
+        .catch(err => {
+            console.error('Error reloading AI step content:', err);
+            addLogEntry('error', 'Failed to reload AI step content');
+        });
 });
 
 socket.on('codegen_status', (data) => {
@@ -427,8 +507,6 @@ function saveCurrentTest() {
 
         // Handle AI Step saves
         if (tab.fileType === 'ai-step') {
-            if (!confirm(`Save changes to AI Step "${tab.name}"?`)) return;
-
             fetch(`/api/ai-steps/${activeTabId}/markdown`, {
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
@@ -451,8 +529,6 @@ function saveCurrentTest() {
 
             return;
         }
-
-        if (!confirm(`Save changes to "${tab.name}"?`)) return;
 
         fetch(`/api/saved-tests/${activeTabId}`, {
             method: 'PUT',
@@ -525,6 +601,11 @@ function saveCurrentTest() {
 // Refresh and load saved tests functions removed - file explorer handles this now
 
 function runSavedTest(filename, name) {
+    if (isBatchRunning) {
+        alert('Batch test execution in progress. Please wait for it to finish.');
+        return;
+    }
+
     if (isTestRunning) {
         alert('A test is already running. Please wait for it to finish.');
         return;
@@ -569,6 +650,66 @@ function runSavedTest(filename, name) {
     openOutputPanel();
 
     socket.emit('run_saved_test', { filename });
+}
+
+async function runAllTests() {
+    if (isBatchRunning || isTestRunning) {
+        alert('A test is already running.');
+        return;
+    }
+
+    const response = await fetch('/api/saved-tests');
+    const tests = await response.json();
+
+    if (tests.length === 0) {
+        alert('No tests available to run.');
+        return;
+    }
+
+    // Initialize batch state
+    isBatchRunning = true;
+    batchRunStartTime = Date.now();
+    batchRunResults = [];
+    runningTestsSet.clear();
+
+    // Clear logs
+    humanLogContainer.innerHTML = '';
+    technicalLogContainer.innerHTML = '';
+    addLogEntry('info', `🚀 Running ${tests.length} tests in parallel...`);
+
+    // Mark all file items as batch running
+    document.querySelectorAll('.file-item').forEach(item => {
+        item.classList.add('batch-running');
+    });
+
+    // Disable Run All button
+    const runAllBtn = document.getElementById('run-all-tests-btn');
+    if (runAllBtn) {
+        runAllBtn.disabled = true;
+        runAllBtn.style.opacity = '0.5';
+    }
+
+    // Add loading spinners
+    tests.forEach(test => {
+        runningTestsSet.add(test.filename);
+        const fileItem = document.querySelector(`.file-item[data-filename="${test.filename}"]`);
+        if (fileItem) {
+            fileItem.classList.add('batch-running-active');
+            const statusIcon = fileItem.querySelector('.test-status');
+            if (statusIcon) statusIcon.remove();
+
+            const spinner = document.createElement('span');
+            spinner.className = 'test-loading-spinner';
+            spinner.dataset.filename = test.filename;
+            const actions = fileItem.querySelector('.file-item-actions');
+            fileItem.insertBefore(spinner, actions);
+        }
+    });
+
+    // Emit batch run event
+    socket.emit('run_all_tests', {
+        filenames: tests.map(t => t.filename)
+    });
 }
 
 // Tab Management Functions
@@ -973,11 +1114,18 @@ function loadFileExplorer() {
                     statusIcon = '<span class="test-status test-status-error" title="Last run: Failed">✗</span>';
                 }
 
+                // View recording button if artifacts exist
+                let viewRecordingBtn = '';
+                if (test.artifacts && test.artifacts.length > 0) {
+                    viewRecordingBtn = `<button class="file-item-action" data-action="view-recording" title="View Recording (${test.artifacts.length})">📹</button>`;
+                }
+
                 fileItem.innerHTML = `
                     <span class="file-item-icon">${sourceIcon}</span>
                     <span class="file-item-name">${escapeHtml(test.name)}</span>
                     ${statusIcon}
                     <div class="file-item-actions">
+                        ${viewRecordingBtn}
                         <button class="file-item-action" data-action="run" title="Run Test">▶</button>
                         <button class="file-item-action" data-action="delete" title="Delete">🗑</button>
                     </div>
@@ -991,6 +1139,9 @@ function loadFileExplorer() {
                     } else if (action === 'run') {
                         e.stopPropagation();
                         runSavedTest(test.filename, test.name);
+                    } else if (action === 'view-recording') {
+                        e.stopPropagation();
+                        showVideoViewerModal(test.filename, test.name);
                     } else {
                         openFileFromExplorer(test.filename, test.name);
                     }
@@ -1099,6 +1250,16 @@ asyncio.run(run())`;
         const tab = openTabs.find(t => t.id === tempId);
         if (tab) tab.isDirty = true;
         renderTabs();
+    });
+}
+
+// Run All Tests Button
+const runAllTestsBtn = document.getElementById('run-all-tests-btn');
+if (runAllTestsBtn) {
+    runAllTestsBtn.addEventListener('click', () => {
+        if (confirm('Run all saved tests in parallel?')) {
+            runAllTests();
+        }
     });
 }
 
@@ -1278,6 +1439,131 @@ function editAiStep(filename, name, steps) {
     showAiStepModal(filename, name, steps);
 }
 
+function showTestResultsModal(total, passed, failed, duration) {
+    const modal = document.getElementById('test-results-modal');
+    if (!modal) return;
+
+    // Update stats
+    document.getElementById('total-tests-run').textContent = total;
+    document.getElementById('passed-tests-count').textContent = passed;
+    document.getElementById('failed-tests-count').textContent = failed;
+    document.getElementById('total-execution-time').textContent = `${duration.toFixed(1)}s`;
+
+    // Build results list
+    const resultsContainer = document.getElementById('individual-results-container');
+    resultsContainer.innerHTML = '';
+
+    batchRunResults.forEach(result => {
+        const resultItem = document.createElement('div');
+        resultItem.className = 'result-item';
+
+        const icon = result.status === 'success' ? '✅' : '❌';
+        const statusClass = result.status === 'success' ? 'passed' : 'failed';
+        const statusText = result.status === 'success' ? 'Passed' : 'Failed';
+
+        resultItem.innerHTML = `
+            <span class="result-icon">${icon}</span>
+            <span class="result-name">${escapeHtml(result.name)}</span>
+            <span class="result-status ${statusClass}">${statusText}</span>
+        `;
+
+        resultsContainer.appendChild(resultItem);
+    });
+
+    // Load video if available from the last completed test
+    const lastTest = batchRunResults[batchRunResults.length - 1];
+    if (lastTest && lastTest.filename) {
+        fetch(`/api/saved-tests/${lastTest.filename}/artifacts`)
+            .then(res => res.json())
+            .then(artifacts => {
+                if (artifacts.length > 0) {
+                    const latestArtifact = artifacts[artifacts.length - 1];
+                    if (latestArtifact.video_path) {
+                        showVideoInModal(latestArtifact.video_path);
+                    }
+                }
+            })
+            .catch(err => console.error('Error loading artifacts:', err));
+    }
+
+    modal.style.display = 'block';
+}
+
+function showVideoInModal(videoPath) {
+    const videoContainer = document.getElementById('test-video-container');
+    const videoSource = document.getElementById('test-video-source');
+    const videoPlayer = document.getElementById('test-video-player');
+    const noVideoMessage = document.getElementById('no-video-message');
+    const downloadBtn = document.getElementById('download-video-btn');
+
+    videoSource.src = `/api/artifacts/${videoPath}`;
+    videoPlayer.load();
+
+    videoContainer.style.display = 'block';
+    noVideoMessage.style.display = 'none';
+
+    // Setup download button
+    downloadBtn.onclick = () => {
+        const a = document.createElement('a');
+        a.href = `/api/artifacts/${videoPath}`;
+        a.download = videoPath.split('/').pop();
+        a.click();
+    };
+}
+
+function showVideoViewerModal(filename, testName) {
+    const modal = document.getElementById('video-viewer-modal');
+    const title = document.getElementById('video-viewer-title');
+    const videoContainer = document.getElementById('video-viewer-container');
+    const noRecording = document.getElementById('video-viewer-no-recording');
+    const videoSource = document.getElementById('video-viewer-source');
+    const videoPlayer = document.getElementById('video-viewer-player');
+    const timestampElem = document.getElementById('video-viewer-timestamp');
+    const sizeElem = document.getElementById('video-viewer-size');
+    const downloadBtn = document.getElementById('video-viewer-download-btn');
+
+    title.textContent = `📹 ${testName}`;
+
+    // Fetch artifacts for this test
+    fetch(`/api/saved-tests/${filename}/artifacts`)
+        .then(res => res.json())
+        .then(artifacts => {
+            if (artifacts.length > 0) {
+                // Show the latest recording
+                const latestArtifact = artifacts[artifacts.length - 1];
+
+                videoSource.src = `/api/artifacts/${latestArtifact.video_path}`;
+                videoPlayer.load();
+
+                // Show recording info
+                timestampElem.textContent = `Recorded: ${latestArtifact.timestamp.replace('_', ' at ').replace(/-/g, '/')}`;
+                sizeElem.textContent = `Size: ${latestArtifact.video_size_mb} MB | Status: ${latestArtifact.status}`;
+
+                // Setup download button
+                downloadBtn.onclick = () => {
+                    const a = document.createElement('a');
+                    a.href = `/api/artifacts/${latestArtifact.video_path}`;
+                    a.download = latestArtifact.video_path.split('/').pop();
+                    a.click();
+                };
+
+                videoContainer.style.display = 'block';
+                noRecording.style.display = 'none';
+            } else {
+                videoContainer.style.display = 'none';
+                noRecording.style.display = 'block';
+            }
+
+            modal.style.display = 'block';
+        })
+        .catch(err => {
+            console.error('Error loading artifacts:', err);
+            videoContainer.style.display = 'none';
+            noRecording.style.display = 'block';
+            modal.style.display = 'block';
+        });
+}
+
 async function saveAiStep() {
     const name = aiStepNameInput.value.trim();
     const steps = aiStepStepsInput.value.trim();
@@ -1353,10 +1639,51 @@ if (closeAiStepModal) {
     });
 }
 
+// Test Results Modal Close Handlers
+const closeTestResultsModal = document.querySelector('.close-test-results-modal');
+const closeResultsBtn = document.getElementById('close-results-btn');
+const testResultsModal = document.getElementById('test-results-modal');
+
+if (closeTestResultsModal) {
+    closeTestResultsModal.addEventListener('click', () => {
+        testResultsModal.style.display = 'none';
+    });
+}
+
+if (closeResultsBtn) {
+    closeResultsBtn.addEventListener('click', () => {
+        testResultsModal.style.display = 'none';
+    });
+}
+
+// Video Viewer Modal Close Handlers
+const videoViewerModal = document.getElementById('video-viewer-modal');
+const closeVideoViewerBtn = document.querySelector('.close-video-viewer');
+
+if (closeVideoViewerBtn) {
+    closeVideoViewerBtn.addEventListener('click', () => {
+        const videoPlayer = document.getElementById('video-viewer-player');
+        if (videoPlayer) {
+            videoPlayer.pause(); // Pause video when closing
+        }
+        videoViewerModal.style.display = 'none';
+    });
+}
+
 // Modal click handlers
 window.addEventListener('click', (event) => {
     if (event.target === aiStepModal) {
         aiStepModal.style.display = 'none';
+    }
+    if (event.target === testResultsModal) {
+        testResultsModal.style.display = 'none';
+    }
+    if (event.target === videoViewerModal) {
+        const videoPlayer = document.getElementById('video-viewer-player');
+        if (videoPlayer) {
+            videoPlayer.pause();
+        }
+        videoViewerModal.style.display = 'none';
     }
 });
 

@@ -5,7 +5,7 @@ Provides a browser interface to write and run tests, watch browser automation li
 
 import asyncio
 import base64
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file
 from flask_socketio import SocketIO, emit
 from datetime import datetime
 import json
@@ -53,6 +53,91 @@ AI_STEPS_DIR.mkdir(exist_ok=True)
 active_recordings = {}
 TEMP_RECORDINGS_DIR = Path(__file__).parent / 'temp_recordings'
 TEMP_RECORDINGS_DIR.mkdir(exist_ok=True)
+
+
+def cleanup_old_artifacts(test_name: str, keep_last_n: int = 10):
+    """Remove old artifact directories, keeping only the last N."""
+    import shutil
+    artifact_base = Path(__file__).parent / "test_artifacts" / test_name
+    if not artifact_base.exists():
+        return
+
+    # Get all timestamp directories, sorted by creation time (newest first)
+    try:
+        dirs = sorted(artifact_base.iterdir(), key=lambda x: x.stat().st_ctime, reverse=True)
+    except Exception as e:
+        print(f"Warning: Could not list artifact directories: {e}")
+        return
+
+    # Remove all but the last N
+    for old_dir in dirs[keep_last_n:]:
+        try:
+            shutil.rmtree(old_dir)
+            print(f"Cleaned up old artifact: {old_dir}")
+        except Exception as e:
+            print(f"Warning: Could not remove old artifacts: {e}")
+
+
+def update_test_artifacts(filename: str, artifact_dir: Path, test_status: str = 'unknown'):
+    """Update test JSON metadata with artifact information."""
+    if not filename:
+        return
+
+    # Determine which directory to use (saved_tests or ai_steps)
+    if filename.endswith('.json'):
+        # Could be either saved test or AI step
+        test_file = SAVED_TESTS_DIR / filename
+        if not test_file.exists():
+            test_file = AI_STEPS_DIR / filename
+    else:
+        test_file = AI_STEPS_DIR / filename
+
+    if not test_file.exists():
+        print(f"Warning: Test file not found for artifact update: {filename}")
+        return
+
+    try:
+        with open(test_file, 'r') as f:
+            test_data = json.load(f)
+
+        # Find video file (Playwright names it automatically)
+        video_files = list(artifact_dir.glob("*.webm"))
+        video_path = video_files[0].relative_to(Path(__file__).parent) if video_files else None
+        video_size_mb = video_files[0].stat().st_size / (1024*1024) if video_files else 0
+
+        # Find HAR file
+        har_files = list(artifact_dir.glob("*.har"))
+        har_path = har_files[0].relative_to(Path(__file__).parent) if har_files else None
+
+        # Add artifact info
+        if 'artifacts' not in test_data:
+            test_data['artifacts'] = []
+
+        timestamp = artifact_dir.name  # Directory name is the timestamp
+        test_data['artifacts'].append({
+            'timestamp': timestamp,
+            'video_path': str(video_path) if video_path else None,
+            'video_size_mb': round(video_size_mb, 2),
+            'har_path': str(har_path) if har_path else None,
+            'status': test_status
+        })
+
+        # Update test metadata
+        test_data['last_run'] = datetime.now().isoformat()
+        test_data['last_run_status'] = test_status
+
+        # Save updated metadata
+        with open(test_file, 'w') as f:
+            json.dump(test_data, f, indent=2)
+
+        print(f"Updated test metadata with artifact: {video_path}")
+
+        # Cleanup old artifacts (keep last 10)
+        test_name = Path(filename).stem
+        cleanup_old_artifacts(test_name, keep_last_n=10)
+
+    except Exception as e:
+        print(f"Warning: Could not update test metadata: {e}")
 
 
 class BrowserToolWithScreenshots(BrowserTool):
@@ -382,9 +467,29 @@ async def run_test_async(task: str):
     stop_requested = False  # Reset stop flag
     socketio.emit('log', {'type': 'info', 'message': 'Initializing browser...'})
 
+    # Create artifacts directory if this is an AI step test with filename
+    artifact_dir = None
+    video_dir = None
+    test_filename = None  # Save filename before current_ai_step gets reset
+    test_status = None  # Track test status for artifact metadata
+    if current_ai_step and current_ai_step.get('filename'):
+        from pathlib import Path
+        test_filename = current_ai_step['filename']  # Save for artifact update later
+        test_name = Path(test_filename).stem
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        artifact_dir = Path(__file__).parent / "test_artifacts" / test_name / timestamp
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        video_dir = str(artifact_dir)
+        socketio.emit('log', {'type': 'info', 'message': f'📹 Video recording enabled to: {video_dir}'})
+
     try:
-        # Initialize browser with screenshots (headless=True to hide browser window)
-        async with BrowserToolWithScreenshots(headless=True, timeout=config.TIMEOUT) as browser:
+        # Initialize browser with screenshots and optional video recording
+        async with BrowserToolWithScreenshots(
+            headless=True,
+            timeout=config.TIMEOUT,
+            record_video_dir=video_dir,
+            record_har=True if video_dir else False
+        ) as browser:
             active_browser = browser
 
             socketio.emit('log', {'type': 'info', 'message': 'Browser initialized'})
@@ -595,7 +700,6 @@ These rules apply to ALL tasks. Users will give you natural language instruction
             team = RoundRobinGroupChat([agent], termination_condition=termination)
 
             # Run and stream results
-            test_status = None
             async for message in team.run_stream(task=task):
                 # Check if stop was requested
                 if stop_requested:
@@ -681,12 +785,24 @@ These rules apply to ALL tasks. Users will give you natural language instruction
         error_msg = f"Error during test execution: {str(e)}"
         socketio.emit('log', {'type': 'error', 'message': error_msg})
         socketio.emit('test_complete', {'status': 'error', 'message': str(e)})
+        test_status = 'error'  # Set for artifact tracking
         current_ai_step = None  # Reset on exception
     finally:
         # Stop streaming when test completes
         if active_browser:
             active_browser.stop_streaming()
         active_browser = None
+
+        # Update test artifacts if video recording was enabled
+        if artifact_dir and test_filename:
+            # Give the browser time to finalize the video
+            import time
+            time.sleep(1)
+            update_test_artifacts(
+                test_filename,
+                artifact_dir,
+                test_status or 'unknown'
+            )
 
 
 def run_test_sync(task: str):
@@ -745,10 +861,28 @@ def run_playwright_code(code: str):
             loop.close()
 
 
-def run_playwright_code_with_streaming(code: str):
+def run_playwright_code_with_streaming(code: str, filename: str = None):
     """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    # Create artifacts directory for this test run if filename provided
+    artifact_dir = None
+    video_dir = None
+    test_status = None  # Track test status for artifact metadata
+    if filename:
+        print(f"🎬 Filename provided: {filename}")
+        from pathlib import Path
+        from datetime import datetime
+        test_name = Path(filename).stem
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        artifact_dir = Path(__file__).parent / "test_artifacts" / test_name / timestamp
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        video_dir = str(artifact_dir)
+        print(f"📹 Video directory created: {video_dir}")
+        socketio.emit('log', {'type': 'info', 'message': f'📹 Video recording enabled to: {video_dir}'})
+    else:
+        print("⚠️  No filename provided - video recording disabled")
 
     async def execute_with_auto_streaming():
         """Execute code with automatic screenshot streaming after each action."""
@@ -871,18 +1005,49 @@ def run_playwright_code_with_streaming(code: str):
 
         # Browser wrapper
         class BrowserWrapper:
-            def __init__(self, browser):
+            def __init__(self, browser, default_context=None):
                 self._browser = browser
+                self._default_context = default_context
+                self._contexts = []
 
             async def new_page(self):
                 """Create new page with screenshot wrapper."""
-                page = await self._browser.new_page()
-                return PageWrapper(page)
+                # If we have a default context (with video recording), use it
+                if self._default_context:
+                    page = await self._default_context.new_page()
+                    return PageWrapper(page)
+                else:
+                    page = await self._browser.new_page()
+                    return PageWrapper(page)
 
             async def new_context(self, **kwargs):
                 """Create new context with wrapper."""
                 context = await self._browser.new_context(**kwargs)
-                return ContextWrapper(context)
+                wrapped = ContextWrapper(context)
+                self._contexts.append(wrapped)
+                return wrapped
+
+            async def close(self):
+                """Close all contexts and browser."""
+                print("🔴 BrowserWrapper.close() called - saving videos...")
+                # Close all contexts first (to save videos)
+                for ctx in self._contexts:
+                    try:
+                        print(f"  Closing context: {ctx}")
+                        await ctx.close()
+                    except Exception as e:
+                        print(f"  Error closing context: {e}")
+                if self._default_context:
+                    try:
+                        print(f"  Closing default context for video recording...")
+                        await self._default_context.close()
+                        print(f"  ✅ Default context closed - video should be saved")
+                    except Exception as e:
+                        print(f"  ❌ Error closing default context: {e}")
+                print("  Closing browser...")
+                result = await self._browser.close()
+                print("  ✅ Browser closed")
+                return result
 
             def __getattr__(self, name):
                 return getattr(self._browser, name)
@@ -918,7 +1083,21 @@ def run_playwright_code_with_streaming(code: str):
                 kwargs['headless'] = True
                 print(f"🚀 Launching browser in HEADLESS mode (streaming to sidebar only)")
                 browser = await self._launcher.launch(**kwargs)
-                return BrowserWrapper(browser)
+
+                # Create context with video recording if video_dir is set
+                default_context = None
+                if video_dir:
+                    print(f"📹 Creating browser context with video recording to: {video_dir}")
+                    context_options = {
+                        'record_video_dir': video_dir,
+                        'record_video_size': {"width": 1280, "height": 720}
+                    }
+                    # Also record HAR file for network activity
+                    context_options['record_har_path'] = f"{video_dir}/network.har"
+                    raw_context = await browser.new_context(**context_options)
+                    default_context = ContextWrapper(raw_context)
+
+                return BrowserWrapper(browser, default_context)
 
             def __getattr__(self, name):
                 return getattr(self._launcher, name)
@@ -938,6 +1117,7 @@ def run_playwright_code_with_streaming(code: str):
                 return await self._playwright_context.__aexit__(*args)
 
         try:
+            nonlocal test_status
             # Remove the playwright import line and asyncio.run() from user's code
             # so we can provide our wrapped version
             modified_code = code.replace('asyncio.run(run())', '')
@@ -977,12 +1157,14 @@ def run_playwright_code_with_streaming(code: str):
             run_func = exec_globals['run']
             await run_func()
 
+            test_status = 'success'
             socketio.emit('log', {'type': 'success', 'message': '✅ Code execution completed successfully!'})
             socketio.emit('test_complete', {'status': 'success'})
 
         except Exception as e:
             import traceback
             error_msg = f'Error executing code: {str(e)}'
+            test_status = 'error'
             socketio.emit('log', {'type': 'error', 'message': error_msg})
             socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
             socketio.emit('test_complete', {'status': 'error', 'message': str(e)})
@@ -991,6 +1173,7 @@ def run_playwright_code_with_streaming(code: str):
         loop.run_until_complete(execute_with_auto_streaming())
     except Exception as e:
         import traceback
+        test_status = 'error'
         socketio.emit('log', {'type': 'error', 'message': f'Execution error: {str(e)}'})
         socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
         socketio.emit('test_complete', {'status': 'error'})
@@ -1004,6 +1187,61 @@ def run_playwright_code_with_streaming(code: str):
             pass
         finally:
             loop.close()
+
+            # Update test artifacts if video recording was enabled
+            if artifact_dir and filename:
+                # Give the browser time to finalize the video
+                import time
+                time.sleep(1)
+                update_test_artifacts(
+                    filename,
+                    artifact_dir,
+                    test_status or 'unknown'
+                )
+
+
+def run_playwright_code_headless(code: str, filename: str):
+    """Execute Playwright code in headless mode WITHOUT screenshot streaming.
+
+    Returns:
+        tuple: (status, error_message) where status is 'success' or 'error'
+    """
+    loop = None
+    try:
+        # Force headless mode
+        modified_code = code.replace('headless=False', 'headless=True')
+
+        # Create a new event loop for this execution
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # Create namespace with required imports
+        namespace = {
+            'asyncio': asyncio,
+            '__name__': '__main__'
+        }
+
+        # Execute the code (which includes the async def run() and asyncio.run(run()) calls)
+        exec(modified_code, namespace)
+
+        return 'success', None
+
+    except Exception as e:
+        import traceback
+        error_msg = f"{str(e)}\n{traceback.format_exc()}"
+        return 'error', error_msg
+    finally:
+        try:
+            # Clean up the event loop
+            if loop and not loop.is_closed():
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.close()
+        except Exception:
+            pass
 
 
 @app.route('/')
@@ -1135,6 +1373,7 @@ def get_saved_tests():
                     'created': test_data.get('created'),
                     'source': test_data.get('source', 'ai'),  # Default to 'ai' for backward compatibility
                     'last_run_status': test_data.get('last_run_status'),  # 'success', 'error', or 'stopped'
+                    'artifacts': test_data.get('artifacts', []),  # Include artifacts for video recordings
                     'last_run_time': test_data.get('last_run_time')
                 })
         except Exception as e:
@@ -1389,6 +1628,47 @@ def update_ai_step_markdown(filename):
     return jsonify({'success': True})
 
 
+@app.route('/api/artifacts/<path:filepath>')
+def serve_artifact(filepath):
+    """Serve test artifact files (videos, HAR, traces)."""
+    # filepath already includes "test_artifacts/" prefix, so just use it directly
+    artifact_path = Path(__file__).parent / filepath
+
+    # Security: Ensure path is within test_artifacts directory
+    try:
+        artifact_path = artifact_path.resolve()
+        base_path = (Path(__file__).parent / "test_artifacts").resolve()
+        if not str(artifact_path).startswith(str(base_path)):
+            return jsonify({'error': 'Invalid path'}), 403
+    except Exception:
+        return jsonify({'error': 'Invalid path'}), 400
+
+    if not artifact_path.exists():
+        return jsonify({'error': 'Artifact not found'}), 404
+
+    return send_file(artifact_path)
+
+
+@app.route('/api/saved-tests/<filename>/artifacts')
+def get_test_artifacts(filename):
+    """Get list of artifacts for a saved test."""
+    filepath = SAVED_TESTS_DIR / filename
+    if not filepath.exists():
+        # Try AI steps directory
+        filepath = AI_STEPS_DIR / filename
+        if not filepath.exists():
+            return jsonify({'error': 'Test not found'}), 404
+
+    try:
+        with open(filepath, 'r') as f:
+            test_data = json.load(f)
+
+        artifacts = test_data.get('artifacts', [])
+        return jsonify(artifacts)
+    except Exception as e:
+        return jsonify({'error': f'Failed to load artifacts: {str(e)}'}), 500
+
+
 @socketio.on('run_test')
 def handle_run_test(data):
     """Handle test execution request."""
@@ -1451,10 +1731,99 @@ def handle_run_saved_test(data):
         emit('log', {'type': 'info', 'message': '🚀 Executing Playwright code with live browser preview...'})
 
         # Run the saved test with streaming in background thread
-        socketio.start_background_task(run_playwright_code_with_streaming, code)
+        socketio.start_background_task(run_playwright_code_with_streaming, code, filename)
 
     except Exception as e:
         emit('log', {'type': 'error', 'message': f'Error running saved test: {str(e)}'})
+
+
+@socketio.on('run_all_tests')
+def handle_run_all_tests(data):
+    """Handle running all saved tests in parallel."""
+    filenames = data.get('filenames', [])
+    socketio.start_background_task(run_all_tests_parallel, filenames)
+
+
+def run_all_tests_parallel(filenames):
+    """Execute all tests in parallel and collect results."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+
+    start_time = time.time()
+    results = []
+
+    def run_single_test(filename):
+        """Execute a single test and return result."""
+        try:
+            # Load test file
+            filepath = SAVED_TESTS_DIR / filename
+            if not filepath.exists():
+                return {
+                    'filename': filename,
+                    'name': filename,
+                    'status': 'error',
+                    'error': 'Test file not found'
+                }
+
+            with open(filepath, 'r') as f:
+                test_data = json.load(f)
+
+            name = test_data.get('name', filename)
+            code = test_data.get('code', '')
+
+            # Execute test in headless mode
+            status, error_msg = run_playwright_code_headless(code, filename)
+
+            # Update test file with results
+            test_data['last_run_status'] = status
+            test_data['last_run_time'] = time.time()
+            if error_msg:
+                test_data['last_error'] = error_msg
+
+            with open(filepath, 'w') as f:
+                json.dump(test_data, f, indent=2)
+
+            return {
+                'filename': filename,
+                'name': name,
+                'status': status,
+                'error': error_msg
+            }
+
+        except Exception as e:
+            import traceback
+            error_msg = f"{str(e)}\n{traceback.format_exc()}"
+            return {
+                'filename': filename,
+                'name': filename,
+                'status': 'error',
+                'error': error_msg
+            }
+
+    # Execute tests in parallel with max 5 workers
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_filename = {executor.submit(run_single_test, fn): fn for fn in filenames}
+
+        for future in as_completed(future_to_filename):
+            result = future.result()
+            results.append(result)
+
+            # Emit progress update
+            socketio.emit('batch_test_progress', result)
+
+    # Calculate summary statistics
+    duration = time.time() - start_time
+    total = len(results)
+    passed = sum(1 for r in results if r['status'] == 'success')
+    failed = total - passed
+
+    # Emit completion event
+    socketio.emit('batch_run_complete', {
+        'total': total,
+        'passed': passed,
+        'failed': failed,
+        'duration': duration
+    })
 
 
 @socketio.on('run_ai_step')

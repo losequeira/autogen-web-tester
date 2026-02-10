@@ -1,0 +1,26 @@
+{
+  "name": "Landing Steps - Generated Test",
+  "code": "from playwright.async_api import async_playwright\nimport asyncio\n\nasync def run():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=False)\n        page = await browser.new_page()\n\n        await page.goto(\"https://sunny-staging.vercel.app/\")\n        await page.click(\"input[placeholder=\\\"Where do you want to live?\\\"]\")\n        await page.fill(\"input[placeholder=\\\"Where do you want to live?\\\"]\", \"New York\")\n\n        await browser.close()\n\nasyncio.run(run())",
+  "source": "ai_step",
+  "created": "2026-02-10T09:52:06.649369",
+  "last_run_status": "success",
+  "last_run_time": 1770755155.048129,
+  "last_error": "'async with' outside async function (<string>, line 1)\nTraceback (most recent call last):\n  File \"/Users/losequeira/Documents/autogen-web-tester/web_ui.py\", line 1038, in execute_headless\n    exec(code_body, local_vars)\n    ~~~~^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<string>\", line 1\nSyntaxError: 'async with' outside async function\n",
+  "artifacts": [
+    {
+      "timestamp": "2026-02-10_11-22-58",
+      "video_path": "test_artifacts/Landing_Steps_-_Generated_Test/2026-02-10_11-22-58/a2f3e2a0f2800251ec4335a1f4976336.webm",
+      "video_size_mb": 0.24,
+      "har_path": "test_artifacts/Landing_Steps_-_Generated_Test/2026-02-10_11-22-58/network.har",
+      "status": "success"
+    },
+    {
+      "timestamp": "2026-02-10_11-36-13",
+      "video_path": "test_artifacts/Landing_Steps_-_Generated_Test/2026-02-10_11-36-13/cfa8bdb5dfa6ce0b5065806f05a56f4d.webm",
+      "video_size_mb": 0.34,
+      "har_path": "test_artifacts/Landing_Steps_-_Generated_Test/2026-02-10_11-36-13/network.har",
+      "status": "success"
+    }
+  ],
+  "last_run": "2026-02-10T11:36:18.997346"
+}

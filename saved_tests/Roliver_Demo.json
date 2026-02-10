@@ -1,0 +1,19 @@
+{
+  "name": "Roliver Demo",
+  "code": "from playwright.async_api import async_playwright\nimport asyncio\n\nasync def run():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=False)\n        page = await browser.new_page()\n\n        await page.goto(\"https://sunny-staging.vercel.app/\")\n        await page.get_by_text(\"Sign Up\").click()\n        \n        await page.click(\"input[name='fullName']\")\n        await page.fill(\"input[name='fullName']\", \"Roliver Hola\")\n        \n        await page.click(\"input[name='email']\")\n        await page.fill(\"input[name='email']\", \"roliver+asdlk@gmail.com\")\n\n        await browser.close()\n\nasyncio.run(run())",
+  "source": "ai",
+  "created": "2026-02-10T14:28:38.451080",
+  "updated": "2026-02-10T14:28:38.451098",
+  "last_run_status": "success",
+  "last_run_time": "2026-02-10T14:28:44.804639",
+  "artifacts": [
+    {
+      "timestamp": "2026-02-10_14-28-41",
+      "video_path": "test_artifacts/Roliver_Demo/2026-02-10_14-28-41/61739901a22827bd622dae7f7c9e1d0a.webm",
+      "video_size_mb": 0.3,
+      "har_path": "test_artifacts/Roliver_Demo/2026-02-10_14-28-41/network.har",
+      "status": "success"
+    }
+  ],
+  "last_run": "2026-02-10T14:28:45.806532"
+}

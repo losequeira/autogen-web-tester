@@ -50,6 +50,9 @@ temp_recordings/
 # Screenshots (optional)
 screenshots/
 
+# Test artifacts (videos, traces, HAR files)
+test_artifacts/
+
 # OS
 .DS_Store
 Thumbs.db

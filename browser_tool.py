@@ -1,7 +1,7 @@
 """BrowserTool: Playwright wrapper for AutoGen agents."""
 
 from typing import Optional
-from playwright.async_api import async_playwright, Browser, Page, Playwright
+from playwright.async_api import async_playwright, Browser, Page, Playwright, BrowserContext
 
 
 class BrowserTool:
@@ -12,32 +12,61 @@ class BrowserTool:
     as AutoGen tools for LLM-driven browser automation.
     """
 
-    def __init__(self, headless: bool = False, timeout: int = 30000):
+    def __init__(self, headless: bool = False, timeout: int = 30000,
+                 record_video_dir: str = None, record_har: bool = False):
         """
         Initialize BrowserTool.
 
         Args:
             headless: Run browser in headless mode (no UI)
             timeout: Default timeout for operations in milliseconds
+            record_video_dir: Directory to save video recordings (None = no recording)
+            record_har: Whether to record HTTP Archive (HAR) file
         """
         self.headless = headless
         self.timeout = timeout
+        self.record_video_dir = record_video_dir
+        self.record_har = record_har
         self.playwright: Optional[Playwright] = None
         self.browser: Optional[Browser] = None
+        self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
 
     async def __aenter__(self):
         """Initialize Playwright and browser on context entry."""
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(headless=self.headless)
-        self.page = await self.browser.new_page()
+
+        # Create context with recording options if specified
+        context_options = {}
+        if self.record_video_dir:
+            context_options['record_video_dir'] = self.record_video_dir
+            context_options['record_video_size'] = {"width": 1280, "height": 720}
+
+        if self.record_har and self.record_video_dir:
+            context_options['record_har_path'] = f"{self.record_video_dir}/network.har"
+
+        # Create context with or without recording
+        if context_options:
+            self.context = await self.browser.new_context(**context_options)
+            self.page = await self.context.new_page()
+        else:
+            self.page = await self.browser.new_page()
+
         self.page.set_default_timeout(self.timeout)
         return self
 
     async def __aexit__(self, *args):
         """Cleanup resources on context exit."""
+        # Close page first
         if self.page:
             await self.page.close()
+
+        # Close context to save video recording
+        if self.context:
+            await self.context.close()
+
+        # Close browser and playwright
         if self.browser:
             await self.browser.close()
         if self.playwright:

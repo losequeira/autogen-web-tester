@@ -5,5 +5,6 @@
   "created": "2026-02-10T01:29:05.117727",
   "updated": "2026-02-10T01:29:05.117751",
   "last_run_status": "success",
-  "last_run_time": "2026-02-10T01:41:44.843886"
+  "last_run_time": 1770755158.0309162,
+  "last_error": "unexpected indent (<string>, line 4)\nTraceback (most recent call last):\n  File \"/Users/losequeira/Documents/autogen-web-tester/web_ui.py\", line 1038, in execute_headless\n    exec(code_body, local_vars)\n    ~~~~^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<string>\", line 4\n    async with async_playwright() as p:\nIndentationError: unexpected indent\n"
 }

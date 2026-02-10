@@ -20,3 +20,14 @@ TIMEOUT = int(os.getenv("TIMEOUT", "60000"))  # 60 seconds default
 
 # Model Configuration
 MODEL_NAME = "gpt-4o"  # Use gpt-4o-mini for cheaper testing
+
+# Video Recording Settings
+ENABLE_VIDEO_RECORDING = os.getenv("ENABLE_VIDEO_RECORDING", "true").lower() == "true"
+VIDEO_SIZE_WIDTH = int(os.getenv("VIDEO_SIZE_WIDTH", "1280"))
+VIDEO_SIZE_HEIGHT = int(os.getenv("VIDEO_SIZE_HEIGHT", "720"))
+KEEP_LAST_N_VIDEOS = int(os.getenv("KEEP_LAST_N_VIDEOS", "10"))  # Per test
+
+# Artifact Settings
+ENABLE_HAR_RECORDING = os.getenv("ENABLE_HAR_RECORDING", "true").lower() == "true"
+ENABLE_TRACE_RECORDING = os.getenv("ENABLE_TRACE_RECORDING", "false").lower() == "true"
+MAX_ARTIFACT_SIZE_MB = int(os.getenv("MAX_ARTIFACT_SIZE_MB", "500"))  # Fail if exceeds
