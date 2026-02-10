@@ -422,8 +422,9 @@ runTestBtn.addEventListener('click', () => {
 
     // Automatically open browser sidebar when test starts
     if (!browserSidebar.classList.contains('open')) {
+        const codeEditorContainer = document.querySelector('.code-editor-container');
         browserSidebar.classList.add('open');
-        codeEditorSection.classList.add('browser-open');
+        codeEditorContainer.classList.add('browser-open');
         toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
         toggleBrowserBtn.classList.add('active');
     }
@@ -1003,21 +1004,23 @@ closeChatSidebarBtn.addEventListener('click', () => {
 // Live Browser Sidebar Toggle
 toggleBrowserBtn.addEventListener('click', () => {
     const isOpen = browserSidebar.classList.toggle('open');
-    codeEditorSection.classList.toggle('browser-open');
+    const codeEditorContainer = document.querySelector('.code-editor-container');
 
-    // Update button appearance
     if (isOpen) {
+        codeEditorContainer.classList.add('browser-open');
         toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
         toggleBrowserBtn.classList.add('active');
     } else {
+        codeEditorContainer.classList.remove('browser-open');
         toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
         toggleBrowserBtn.classList.remove('active');
     }
 });
 
 closeBrowserSidebarBtn.addEventListener('click', () => {
+    const codeEditorContainer = document.querySelector('.code-editor-container');
     browserSidebar.classList.remove('open');
-    codeEditorSection.classList.remove('browser-open');
+    codeEditorContainer.classList.remove('browser-open');
     toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
     toggleBrowserBtn.classList.remove('active');
 });
