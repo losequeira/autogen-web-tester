@@ -718,13 +718,228 @@ def run_playwright_code(code: str):
 
 
 def run_playwright_code_with_streaming(code: str):
-    """
-    Execute Playwright code from editor.
-    Currently runs code as-is. Future enhancement: add automatic screenshot streaming.
-    """
-    # For now, just use the existing run_playwright_code function
-    # Future: Add page object wrapping to automatically capture screenshots
-    run_playwright_code(code)
+    """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def execute_with_auto_streaming():
+        """Execute code with automatic screenshot streaming after each action."""
+        from playwright.async_api import async_playwright
+
+        # Screenshot helper that will be available in user's code
+        async def send_screenshot(page, action_name='action'):
+            """Capture and send screenshot to browser sidebar."""
+            try:
+                screenshot_bytes = await page.screenshot(
+                    type='jpeg',
+                    quality=40,
+                    full_page=False
+                )
+                screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+                socketio.emit('screenshot', {
+                    'action': action_name,
+                    'image': screenshot_b64,
+                    'timestamp': datetime.now().isoformat()
+                })
+            except Exception as e:
+                print(f"Screenshot error: {e}")
+
+        # Page wrapper that automatically captures screenshots
+        class PageWrapper:
+            """Wraps Playwright Page to automatically capture screenshots after actions."""
+
+            def __init__(self, page):
+                self._page = page
+                self._streaming = False
+                self._stream_task = None
+
+            async def _start_streaming(self):
+                """Start continuous screenshot streaming."""
+                self._streaming = True
+                while self._streaming:
+                    try:
+                        await send_screenshot(self._page, 'stream')
+                        await asyncio.sleep(0.1)  # 10 FPS
+                    except asyncio.CancelledError:
+                        break
+                    except Exception:
+                        break
+
+            def _stop_streaming(self):
+                """Stop streaming."""
+                self._streaming = False
+                if self._stream_task:
+                    self._stream_task.cancel()
+
+            async def goto(self, url, **kwargs):
+                """Navigate and capture screenshot."""
+                result = await self._page.goto(url, **kwargs)
+                await send_screenshot(self._page, 'navigate')
+                # Start streaming after first navigation
+                if not self._stream_task:
+                    self._stream_task = asyncio.create_task(self._start_streaming())
+                return result
+
+            async def click(self, selector, **kwargs):
+                """Click and capture screenshot."""
+                result = await self._page.click(selector, **kwargs)
+                await send_screenshot(self._page, 'click')
+                return result
+
+            async def fill(self, selector, value, **kwargs):
+                """Fill and capture screenshot."""
+                result = await self._page.fill(selector, value, **kwargs)
+                await send_screenshot(self._page, 'fill')
+                return result
+
+            async def type(self, selector, text, **kwargs):
+                """Type and capture screenshot."""
+                result = await self._page.type(selector, text, **kwargs)
+                await send_screenshot(self._page, 'type')
+                return result
+
+            async def press(self, selector, key, **kwargs):
+                """Press key and capture screenshot."""
+                result = await self._page.press(selector, key, **kwargs)
+                await send_screenshot(self._page, 'press')
+                return result
+
+            async def screenshot(self, **kwargs):
+                """Take screenshot and send to sidebar."""
+                result = await self._page.screenshot(**kwargs)
+                await send_screenshot(self._page, 'screenshot')
+                return result
+
+            async def close(self):
+                """Stop streaming and close page."""
+                self._stop_streaming()
+                return await self._page.close()
+
+            def __getattr__(self, name):
+                """Forward all other attributes to the real page."""
+                return getattr(self._page, name)
+
+        # Browser context wrapper
+        class ContextWrapper:
+            def __init__(self, context):
+                self._context = context
+
+            async def new_page(self):
+                """Create new page with screenshot wrapper."""
+                page = await self._context.new_page()
+                return PageWrapper(page)
+
+            def __getattr__(self, name):
+                return getattr(self._context, name)
+
+        # Browser wrapper
+        class BrowserWrapper:
+            def __init__(self, browser):
+                self._browser = browser
+
+            async def new_page(self):
+                """Create new page with screenshot wrapper."""
+                page = await self._browser.new_page()
+                return PageWrapper(page)
+
+            async def new_context(self, **kwargs):
+                """Create new context with wrapper."""
+                context = await self._browser.new_context(**kwargs)
+                return ContextWrapper(context)
+
+            def __getattr__(self, name):
+                return getattr(self._browser, name)
+
+        # Playwright wrapper
+        class PlaywrightWrapper:
+            def __init__(self, playwright):
+                self._playwright = playwright
+
+            @property
+            def chromium(self):
+                return LauncherWrapper(self._playwright.chromium)
+
+            @property
+            def firefox(self):
+                return LauncherWrapper(self._playwright.firefox)
+
+            @property
+            def webkit(self):
+                return LauncherWrapper(self._playwright.webkit)
+
+            def __getattr__(self, name):
+                return getattr(self._playwright, name)
+
+        # Browser launcher wrapper
+        class LauncherWrapper:
+            def __init__(self, launcher):
+                self._launcher = launcher
+
+            async def launch(self, **kwargs):
+                """Launch browser with wrapper."""
+                browser = await self._launcher.launch(**kwargs)
+                return BrowserWrapper(browser)
+
+            def __getattr__(self, name):
+                return getattr(self._launcher, name)
+
+        # Custom async_playwright that returns wrapped version
+        class async_playwright_wrapper:
+            async def __aenter__(self):
+                self._playwright_context = async_playwright()
+                playwright = await self._playwright_context.__aenter__()
+                return PlaywrightWrapper(playwright)
+
+            async def __aexit__(self, *args):
+                return await self._playwright_context.__aexit__(*args)
+
+        try:
+            # Execute user's code with wrapped Playwright
+            exec_globals = {
+                'asyncio': asyncio,
+                'async_playwright': async_playwright_wrapper,
+                'base64': base64,
+                'datetime': datetime,
+                'socketio': socketio,
+            }
+            exec(code.replace('asyncio.run(run())', ''), exec_globals)
+
+            # Get and run the user's run function
+            if 'run' not in exec_globals:
+                socketio.emit('log', {'type': 'error', 'message': 'Error: Could not find run() function in code'})
+                socketio.emit('test_complete', {'status': 'error'})
+                return
+
+            run_func = exec_globals['run']
+            await run_func()
+
+            socketio.emit('log', {'type': 'success', 'message': '✅ Code execution completed successfully!'})
+            socketio.emit('test_complete', {'status': 'success'})
+
+        except Exception as e:
+            import traceback
+            error_msg = f'Error executing code: {str(e)}'
+            socketio.emit('log', {'type': 'error', 'message': error_msg})
+            socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
+            socketio.emit('test_complete', {'status': 'error', 'message': str(e)})
+
+    try:
+        loop.run_until_complete(execute_with_auto_streaming())
+    except Exception as e:
+        import traceback
+        socketio.emit('log', {'type': 'error', 'message': f'Execution error: {str(e)}'})
+        socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
+        socketio.emit('test_complete', {'status': 'error'})
+    finally:
+        try:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except Exception:
+            pass
+        finally:
+            loop.close()
 
 
 @app.route('/')
