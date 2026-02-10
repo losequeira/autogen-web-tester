@@ -1530,10 +1530,10 @@ def handle_code_chat(message, existing_code, image=None):
 
         # Emit generated code if available
         if result['code']:
-            socketio.emit('code_generated', {
+            socketio.emit('code_suggestion', {
                 'code': result['code'],
                 'explanation': result.get('explanation', ''),
-                'action': 'insert'
+                'action': 'suggest'
             })
 
     except Exception as e:

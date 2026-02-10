@@ -43,6 +43,15 @@ const browserSidebar = document.getElementById('browser-sidebar');
 const outputPanel = document.getElementById('output-panel');
 const toggleOutputBtn = document.getElementById('toggle-output');
 
+// Code preview panel elements
+const codePreviewPanel = document.getElementById('code-preview-panel');
+const codePreviewExplanation = document.getElementById('code-preview-explanation');
+const codePreviewCurrent = document.getElementById('code-preview-current');
+const codePreviewSuggested = document.getElementById('code-preview-suggested');
+const acceptCodeBtn = document.getElementById('accept-code-btn');
+const rejectCodeBtn = document.getElementById('reject-code-btn');
+const closePreviewBtn = document.getElementById('close-preview-btn');
+
 // Editor tabs and file explorer (with null checks)
 const fileExplorer = document.getElementById('file-explorer');
 const fileList = document.getElementById('file-list');
@@ -64,6 +73,7 @@ const closeAiStepModal = document.querySelector('.close-ai-step-modal');
 
 let openTabs = []; // Array of {id, name, code, isDirty}
 let activeTabId = null;
+let pendingCodeSuggestion = null;
 
 // Check if file explorer elements exist
 const hasFileExplorer = fileExplorer && fileList && editorTabsContainer && newTestBtn && closeAllTabsBtn && explorerResizer;
@@ -1702,39 +1712,20 @@ socket.on('chat_response', (data) => {
     appendChatMessage('ai', data.message);
 });
 
-socket.on('code_generated', (data) => {
+socket.on('code_suggestion', (data) => {
     // Show code in chat
     appendChatMessage('code', data.code, true);
 
-    // Insert code into bottom panel
-    setPlaywrightCode(data.code);
+    // Store suggestion and show preview
+    const currentCode = activeTabId ? getPlaywrightCode() : '';
+    pendingCodeSuggestion = {
+        code: data.code,
+        explanation: data.explanation || 'AI-generated code suggestion',
+        currentCode: currentCode,
+        targetTabId: activeTabId
+    };
 
-    // Open as new tab or update existing
-    if (activeTabId) {
-        // Update current tab
-        const tab = openTabs.find(t => t.id === activeTabId);
-        if (tab) {
-            tab.code = data.code;
-            tab.isDirty = true;
-            renderTabs();
-        }
-    } else {
-        // Create new tab
-        const tempId = 'chat_' + Date.now();
-        const name = 'AI Generated';
-        openTab(tempId, name, data.code);
-        const tab = openTabs.find(t => t.id === tempId);
-        if (tab) {
-            tab.isDirty = true;
-            lastSavedCode = '';
-        }
-        renderTabs();
-    }
-
-    // Add explanation if provided
-    if (data.explanation) {
-        appendChatMessage('system', `Code updated: ${data.explanation}`);
-    }
+    showCodePreview();
 });
 
 socket.on('chat_error', (data) => {
@@ -1749,6 +1740,140 @@ socket.on('chat_error', (data) => {
     appendChatMessage('system', `Error: ${data.message}`);
 });
 
+// ========================================
+// CODE PREVIEW PANEL FUNCTIONALITY
+// ========================================
+
+function showCodePreview() {
+    if (!pendingCodeSuggestion) return;
+
+    // Set explanation
+    codePreviewExplanation.textContent = pendingCodeSuggestion.explanation;
+
+    // Generate diff
+    highlightCodeDiff();
+
+    // Show panel
+    codePreviewPanel.classList.add('open');
+
+    addLogEntry('info', '📝 Code suggestion ready for review');
+}
+
+function highlightCodeDiff() {
+    const currentLines = (pendingCodeSuggestion.currentCode || '').split('\n');
+    const suggestedLines = pendingCodeSuggestion.code.split('\n');
+
+    let currentHtml = '';
+    let suggestedHtml = '';
+
+    const maxLines = Math.max(currentLines.length, suggestedLines.length);
+
+    for (let i = 0; i < maxLines; i++) {
+        const currentLine = currentLines[i] || '';
+        const suggestedLine = suggestedLines[i] || '';
+
+        const escapedCurrent = escapeHtmlForDiff(currentLine);
+        const escapedSuggested = escapeHtmlForDiff(suggestedLine);
+
+        if (currentLine !== suggestedLine) {
+            if (currentLine && !suggestedLine) {
+                currentHtml += `<div class="diff-line-removed">${escapedCurrent}</div>`;
+                suggestedHtml += `<div></div>`;
+            } else if (!currentLine && suggestedLine) {
+                currentHtml += `<div></div>`;
+                suggestedHtml += `<div class="diff-line-added">${escapedSuggested}</div>`;
+            } else {
+                currentHtml += `<div class="diff-line-removed">${escapedCurrent}</div>`;
+                suggestedHtml += `<div class="diff-line-added">${escapedSuggested}</div>`;
+            }
+        } else {
+            currentHtml += `<div>${escapedCurrent}</div>`;
+            suggestedHtml += `<div>${escapedSuggested}</div>`;
+        }
+    }
+
+    // Handle empty current code
+    if (!pendingCodeSuggestion.currentCode) {
+        currentHtml = '<div style="color: #858585; font-style: italic;">No existing code in editor</div>';
+    }
+
+    codePreviewCurrent.innerHTML = currentHtml;
+    codePreviewSuggested.innerHTML = suggestedHtml;
+}
+
+function escapeHtmlForDiff(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function closeCodePreview() {
+    pendingCodeSuggestion = null;
+    codePreviewPanel.classList.remove('open');
+}
+
+// Button Event Listeners for Code Preview
+acceptCodeBtn.addEventListener('click', () => {
+    if (!pendingCodeSuggestion) return;
+
+    // Apply code to editor
+    setPlaywrightCode(pendingCodeSuggestion.code);
+
+    // Update or create tab
+    if (pendingCodeSuggestion.targetTabId) {
+        const tab = openTabs.find(t => t.id === pendingCodeSuggestion.targetTabId);
+        if (tab) {
+            tab.code = pendingCodeSuggestion.code;
+            tab.isDirty = true;
+            renderTabs();
+        }
+    } else {
+        const tempId = 'chat_' + Date.now();
+        openTab(tempId, 'AI Generated', pendingCodeSuggestion.code);
+        const tab = openTabs.find(t => t.id === tempId);
+        if (tab) {
+            tab.isDirty = true;
+            lastSavedCode = '';
+        }
+        renderTabs();
+    }
+
+    addLogEntry('success', '✓ Code suggestion accepted and applied');
+    appendChatMessage('system', '✓ Code applied to editor');
+
+    closeCodePreview();
+});
+
+rejectCodeBtn.addEventListener('click', () => {
+    if (!pendingCodeSuggestion) return;
+
+    addLogEntry('info', '✗ Code suggestion rejected');
+    appendChatMessage('system', '✗ Suggestion rejected - editor unchanged');
+
+    closeCodePreview();
+});
+
+closePreviewBtn.addEventListener('click', () => {
+    closeCodePreview();
+});
+
+// Keyboard Shortcuts for Code Preview
+document.addEventListener('keydown', (e) => {
+    if (!codePreviewPanel.classList.contains('open')) return;
+
+    // Cmd/Ctrl + Enter = Accept
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        acceptCodeBtn.click();
+    }
+
+    // Escape = Close (only if preview panel is open, not chat sidebar)
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        closePreviewBtn.click();
+    }
+});
+
 // Event listeners for chat
 sendChatBtn.addEventListener('click', sendChatMessage);
 
@@ -1759,9 +1884,13 @@ chatInput.addEventListener('keypress', (e) => {
     }
 });
 
-// ESC to close chat
+// ESC to close chat (code preview takes priority if open)
 document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && aiChatSidebar.classList.contains('open')) {
+    // Code preview ESC handling is in the keyboard shortcuts section above
+    // Only close chat if code preview is NOT open
+    if (e.key === 'Escape' &&
+        aiChatSidebar.classList.contains('open') &&
+        !codePreviewPanel.classList.contains('open')) {
         aiChatSidebar.classList.remove('open');
         codeEditorSection.classList.remove('chat-open');
         toggleChatBtn.innerHTML = '<span style="margin-right: 4px;">💬</span> Chat';

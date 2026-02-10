@@ -1,0 +1,9 @@
+{
+  "name": "Loe",
+  "code": "from playwright.async_api import async_playwright\nimport asyncio\n\nasync def run():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=False)\n        page = await browser.new_page()\n\n        await page.goto(\"https://sunny.com\")\n        await page.wait_for_timeout(4000)\n\n        await browser.close()\n\nasyncio.run(run())",
+  "source": "ai",
+  "created": "2026-02-10T01:48:20.671781",
+  "updated": "2026-02-10T01:48:20.671804",
+  "last_run_status": "success",
+  "last_run_time": "2026-02-10T01:48:33.232407"
+}
