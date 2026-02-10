@@ -4,33 +4,18 @@
 const socket = io();
 
 // DOM Elements
-const testStepsTextarea = document.getElementById('test-steps');
-const runTestBtn = document.getElementById('run-test');
-const stopTestBtn = document.getElementById('stop-test');
-const recordTestBtn = document.getElementById('record-test');
-const loadExampleBtn = document.getElementById('load-example');
 const clearLogBtn = document.getElementById('clear-log');
 const browserScreenshot = document.getElementById('browser-screenshot');
 const browserStatus = document.getElementById('browser-status');
+const browserTestName = document.getElementById('browser-test-name');
+const browserLoading = document.getElementById('browser-loading');
 const humanLogContainer = document.getElementById('human-log-container');
 const technicalLogContainer = document.getElementById('technical-log-container');
 const screenshotTimestamp = document.getElementById('screenshot-timestamp');
-const exampleModal = document.getElementById('example-modal');
-const exampleList = document.getElementById('example-list');
-const closeModal = document.querySelector('.close');
-const recordModal = document.getElementById('record-modal');
-const closeRecordModal = document.querySelector('.close-record');
-const recordUrlInput = document.getElementById('record-url');
-const recordNameInput = document.getElementById('record-name');
-const startRecordingBtn = document.getElementById('start-recording');
-const cancelRecordingBtn = document.getElementById('cancel-recording');
 const logTabs = document.querySelectorAll('.log-tab');
-const playwrightCodeElement = document.getElementById('playwright-code');
-const runCodeBtn = document.getElementById('run-code');
-const copyCodeBtn = document.getElementById('copy-code');
-const saveTestBtn = document.getElementById('save-test');
-const refreshTestsBtn = document.getElementById('refresh-tests');
-const savedTestsList = document.getElementById('saved-tests-list');
+
+// CodeMirror Editor
+let codeMirrorEditor = null;
 
 // Chat elements
 const chatMessages = document.getElementById('chat-messages');
@@ -67,6 +52,16 @@ const newTestBtn = document.getElementById('new-test-btn');
 const closeAllTabsBtn = document.getElementById('close-all-tabs');
 const explorerResizer = document.getElementById('explorer-resizer');
 
+// AI Steps elements
+const aiStepsList = document.getElementById('ai-steps-list');
+const newAiStepBtn = document.getElementById('new-ai-step-btn');
+const aiStepModal = document.getElementById('ai-step-modal');
+const aiStepNameInput = document.getElementById('ai-step-name');
+const aiStepStepsInput = document.getElementById('ai-step-steps');
+const saveAiStepBtn = document.getElementById('save-ai-step-btn');
+const cancelAiStepBtn = document.getElementById('cancel-ai-step-btn');
+const closeAiStepModal = document.querySelector('.close-ai-step-modal');
+
 let openTabs = []; // Array of {id, name, code, isDirty}
 let activeTabId = null;
 
@@ -76,8 +71,22 @@ const hasFileExplorer = fileExplorer && fileList && editorTabsContainer && newTe
 let currentEditingTest = null;  // Track if we're editing an existing test
 let currentRecordingId = null;  // Track active recording
 let pendingCodegenTest = null;  // Track test info from codegen
+let currentEditingAiStep = null;  // Track if we're editing an existing AI step
+let currentRunningTestFilename = null;  // Track which saved test is currently running
 
 let isTestRunning = false;
+
+// Helper function to update browser status
+function updateBrowserStatus(status, text) {
+    if (!browserStatus) return;
+
+    // Remove all status classes
+    browserStatus.className = 'status-badge';
+
+    // Add new status class
+    browserStatus.classList.add(`status-${status.toLowerCase()}`);
+    browserStatus.textContent = text || status.toUpperCase();
+}
 
 // Socket.IO Event Handlers
 socket.on('connect', () => {
@@ -128,6 +137,14 @@ socket.on('log', (data) => {
 });
 
 socket.on('screenshot', (data) => {
+    // Hide loading state and show screenshot
+    if (browserLoading) {
+        browserLoading.classList.remove('active');
+    }
+    if (browserScreenshot) {
+        browserScreenshot.style.display = 'block';
+    }
+
     // Update browser screenshot (JPEG format for faster loading)
     browserScreenshot.src = `data:image/jpeg;base64,${data.image}`;
 
@@ -163,19 +180,15 @@ socket.on('agent_message', (data) => {
     if (content.includes('TEST PASSED:')) {
         const statusMsg = content.match(/TEST PASSED:.*$/)?.[0] || content;
         addLogEntry('success', `✅ ${content}`, `✅ ${statusMsg}`);
-        // Highlight in UI
-        browserStatus.textContent = 'PASSED';
-        browserStatus.style.background = '#10b981';
+        updateBrowserStatus('passed', 'PASSED');
     } else if (content.includes('TEST FAILED:')) {
         const statusMsg = content.match(/TEST FAILED:.*$/)?.[0] || content;
         addLogEntry('error', `❌ ${content}`, `❌ ${statusMsg}`);
-        browserStatus.textContent = 'FAILED';
-        browserStatus.style.background = '#ef4444';
+        updateBrowserStatus('failed', 'FAILED');
     } else if (content.includes('TEST ERROR:')) {
         const statusMsg = content.match(/TEST ERROR:.*$/)?.[0] || content;
         addLogEntry('error', `⚠️ ${content}`, `⚠️ ${statusMsg}`);
-        browserStatus.textContent = 'ERROR';
-        browserStatus.style.background = '#f59e0b';
+        updateBrowserStatus('error', 'ERROR');
     } else {
         // Extract meaningful info for human-readable view
         let humanMsg = '🤖 Agent is working...';
@@ -248,24 +261,85 @@ socket.on('agent_message', (data) => {
 
 socket.on('test_complete', (data) => {
     isTestRunning = false;
-    runTestBtn.disabled = false;
-    runTestBtn.textContent = '▶ Run Test';
-    runTestBtn.style.display = 'block';
-    stopTestBtn.style.display = 'none';
-    runCodeBtn.disabled = false;
-    runCodeBtn.textContent = '▶ Run Code';
-    browserStatus.textContent = 'Completed';
-    browserStatus.classList.remove('running');
 
     if (data.status === 'success') {
+        updateBrowserStatus('passed', 'PASSED');
         addLogEntry('success', '✅ Test completed successfully!', '🎉 Test completed!');
     } else if (data.status === 'stopped') {
+        updateBrowserStatus('stopped', 'STOPPED');
         addLogEntry('error', '⏹ Test stopped by user', '⏹ Test stopped');
-        browserStatus.textContent = 'Stopped';
-        browserStatus.style.background = '#f59e0b';
     } else {
+        updateBrowserStatus('failed', 'FAILED');
         const errorMsg = data.message || 'Unknown error';
         addLogEntry('error', `❌ Test failed: ${errorMsg}`, `❌ Test failed`);
+    }
+
+    // Update saved test status if this was a saved test run
+    if (currentRunningTestFilename) {
+        fetch(`/api/saved-tests/${currentRunningTestFilename}/status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: data.status })
+        })
+        .then(() => {
+            // Reload file explorer to show updated status
+            if (hasFileExplorer) {
+                loadFileExplorer();
+            }
+            currentRunningTestFilename = null;
+        })
+        .catch(err => console.error('Error updating test status:', err));
+    }
+});
+
+socket.on('ai_step_complete_with_code', (data) => {
+    // AI step completed successfully - prompt user to save generated code
+    isTestRunning = false;
+    updateBrowserStatus('passed', 'PASSED');
+    addLogEntry('success', '✅ AI Step completed successfully!', '🎉 AI Step completed!');
+
+    // Show confirmation dialog
+    const aiStepName = data.ai_step_name;
+    const suggestedTestName = `${aiStepName} - Generated Test`;
+
+    if (confirm(`✅ AI Step "${aiStepName}" completed successfully!\n\nWould you like to save the generated Playwright code as a new test?`)) {
+        // User wants to save - prompt for test name
+        const testName = prompt('Enter a name for the generated test:', suggestedTestName);
+
+        if (testName && testName.trim()) {
+            // Save the generated code as a new test
+            fetch('/api/save-test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: testName.trim(),
+                    code: data.code,
+                    source: 'ai_step'
+                })
+            })
+            .then(res => res.json())
+            .then(result => {
+                if (result.success) {
+                    addLogEntry('success', `💾 Saved generated test: ${testName}`);
+
+                    // Reload file explorer
+                    if (hasFileExplorer) {
+                        loadFileExplorer();
+                    }
+
+                    // Open the new test in a tab
+                    openTab(result.filename, testName, data.code, 'test');
+                } else {
+                    alert('Error saving test: ' + (result.error || 'Unknown error'));
+                }
+            })
+            .catch(err => {
+                alert('Failed to save test: ' + err);
+            });
+        }
+    } else {
+        // User declined - just show the regular test_complete event
+        addLogEntry('info', 'Generated code not saved (you can still see it in the editor)');
     }
 });
 
@@ -293,16 +367,13 @@ socket.on('codegen_complete', (data) => {
         source: 'codegen'
     };
 
-    // Pre-fill save button
-    saveTestBtn.textContent = '💾 Save Recorded Test';
-
     addLogEntry('success', '✅ Recording complete! Code generated.', '✅ Recording complete!');
 
-    // Close modal
-    recordModal.style.display = 'none';
-
     // Scroll to code section
-    playwrightCodeElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const editorElement = document.getElementById('codemirror-editor');
+    if (editorElement) {
+        editorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
 });
 
 socket.on('codegen_error', (data) => {
@@ -313,179 +384,15 @@ socket.on('codegen_error', (data) => {
 
     addLogEntry('error', `❌ Recording failed: ${data.message}`, '❌ Recording failed');
 
-    // Close modal
-    recordModal.style.display = 'none';
-
     alert(`Recording failed:\n${data.message}`);
 });
 
 // UI Event Handlers
-recordTestBtn.addEventListener('click', () => {
-    // Show record modal
-    recordModal.style.display = 'block';
-    recordUrlInput.value = '';
-    recordNameInput.value = '';
-    recordUrlInput.focus();
-});
+// Record, Run Test, Load Example, and Refresh buttons removed - use AI Steps section and file explorer instead
 
-startRecordingBtn.addEventListener('click', async () => {
-    const url = recordUrlInput.value.trim();
-    const name = recordNameInput.value.trim();
+// Run Test and Stop Test buttons removed - use AI Steps section instead
 
-    if (!url) {
-        alert('Please enter a URL');
-        recordUrlInput.focus();
-        return;
-    }
-
-    // Disable button during request
-    startRecordingBtn.disabled = true;
-    startRecordingBtn.textContent = '⏳ Starting...';
-
-    try {
-        const response = await fetch('/api/start-codegen', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, name })
-        });
-
-        const data = await response.json();
-
-        if (data.success) {
-            currentRecordingId = data.recording_id;
-            addLogEntry('info', `🎥 Starting recording for ${url}`, '🎥 Recording starting...');
-
-            // Keep modal open with status message
-            startRecordingBtn.textContent = '🎥 Recording... (Close Playwright window when done)';
-        } else {
-            const errorMsg = data.error || 'Unknown error';
-
-            // Show user-friendly message
-            if (errorMsg.includes('not available in cloud')) {
-                alert('⚠️ Recording Feature Unavailable\n\n' +
-                      'The Playwright codegen recording feature requires a local environment with GUI support.\n\n' +
-                      'In Cloud Run/cloud deployments, please use the AI-driven test creation instead:\n' +
-                      '• Write test steps in natural language\n' +
-                      '• Click "Run Test"\n' +
-                      '• AI will execute and generate code\n\n' +
-                      'Recording is available when running locally.');
-            } else {
-                alert(`Failed to start recording:\n${errorMsg}`);
-            }
-
-            startRecordingBtn.disabled = false;
-            startRecordingBtn.textContent = 'Start Recording';
-            recordModal.style.display = 'none';
-        }
-    } catch (error) {
-        alert(`Failed to start recording: ${error.message}`);
-        startRecordingBtn.disabled = false;
-        startRecordingBtn.textContent = 'Start Recording';
-    }
-});
-
-cancelRecordingBtn.addEventListener('click', () => {
-    recordModal.style.display = 'none';
-    startRecordingBtn.disabled = false;
-    startRecordingBtn.textContent = 'Start Recording';
-});
-
-closeRecordModal.addEventListener('click', () => {
-    recordModal.style.display = 'none';
-    startRecordingBtn.disabled = false;
-    startRecordingBtn.textContent = 'Start Recording';
-});
-
-runTestBtn.addEventListener('click', () => {
-    const task = testStepsTextarea.value.trim();
-
-    if (!task) {
-        alert('Please enter test steps');
-        return;
-    }
-
-    if (isTestRunning) {
-        alert('A test is already running');
-        return;
-    }
-
-    // Clear previous results
-    humanLogContainer.innerHTML = '';
-    technicalLogContainer.innerHTML = '';
-    setPlaywrightCode('');
-
-    // Reset editing state
-    currentEditingTest = null;
-    pendingCodegenTest = null;
-    saveTestBtn.textContent = '💾 Save';
-
-    // Update UI
-    isTestRunning = true;
-    runTestBtn.style.display = 'none';
-    stopTestBtn.style.display = 'block';
-    browserStatus.textContent = 'Running';
-    browserStatus.classList.add('running');
-    browserStatus.style.background = '';
-
-    // Automatically open browser sidebar when test starts
-    if (!browserSidebar.classList.contains('open')) {
-        const codeEditorContainer = document.querySelector('.code-editor-container');
-        browserSidebar.classList.add('open');
-        codeEditorContainer.classList.add('browser-open');
-        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
-        toggleBrowserBtn.classList.add('active');
-    }
-
-    // Automatically open output panel to show logs
-    openOutputPanel();
-
-    // Send test to server
-    socket.emit('run_test', { task });
-
-    addLogEntry('info', '🚀 Starting test execution...');
-});
-
-stopTestBtn.addEventListener('click', () => {
-    if (!isTestRunning) {
-        return;
-    }
-
-    addLogEntry('info', '⏹ Stopping test...');
-    socket.emit('stop_test');
-
-    // Update UI immediately
-    stopTestBtn.disabled = true;
-    stopTestBtn.textContent = '⏳ Stopping...';
-});
-
-loadExampleBtn.addEventListener('click', async () => {
-    // Load example tests from server
-    try {
-        const response = await fetch('/api/example-tests');
-        const examples = await response.json();
-
-        // Display examples in modal
-        exampleList.innerHTML = '';
-        examples.forEach(example => {
-            const div = document.createElement('div');
-            div.className = 'example-item';
-            div.innerHTML = `
-                <h3>${example.name}</h3>
-                <p>${example.url}</p>
-            `;
-            div.onclick = () => {
-                testStepsTextarea.value = example.steps;
-                exampleModal.style.display = 'none';
-                addLogEntry('info', `Loaded example: ${example.name}`);
-            };
-            exampleList.appendChild(div);
-        });
-
-        exampleModal.style.display = 'block';
-    } catch (error) {
-        addLogEntry('error', `Failed to load examples: ${error.message}`);
-    }
-});
+// Load Example button removed - use AI Steps section instead
 
 clearLogBtn.addEventListener('click', () => {
     humanLogContainer.innerHTML = '';
@@ -493,66 +400,8 @@ clearLogBtn.addEventListener('click', () => {
     addLogEntry('info', 'Log cleared');
 });
 
-// Run Code button - Execute Playwright code with live browser preview
-runCodeBtn.addEventListener('click', () => {
-    const code = getPlaywrightCode();
-    if (!code || code.trim() === '') {
-        alert('No code to run. Please write or generate some Playwright code first.');
-        return;
-    }
-
-    if (isTestRunning) {
-        alert('A test is already running');
-        return;
-    }
-
-    // Clear previous results
-    humanLogContainer.innerHTML = '';
-    technicalLogContainer.innerHTML = '';
-
-    // Update UI
-    isTestRunning = true;
-    runCodeBtn.disabled = true;
-    runCodeBtn.textContent = '⏳ Running...';
-    browserStatus.textContent = 'Running';
-    browserStatus.classList.add('running');
-    browserStatus.style.background = '';
-
-    // Automatically open browser sidebar
-    if (!browserSidebar.classList.contains('open')) {
-        const codeEditorContainer = document.querySelector('.code-editor-container');
-        browserSidebar.classList.add('open');
-        codeEditorContainer.classList.add('browser-open');
-        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
-        toggleBrowserBtn.classList.add('active');
-    }
-
-    // Automatically open output panel to show logs
-    openOutputPanel();
-
-    // Send code to backend for execution
-    socket.emit('run_playwright_code', { code });
-
-    addLogEntry('info', '▶️ Executing Playwright code...');
-});
-
-copyCodeBtn.addEventListener('click', () => {
-    const code = getPlaywrightCode();
-    if (code) {
-        navigator.clipboard.writeText(code).then(() => {
-            copyCodeBtn.textContent = '✓ Copied!';
-            setTimeout(() => {
-                copyCodeBtn.textContent = '📋 Copy';
-            }, 2000);
-        }).catch(err => {
-            alert('Failed to copy code: ' + err);
-        });
-    } else {
-        alert('No code to copy yet. Run a test first!');
-    }
-});
-
-saveTestBtn.addEventListener('click', () => {
+// Save current test - used by Cmd+S keyboard shortcut and context menu
+function saveCurrentTest() {
     const code = getPlaywrightCode();
     if (!code) {
         alert('No code to save!');
@@ -560,10 +409,38 @@ saveTestBtn.addEventListener('click', () => {
     }
 
     // Check if we're editing an existing tab
-    if (activeTabId && !activeTabId.startsWith('new_')) {
+    // Temporary tabs start with: 'new_', 'generated_', or 'chat_'
+    if (activeTabId && !activeTabId.startsWith('new_') && !activeTabId.startsWith('generated_') && !activeTabId.startsWith('chat_')) {
         // Updating existing saved test
         const tab = openTabs.find(t => t.id === activeTabId);
         if (!tab) return;
+
+        // Handle AI Step saves
+        if (tab.fileType === 'ai-step') {
+            if (!confirm(`Save changes to AI Step "${tab.name}"?`)) return;
+
+            fetch(`/api/ai-steps/${activeTabId}/markdown`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ markdown: code })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    addLogEntry('success', `💾 Saved AI Step: ${tab.name}`);
+                    tab.isDirty = false;
+                    tab.code = code;
+                    lastSavedCode = code;
+                    renderTabs();
+                    loadAiSteps();
+                } else {
+                    alert('Error saving: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(err => alert('Error saving: ' + err));
+
+            return;
+        }
 
         if (!confirm(`Save changes to "${tab.name}"?`)) return;
 
@@ -611,8 +488,8 @@ saveTestBtn.addEventListener('click', () => {
             if (data.success) {
                 addLogEntry('success', `💾 Saved: ${name}`);
 
-                // Close old tab if it was a "new" tab
-                if (activeTabId && activeTabId.startsWith('new_')) {
+                // Close old tab if it was a temporary tab (new, generated, or chat)
+                if (activeTabId && (activeTabId.startsWith('new_') || activeTabId.startsWith('generated_') || activeTabId.startsWith('chat_'))) {
                     const oldTabIndex = openTabs.findIndex(t => t.id === activeTabId);
                     if (oldTabIndex !== -1) {
                         openTabs.splice(oldTabIndex, 1);
@@ -633,68 +510,9 @@ saveTestBtn.addEventListener('click', () => {
             alert('Failed to save: ' + err);
         });
     }
-});
-
-refreshTestsBtn.addEventListener('click', () => {
-    loadFileExplorer();
-});
-
-function loadSavedTests() {
-    // Load both file explorer and saved tests list
-    loadFileExplorer();
-
-    // Also update the top-left saved tests list
-    fetch('/api/saved-tests')
-        .then(res => res.json())
-        .then(tests => {
-            savedTestsList.innerHTML = '';
-            if (tests.length === 0) {
-                savedTestsList.innerHTML = '<p style="text-align: center; color: #6b7280; padding: 20px;">No saved tests yet. Save a test after it passes!</p>';
-                return;
-            }
-
-            tests.forEach(test => {
-                const item = document.createElement('div');
-                item.className = 'saved-test-item';
-
-                const created = new Date(test.created).toLocaleString();
-                const source = test.source || 'ai';
-                const sourceBadge = source === 'codegen'
-                    ? '<span class="saved-test-source codegen">🎥 Recorded</span>'
-                    : '<span class="saved-test-source ai">🤖 AI Generated</span>';
-
-                item.innerHTML = `
-                    <div class="saved-test-info">
-                        <div class="saved-test-name">${escapeHtml(test.name)} ${sourceBadge}</div>
-                        <div class="saved-test-date">Saved: ${created}</div>
-                    </div>
-                    <div class="saved-test-actions">
-                        <button class="btn btn-primary btn-small test-run-btn" data-filename="${test.filename}" data-name="${escapeHtml(test.name)}">▶ Run</button>
-                        <button class="btn btn-secondary btn-small test-open-btn" data-filename="${test.filename}" data-name="${escapeHtml(test.name)}">📂 Open</button>
-                    </div>
-                `;
-
-                // Add event listeners
-                const runBtn = item.querySelector('.test-run-btn');
-                const openBtn = item.querySelector('.test-open-btn');
-
-                runBtn.addEventListener('click', () => {
-                    runSavedTest(test.filename, test.name);
-                });
-
-                openBtn.addEventListener('click', () => {
-                    openFileFromExplorer(test.filename, test.name);
-                    // Scroll to code editor
-                    playwrightCodeElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                });
-
-                savedTestsList.appendChild(item);
-            });
-        })
-        .catch(err => {
-            console.error('Failed to load saved tests:', err);
-        });
 }
+
+// Refresh and load saved tests functions removed - file explorer handles this now
 
 function runSavedTest(filename, name) {
     if (isTestRunning) {
@@ -702,19 +520,31 @@ function runSavedTest(filename, name) {
         return;
     }
 
+    // Track the running test for status update
+    currentRunningTestFilename = filename;
+
     // Clear previous results
     humanLogContainer.innerHTML = '';
     technicalLogContainer.innerHTML = '';
 
     addLogEntry('info', `🚀 Running: ${name} (no AI tokens used!)`, `🚀 Running: ${name}`);
     isTestRunning = true;
-    runTestBtn.style.display = 'none';
-    stopTestBtn.style.display = 'block';
-    runCodeBtn.disabled = true;
-    runCodeBtn.textContent = '⏳ Running...';
-    browserStatus.textContent = 'Running';
-    browserStatus.classList.add('running');
-    browserStatus.style.background = '';
+
+    // Update browser header with test name and status
+    if (browserTestName) {
+        browserTestName.textContent = name;
+    }
+    updateBrowserStatus('running', 'RUNNING');
+
+    // Show loading state in browser preview
+    if (browserLoading) {
+        browserLoading.classList.add('active');
+        browserLoading.querySelector('.loading-text').textContent = 'Starting browser...';
+        browserLoading.querySelector('.loading-subtext').textContent = 'Initializing Playwright session';
+    }
+    if (browserScreenshot) {
+        browserScreenshot.style.display = 'none';
+    }
 
     // Automatically open browser sidebar
     if (!browserSidebar.classList.contains('open')) {
@@ -732,7 +562,7 @@ function runSavedTest(filename, name) {
 }
 
 // Tab Management Functions
-function openTab(filename, name, code) {
+function openTab(filename, name, code, fileType = 'test') {
     // Check if tab is already open
     const existingTab = openTabs.find(tab => tab.id === filename);
     if (existingTab) {
@@ -745,11 +575,16 @@ function openTab(filename, name, code) {
         id: filename,
         name: name,
         code: code,
-        isDirty: false
+        isDirty: false,
+        fileType: fileType  // 'test' or 'ai-step'
     });
+
+    // Hide welcome page before switching to tab
+    hideWelcomePage();
 
     renderTabs();
     switchToTab(filename);
+    saveTabsState();  // Save state when opening a new tab
 }
 
 function closeTab(filename) {
@@ -782,6 +617,7 @@ function closeTab(filename) {
     }
 
     renderTabs();
+    saveTabsState();  // Save state when closing a tab
 }
 
 function switchToTab(filename) {
@@ -789,10 +625,246 @@ function switchToTab(filename) {
     if (!tab) return;
 
     activeTabId = filename;
+    lastSavedCode = tab.code;  // Set lastSavedCode to prevent false dirty flag
     setPlaywrightCode(tab.code);
+
+    // Set CodeMirror mode based on file type
+    if (codeMirrorEditor) {
+        const mode = tab.fileType === 'ai-step' ? 'markdown' : 'python';
+        codeMirrorEditor.setOption('mode', mode);
+    }
+
     if (editorContent) editorContent.classList.remove('empty');
+    hideWelcomePage();
     renderTabs();
     updateFileListActiveState();
+    saveTabsState();  // Save state when switching tabs
+}
+
+// Tab State Persistence Functions
+function saveTabsState() {
+    try {
+        const tabsState = {
+            openTabs: openTabs.map(tab => ({
+                id: tab.id,
+                name: tab.name,
+                fileType: tab.fileType  // Save file type
+                // Don't save code or isDirty, we'll reload fresh from files
+            })),
+            activeTabId: activeTabId
+        };
+        localStorage.setItem('editorTabsState', JSON.stringify(tabsState));
+    } catch (err) {
+        console.error('Error saving tabs state:', err);
+    }
+}
+
+async function restoreTabsState() {
+    try {
+        const savedState = localStorage.getItem('editorTabsState');
+        if (!savedState) return;
+
+        const tabsState = JSON.parse(savedState);
+        if (!tabsState.openTabs || tabsState.openTabs.length === 0) return;
+
+        // Restore each tab
+        for (const tabInfo of tabsState.openTabs) {
+            // Only restore saved test files (not temporary tabs like new_, generated_, chat_)
+            if (!tabInfo.id.startsWith('new_') &&
+                !tabInfo.id.startsWith('generated_') &&
+                !tabInfo.id.startsWith('chat_')) {
+
+                try {
+                    // Handle AI step restoration
+                    if (tabInfo.fileType === 'ai-step') {
+                        const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown`);
+                        if (response.ok) {
+                            const data = await response.json();
+                            const existingTab = openTabs.find(t => t.id === tabInfo.id);
+                            if (!existingTab) {
+                                openTabs.push({
+                                    id: tabInfo.id,
+                                    name: tabInfo.name,
+                                    code: data.markdown,
+                                    isDirty: false,
+                                    fileType: 'ai-step'
+                                });
+                            }
+                        }
+                    } else {
+                        // Fetch regular test file content
+                        const response = await fetch(`/api/saved-tests/${tabInfo.id}`);
+                        if (response.ok) {
+                            const data = await response.json();
+
+                            // Open the tab (without triggering saveTabsState recursively)
+                            const existingTab = openTabs.find(t => t.id === tabInfo.id);
+                            if (!existingTab) {
+                                openTabs.push({
+                                    id: tabInfo.id,
+                                    name: tabInfo.name,
+                                    code: data.code,
+                                    isDirty: false,
+                                    fileType: 'test'
+                                });
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.error(`Error restoring tab ${tabInfo.id}:`, err);
+                }
+            }
+        }
+
+        // Render all tabs
+        if (openTabs.length > 0) {
+            hideWelcomePage();
+            renderTabs();
+
+            // Switch to the previously active tab
+            const activeTab = tabsState.activeTabId && openTabs.find(t => t.id === tabsState.activeTabId);
+            if (activeTab) {
+                switchToTab(tabsState.activeTabId);
+            } else {
+                // If active tab no longer exists, switch to first tab
+                switchToTab(openTabs[0].id);
+            }
+        }
+    } catch (err) {
+        console.error('Error restoring tabs state:', err);
+    }
+}
+
+// Welcome Page Functions
+async function showWelcomePage() {
+    if (!codeMirrorEditor) return;
+
+    // Fetch statistics
+    const stats = await fetchTestStatistics();
+
+    // Create welcome page HTML
+    const welcomeHTML = `
+        <div class="welcome-page">
+            <div class="welcome-header">
+                <h1>🤖 AutoGen Web Tester</h1>
+                <p class="welcome-subtitle">AI-powered browser automation and testing</p>
+            </div>
+
+            <div class="welcome-stats">
+                <div class="stat-card">
+                    <div class="stat-icon">📝</div>
+                    <div class="stat-content">
+                        <div class="stat-number">${stats.totalTests}</div>
+                        <div class="stat-label">Saved Tests</div>
+                    </div>
+                </div>
+
+                <div class="stat-card stat-success">
+                    <div class="stat-icon">✓</div>
+                    <div class="stat-content">
+                        <div class="stat-number">${stats.passedTests}</div>
+                        <div class="stat-label">Passed</div>
+                    </div>
+                </div>
+
+                <div class="stat-card stat-error">
+                    <div class="stat-icon">✗</div>
+                    <div class="stat-content">
+                        <div class="stat-number">${stats.failedTests}</div>
+                        <div class="stat-label">Failed</div>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon">🤖</div>
+                    <div class="stat-content">
+                        <div class="stat-number">${stats.aiSteps}</div>
+                        <div class="stat-label">AI Steps</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="welcome-actions">
+                <h3>Get Started</h3>
+                <div class="action-buttons">
+                    <button class="action-btn" onclick="document.getElementById('new-test-btn').click()">
+                        <span class="action-icon">➕</span>
+                        <div>
+                            <div class="action-title">New Test</div>
+                            <div class="action-desc">Create a new Playwright test</div>
+                        </div>
+                    </button>
+                    <button class="action-btn" onclick="document.getElementById('new-ai-step-btn').click()">
+                        <span class="action-icon">🤖</span>
+                        <div>
+                            <div class="action-title">New AI Step</div>
+                            <div class="action-desc">Write tests in natural language</div>
+                        </div>
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Hide CodeMirror and show welcome page
+    const editorElement = document.getElementById('codemirror-editor');
+    if (editorElement) {
+        const cmWrapper = editorElement.querySelector('.CodeMirror');
+        if (cmWrapper) cmWrapper.style.display = 'none';
+
+        // Remove existing welcome page if any
+        const existingWelcome = editorElement.querySelector('.welcome-page');
+        if (existingWelcome) existingWelcome.remove();
+
+        // Insert welcome page
+        editorElement.insertAdjacentHTML('beforeend', welcomeHTML);
+    }
+}
+
+function hideWelcomePage() {
+    if (!codeMirrorEditor) return;
+
+    const editorElement = document.getElementById('codemirror-editor');
+    if (editorElement) {
+        const cmWrapper = editorElement.querySelector('.CodeMirror');
+        if (cmWrapper) cmWrapper.style.display = '';
+
+        const welcomePage = editorElement.querySelector('.welcome-page');
+        if (welcomePage) welcomePage.remove();
+    }
+}
+
+async function fetchTestStatistics() {
+    try {
+        // Fetch saved tests
+        const testsResponse = await fetch('/api/saved-tests');
+        const tests = await testsResponse.json();
+
+        // Fetch AI steps
+        const aiStepsResponse = await fetch('/api/ai-steps');
+        const aiSteps = await aiStepsResponse.json();
+
+        // Calculate statistics
+        const totalTests = tests.length;
+        const passedTests = tests.filter(t => t.last_run_status === 'success').length;
+        const failedTests = tests.filter(t => t.last_run_status === 'error' || t.last_run_status === 'stopped').length;
+        const aiStepsCount = aiSteps.length;
+
+        return {
+            totalTests,
+            passedTests,
+            failedTests,
+            aiSteps: aiStepsCount
+        };
+    } catch (err) {
+        console.error('Error fetching statistics:', err);
+        return {
+            totalTests: 0,
+            passedTests: 0,
+            failedTests: 0,
+            aiSteps: 0
+        };
+    }
 }
 
 function renderTabs() {
@@ -800,12 +872,19 @@ function renderTabs() {
 
     editorTabsContainer.innerHTML = '';
 
+    // Show welcome page if no tabs are open
+    if (openTabs.length === 0) {
+        showWelcomePage();
+        return;
+    }
+
     openTabs.forEach(tab => {
         const tabEl = document.createElement('div');
         tabEl.className = 'editor-tab' + (tab.id === activeTabId ? ' active' : '') + (tab.isDirty ? ' dirty' : '');
 
+        const icon = tab.fileType === 'ai-step' ? '🤖' : '📄';
         tabEl.innerHTML = `
-            <span class="editor-tab-icon">📄</span>
+            <span class="editor-tab-icon">${icon}</span>
             <span class="editor-tab-name">${escapeHtml(tab.name)}</span>
             <button class="editor-tab-close" data-tab-id="${tab.id}">×</button>
         `;
@@ -837,6 +916,19 @@ function updateFileListActiveState() {
             item.classList.remove('active');
         }
     });
+
+    // Also highlight active AI step in sidebar
+    if (aiStepsList) {
+        const aiStepItems = aiStepsList.querySelectorAll('.file-item');
+        aiStepItems.forEach(item => {
+            const filename = item.dataset.filename;
+            if (filename === activeTabId) {
+                item.classList.add('active');
+            } else {
+                item.classList.remove('active');
+            }
+        });
+    }
 }
 
 // File Explorer Functions
@@ -863,9 +955,18 @@ function loadFileExplorer() {
 
                 const sourceIcon = test.source === 'codegen' ? '🎥' : '🤖';
 
+                // Status icon based on last run
+                let statusIcon = '';
+                if (test.last_run_status === 'success') {
+                    statusIcon = '<span class="test-status test-status-success" title="Last run: Passed">✓</span>';
+                } else if (test.last_run_status === 'error' || test.last_run_status === 'stopped') {
+                    statusIcon = '<span class="test-status test-status-error" title="Last run: Failed">✗</span>';
+                }
+
                 fileItem.innerHTML = `
                     <span class="file-item-icon">${sourceIcon}</span>
                     <span class="file-item-name">${escapeHtml(test.name)}</span>
+                    ${statusIcon}
                     <div class="file-item-actions">
                         <button class="file-item-action" data-action="run" title="Run Test">▶</button>
                         <button class="file-item-action" data-action="delete" title="Delete">🗑</button>
@@ -1009,43 +1110,243 @@ if (closeAllTabsBtn) {
         if (editorContent) editorContent.classList.add('empty');
         renderTabs();
         updateFileListActiveState();
+        saveTabsState();  // Save state when closing all tabs
     });
 }
 
-// Track code changes to mark tabs as dirty
+// Track code changes to mark tabs as dirty (handled in CodeMirror change event)
 let lastSavedCode = '';
-playwrightCodeElement.addEventListener('input', () => {
-    const currentCode = getPlaywrightCode();
-    if (activeTabId && currentCode !== lastSavedCode) {
-        const tab = openTabs.find(t => t.id === activeTabId);
-        if (tab) {
-            tab.isDirty = true;
-            tab.code = currentCode;
-            renderTabs();
-        }
-    }
-});
 
 // Load file explorer on page load
 window.addEventListener('load', () => {
     if (hasFileExplorer) {
         loadFileExplorer();
+        loadAiSteps();
         if (editorContent) editorContent.classList.add('empty');
     }
 });
 
-closeModal.addEventListener('click', () => {
-    exampleModal.style.display = 'none';
-});
+// ========================================
+// AI STEPS FUNCTIONALITY
+// ========================================
 
-window.addEventListener('click', (event) => {
-    if (event.target === exampleModal) {
-        exampleModal.style.display = 'none';
+async function loadAiSteps() {
+    if (!aiStepsList) {
+        console.warn('AI steps list element not found');
+        return;
     }
-    if (event.target === recordModal) {
-        recordModal.style.display = 'none';
-        startRecordingBtn.disabled = false;
-        startRecordingBtn.textContent = 'Start Recording';
+
+    try {
+        const response = await fetch('/api/ai-steps');
+        const steps = await response.json();
+
+        aiStepsList.innerHTML = '';
+
+        if (steps.length === 0) {
+            aiStepsList.innerHTML = '<div class="file-list-empty">No AI steps yet</div>';
+            return;
+        }
+
+        steps.forEach(step => {
+            const item = document.createElement('div');
+            item.className = 'file-item';
+            item.dataset.filename = step.filename;
+            item.innerHTML = `
+                <span class="file-item-icon">🤖</span>
+                <span class="file-item-name">${escapeHtml(step.name)}</span>
+                <div class="file-item-actions">
+                    <button class="file-item-action" data-action="run" title="Run AI Step">▶</button>
+                    <button class="file-item-action" data-action="edit" title="Edit">✏️</button>
+                    <button class="file-item-action" data-action="delete" title="Delete">🗑</button>
+                </div>
+            `;
+
+            // Event listeners
+            const runBtn = item.querySelector('[data-action="run"]');
+            const editBtn = item.querySelector('[data-action="edit"]');
+            const deleteBtn = item.querySelector('[data-action="delete"]');
+
+            runBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                runAiStep(step.filename, step.name);
+            });
+
+            editBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openAiStepInEditor(step.filename, step.name);
+            });
+
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                deleteAiStep(step.filename, step.name);
+            });
+
+            // Click handler for entire item
+            item.addEventListener('click', (e) => {
+                if (!e.target.closest('.file-item-actions')) {
+                    openAiStepInEditor(step.filename, step.name);
+                }
+            });
+
+            aiStepsList.appendChild(item);
+        });
+    } catch (err) {
+        console.error('Failed to load AI steps:', err);
+        aiStepsList.innerHTML = '<div class="file-list-empty">Error loading AI steps</div>';
+    }
+}
+
+function runAiStep(filename, name) {
+    if (isTestRunning) {
+        alert('A test is already running');
+        return;
+    }
+
+    // Clear previous results
+    humanLogContainer.innerHTML = '';
+    technicalLogContainer.innerHTML = '';
+    setPlaywrightCode('');
+
+    // Update UI
+    isTestRunning = true;
+
+    // Update browser header with test name and status
+    if (browserTestName) {
+        browserTestName.textContent = name;
+    }
+    updateBrowserStatus('running', 'RUNNING');
+
+    // Show loading state in browser preview
+    if (browserLoading) {
+        browserLoading.classList.add('active');
+        browserLoading.querySelector('.loading-text').textContent = 'Running AI steps...';
+        browserLoading.querySelector('.loading-subtext').textContent = 'Agent is automating your test';
+    }
+    if (browserScreenshot) {
+        browserScreenshot.style.display = 'none';
+    }
+
+    // Open browser sidebar and output panel
+    if (!browserSidebar.classList.contains('open')) {
+        const codeEditorContainer = document.querySelector('.code-editor-container');
+        browserSidebar.classList.add('open');
+        codeEditorContainer.classList.add('browser-open');
+        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
+        toggleBrowserBtn.classList.add('active');
+    }
+    openOutputPanel();
+
+    // Emit run AI step event
+    socket.emit('run_ai_step', { filename });
+
+    addLogEntry('info', `🤖 Running AI steps: ${name}`);
+}
+
+function openAiStepInEditor(filename, name) {
+    fetch(`/api/ai-steps/${filename}/markdown`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.markdown) {
+                openTab(filename, name, data.markdown, 'ai-step');
+            }
+        })
+        .catch(err => {
+            alert('Failed to load AI step: ' + err);
+        });
+}
+
+function showAiStepModal(filename = null, name = '', steps = '') {
+    if (!aiStepModal) return;
+
+    currentEditingAiStep = filename;
+    aiStepNameInput.value = name;
+    aiStepStepsInput.value = steps;
+    aiStepModal.style.display = 'block';
+}
+
+function editAiStep(filename, name, steps) {
+    showAiStepModal(filename, name, steps);
+}
+
+async function saveAiStep() {
+    const name = aiStepNameInput.value.trim();
+    const steps = aiStepStepsInput.value.trim();
+
+    if (!name || !steps) {
+        alert('Please enter both name and steps');
+        return;
+    }
+
+    const method = currentEditingAiStep ? 'PUT' : 'POST';
+    const url = currentEditingAiStep
+        ? `/api/ai-steps/${currentEditingAiStep}`
+        : '/api/ai-steps';
+
+    try {
+        const response = await fetch(url, {
+            method,
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, steps})
+        });
+
+        if (response.ok) {
+            loadAiSteps();
+            aiStepModal.style.display = 'none';
+            addLogEntry('success', `💾 AI step saved: ${name}`);
+        } else {
+            alert('Failed to save AI step');
+        }
+    } catch (err) {
+        alert('Failed to save AI step: ' + err);
+    }
+}
+
+async function deleteAiStep(filename, name) {
+    if (!confirm(`Delete AI step "${name}"?`)) return;
+
+    try {
+        const response = await fetch(`/api/ai-steps/${filename}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            loadAiSteps();
+            addLogEntry('info', `Deleted AI step: ${name}`);
+        } else {
+            alert('Failed to delete AI step');
+        }
+    } catch (err) {
+        alert('Failed to delete AI step: ' + err);
+    }
+}
+
+// Event Listeners for AI Steps
+if (newAiStepBtn) {
+    newAiStepBtn.addEventListener('click', () => {
+        showAiStepModal();
+    });
+}
+
+if (saveAiStepBtn) {
+    saveAiStepBtn.addEventListener('click', saveAiStep);
+}
+
+if (cancelAiStepBtn) {
+    cancelAiStepBtn.addEventListener('click', () => {
+        aiStepModal.style.display = 'none';
+    });
+}
+
+if (closeAiStepModal) {
+    closeAiStepModal.addEventListener('click', () => {
+        aiStepModal.style.display = 'none';
+    });
+}
+
+// Modal click handlers
+window.addEventListener('click', (event) => {
+    if (event.target === aiStepModal) {
+        aiStepModal.style.display = 'none';
     }
 });
 
@@ -1095,6 +1396,28 @@ closeBrowserSidebarBtn.addEventListener('click', () => {
     codeEditorContainer.classList.remove('browser-open');
     toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
     toggleBrowserBtn.classList.remove('active');
+});
+
+// Close browser sidebar when clicking outside (but not on logs)
+document.addEventListener('click', (e) => {
+    // Only proceed if browser sidebar is open
+    if (!browserSidebar.classList.contains('open')) return;
+
+    // Check if click is inside browser sidebar or its toggle button
+    const clickInsideBrowser = browserSidebar.contains(e.target);
+    const clickOnToggleButton = toggleBrowserBtn.contains(e.target);
+
+    // Check if click is inside output panel (logs)
+    const clickInsideLogs = outputPanel.contains(e.target);
+
+    // Close if clicking outside browser AND not on logs
+    if (!clickInsideBrowser && !clickOnToggleButton && !clickInsideLogs) {
+        const codeEditorContainer = document.querySelector('.code-editor-container');
+        browserSidebar.classList.remove('open');
+        codeEditorContainer.classList.remove('browser-open');
+        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
+        toggleBrowserBtn.classList.remove('active');
+    }
 });
 
 // Output Panel Toggle (VS Code style)
@@ -1200,46 +1523,57 @@ function escapeHtml(text) {
 }
 
 // Helper functions for Playwright code editor
+// CodeMirror code editor functions
 function setPlaywrightCode(code) {
-    playwrightCodeElement.textContent = code;
-    if (code && typeof Prism !== 'undefined') {
-        Prism.highlightElement(playwrightCodeElement);
+    if (codeMirrorEditor) {
+        codeMirrorEditor.setValue(code || '');
     }
 }
 
 function getPlaywrightCode() {
-    return playwrightCodeElement.textContent.trim();
+    return codeMirrorEditor ? codeMirrorEditor.getValue() : '';
 }
 
-// Add Tab key support for code editor
-playwrightCodeElement.addEventListener('keydown', (e) => {
-    if (e.key === 'Tab') {
-        e.preventDefault();
+// CodeMirror initialization and change tracking
+function initializeCodeMirror() {
+    if (typeof CodeMirror !== 'undefined') {
+        const editorElement = document.getElementById('codemirror-editor');
+        if (editorElement && !codeMirrorEditor) {
+            codeMirrorEditor = CodeMirror(editorElement, {
+                mode: 'python',
+                theme: 'material-darker',
+                lineNumbers: true,
+                indentUnit: 4,
+                tabSize: 4,
+                indentWithTabs: false,
+                lineWrapping: false,
+                autofocus: false,
+                styleActiveLine: true,
+                matchBrackets: true,
+                autoCloseBrackets: true,
+                extraKeys: {
+                    "Cmd-/": "toggleComment",
+                    "Ctrl-/": "toggleComment"
+                }
+            });
 
-        // Insert 4 spaces instead of tab
-        const selection = window.getSelection();
-        const range = selection.getRangeAt(0);
-        const tabNode = document.createTextNode('    ');
-        range.insertNode(tabNode);
-
-        // Move cursor after the inserted spaces
-        range.setStartAfter(tabNode);
-        range.setEndAfter(tabNode);
-        selection.removeAllRanges();
-        selection.addRange(range);
+            // Listen for content changes
+            codeMirrorEditor.on('change', function(cm) {
+                if (activeTabId) {
+                    const tab = openTabs.find(t => t.id === activeTabId);
+                    if (tab) {
+                        const currentCode = cm.getValue();
+                        if (currentCode !== lastSavedCode) {
+                            tab.isDirty = true;
+                            tab.code = currentCode;
+                            renderTabs();
+                        }
+                    }
+                }
+            });
+        }
     }
-});
-
-// Re-apply syntax highlighting when editing
-playwrightCodeElement.addEventListener('input', () => {
-    if (playwrightCodeElement.textContent && typeof Prism !== 'undefined') {
-        // Debounce to avoid too many re-renders
-        clearTimeout(playwrightCodeElement.highlightTimeout);
-        playwrightCodeElement.highlightTimeout = setTimeout(() => {
-            Prism.highlightElement(playwrightCodeElement);
-        }, 300);
-    }
-});
+}
 
 // Chat functionality
 function sendChatMessage() {
@@ -1317,9 +1651,6 @@ function appendChatMessage(type, content, isCode = false) {
         code.textContent = content;
         codeBlock.appendChild(code);
         messageDiv.appendChild(codeBlock);
-        if (typeof Prism !== 'undefined') {
-            Prism.highlightElement(code);
-        }
     } else {
         const contentSpan = document.createElement('span');
         contentSpan.textContent = content;
@@ -1438,6 +1769,14 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// Cmd+S (Mac) / Ctrl+S (Windows/Linux) to save file
+document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault(); // Prevent default browser save dialog
+        saveCurrentTest(); // Save current test
+    }
+});
+
 clearChatBtn.addEventListener('click', () => {
     if (confirm('Clear all chat messages?')) {
         chatMessages.innerHTML = '';
@@ -1510,21 +1849,19 @@ function handleImageFile(file) {
 }
 
 // Load default example on page load
-window.addEventListener('load', () => {
-    testStepsTextarea.value = `Complete the signup process on https://sunny-staging.vercel.app/:
-
-1. Go to the website
-2. Click the "Sign Up" button at the header
-3. Fill out the signup form with:
-   - Full Name: Test User
-   - Email: test+(random 10 characters)@example.com
-4. Submit the form by clicking the "Sign Up" button
-5. Verify the success page contains:
-   - Heading: "Just a couple of questions to save you time"
-   - Subheading: "Bedrooms help us find your perfect fit"
-   - 4 bedroom option cards`;
-
+window.addEventListener('load', async () => {
     addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
-    addLogEntry('info', '📝 Write test steps and click "Run Test" to see AI automation');
-    addLogEntry('info', '💬 Click "Chat" button (bottom panel) for conversational code generation');
+    addLogEntry('info', '🤖 Create AI Steps in the file explorer to run natural language tests');
+    addLogEntry('info', '💬 Use AI Chat to generate and modify Playwright code');
+
+    // Initialize CodeMirror editor
+    initializeCodeMirror();
+
+    // Restore previously open tabs
+    await restoreTabsState();
+
+    // Show welcome page if no tabs are open
+    if (openTabs.length === 0) {
+        showWelcomePage();
+    }
 });

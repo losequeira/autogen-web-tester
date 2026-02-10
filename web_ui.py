@@ -38,9 +38,16 @@ active_browser = None
 active_task = None
 stop_requested = False
 
+# Track current AI step execution for code generation prompt
+current_ai_step = None  # {'filename': '...', 'name': '...'}
+
 # Saved tests directory
 SAVED_TESTS_DIR = Path(__file__).parent / 'saved_tests'
 SAVED_TESTS_DIR.mkdir(exist_ok=True)
+
+# AI Steps directory
+AI_STEPS_DIR = Path(__file__).parent / 'ai_steps'
+AI_STEPS_DIR.mkdir(exist_ok=True)
 
 # Codegen recordings tracking
 active_recordings = {}
@@ -370,7 +377,7 @@ def run_codegen_process(recording_id: str, url: str, output_file: str, test_name
 
 async def run_test_async(task: str):
     """Run the test with live updates."""
-    global active_browser, stop_requested
+    global active_browser, stop_requested, current_ai_step
 
     stop_requested = False  # Reset stop flag
     socketio.emit('log', {'type': 'info', 'message': 'Initializing browser...'})
@@ -592,11 +599,13 @@ These rules apply to ALL tasks. Users will give you natural language instruction
             async for message in team.run_stream(task=task):
                 # Check if stop was requested
                 if stop_requested:
-                    # Generate and send Playwright code even if stopped
-                    playwright_code = generate_playwright_code(browser.playwright_code)
-                    socketio.emit('playwright_code', {'code': playwright_code})
                     socketio.emit('log', {'type': 'error', 'message': 'Test stopped by user'})
+                    # Only send playwright_code for regular tests (not AI steps)
+                    if not current_ai_step:
+                        playwright_code = generate_playwright_code(browser.playwright_code)
+                        socketio.emit('playwright_code', {'code': playwright_code})
                     socketio.emit('test_complete', {'status': 'stopped'})
+                    current_ai_step = None  # Reset on stop
                     return
 
                 # Send each message to frontend
@@ -619,41 +628,60 @@ These rules apply to ALL tasks. Users will give you natural language instruction
                 message_content = str(message)
                 if 'TEST PASSED:' in message_content:
                     test_status = 'passed'
-                    # Generate and send Playwright code
+                    # Generate Playwright code
                     playwright_code = generate_playwright_code(browser.playwright_code)
-                    socketio.emit('playwright_code', {'code': playwright_code})
                     socketio.emit('log', {'type': 'success', 'message': 'Test completed: PASSED'})
-                    socketio.emit('test_complete', {'status': 'success'})
+
+                    # If this was an AI step, prompt user to save generated code
+                    if current_ai_step:
+                        socketio.emit('ai_step_complete_with_code', {
+                            'status': 'success',
+                            'code': playwright_code,
+                            'ai_step_name': current_ai_step['name'],
+                            'ai_step_filename': current_ai_step['filename']
+                        })
+                        current_ai_step = None  # Reset after prompting
+                    else:
+                        # Regular test - send code and complete event
+                        socketio.emit('playwright_code', {'code': playwright_code})
+                        socketio.emit('test_complete', {'status': 'success'})
                     break
                 elif 'TEST FAILED:' in message_content:
                     test_status = 'failed'
-                    # Generate and send Playwright code even on failure
-                    playwright_code = generate_playwright_code(browser.playwright_code)
-                    socketio.emit('playwright_code', {'code': playwright_code})
                     socketio.emit('log', {'type': 'error', 'message': 'Test completed: FAILED'})
+                    # Only send playwright_code for regular tests (not AI steps)
+                    if not current_ai_step:
+                        playwright_code = generate_playwright_code(browser.playwright_code)
+                        socketio.emit('playwright_code', {'code': playwright_code})
                     socketio.emit('test_complete', {'status': 'error'})
+                    current_ai_step = None  # Reset on failure
                     break
                 elif 'TEST ERROR:' in message_content:
                     test_status = 'error'
-                    # Generate and send Playwright code even on error
-                    playwright_code = generate_playwright_code(browser.playwright_code)
-                    socketio.emit('playwright_code', {'code': playwright_code})
                     socketio.emit('log', {'type': 'error', 'message': 'Test completed: ERROR'})
+                    # Only send playwright_code for regular tests (not AI steps)
+                    if not current_ai_step:
+                        playwright_code = generate_playwright_code(browser.playwright_code)
+                        socketio.emit('playwright_code', {'code': playwright_code})
                     socketio.emit('test_complete', {'status': 'error'})
+                    current_ai_step = None  # Reset on error
                     break
 
             # If loop ended naturally without status (hit max messages)
             if not stop_requested and test_status is None:
-                # Generate and send Playwright code even if test didn't complete properly
-                playwright_code = generate_playwright_code(browser.playwright_code)
-                socketio.emit('playwright_code', {'code': playwright_code})
                 socketio.emit('log', {'type': 'error', 'message': 'Test ended without clear status (may have hit message limit)'})
+                # Only send playwright_code for regular tests (not AI steps)
+                if not current_ai_step:
+                    playwright_code = generate_playwright_code(browser.playwright_code)
+                    socketio.emit('playwright_code', {'code': playwright_code})
                 socketio.emit('test_complete', {'status': 'error', 'message': 'Test timed out or hit message limit'})
+                current_ai_step = None  # Reset on timeout
 
     except Exception as e:
         error_msg = f"Error during test execution: {str(e)}"
         socketio.emit('log', {'type': 'error', 'message': error_msg})
         socketio.emit('test_complete', {'status': 'error', 'message': str(e)})
+        current_ai_step = None  # Reset on exception
     finally:
         # Stop streaming when test completes
         if active_browser:
@@ -1105,7 +1133,9 @@ def get_saved_tests():
                     'filename': filepath.name,
                     'name': test_data.get('name'),
                     'created': test_data.get('created'),
-                    'source': test_data.get('source', 'ai')  # Default to 'ai' for backward compatibility
+                    'source': test_data.get('source', 'ai'),  # Default to 'ai' for backward compatibility
+                    'last_run_status': test_data.get('last_run_status'),  # 'success', 'error', or 'stopped'
+                    'last_run_time': test_data.get('last_run_time')
                 })
         except Exception as e:
             print(f"Error loading {filepath}: {e}")
@@ -1162,6 +1192,201 @@ def delete_saved_test(filename):
         filepath.unlink()
         return jsonify({'success': True})
     return jsonify({'error': 'Test not found'}), 404
+
+
+@app.route('/api/saved-tests/<filename>/status', methods=['POST'])
+def update_test_status(filename):
+    """Update the last run status of a saved test."""
+    filepath = SAVED_TESTS_DIR / filename
+    if not filepath.exists():
+        return jsonify({'error': 'Test not found'}), 404
+
+    data = request.json
+    status = data.get('status')  # 'success', 'error', or 'stopped'
+
+    try:
+        # Read existing test data
+        with open(filepath, 'r') as f:
+            test_data = json.load(f)
+
+        # Update status fields
+        test_data['last_run_status'] = status
+        test_data['last_run_time'] = datetime.now().isoformat()
+
+        # Write back
+        with open(filepath, 'w') as f:
+            json.dump(test_data, f, indent=2)
+
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+def json_to_markdown(step_data):
+    """Convert AI step JSON to markdown (just the steps content)."""
+    # Return just the steps content - metadata stays in JSON
+    return step_data.get('steps', '')
+
+
+def markdown_to_json(markdown_content):
+    """Convert markdown content back to JSON structure (just updates steps field)."""
+    # Return just the steps content - other fields will be preserved from original JSON
+    return {
+        'steps': markdown_content.strip()
+    }
+
+
+@app.route('/api/ai-steps')
+def get_ai_steps():
+    """Get list of AI step tests."""
+    steps = []
+    for filepath in AI_STEPS_DIR.glob('*.json'):
+        try:
+            with open(filepath, 'r') as f:
+                step_data = json.load(f)
+                steps.append({
+                    'filename': filepath.name,
+                    'name': step_data.get('name'),
+                    'steps': step_data.get('steps'),
+                    'created': step_data.get('created'),
+                    'last_run': step_data.get('last_run'),
+                    'status': step_data.get('status')
+                })
+        except Exception as e:
+            print(f"Error loading {filepath}: {e}")
+
+    # Sort by creation date, newest first
+    steps.sort(key=lambda x: x.get('created', ''), reverse=True)
+    return jsonify(steps)
+
+
+@app.route('/api/ai-steps', methods=['POST'])
+def save_ai_step():
+    """Save new AI step test."""
+    data = request.json
+    name = data.get('name')
+    steps = data.get('steps')
+
+    if not name or not steps:
+        return jsonify({'error': 'Name and steps required'}), 400
+
+    # Sanitize filename
+    filename = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    filename = filename.replace(' ', '_') + '.json'
+
+    step_data = {
+        'name': name,
+        'steps': steps,
+        'created': datetime.now().isoformat(),
+        'last_run': None,
+        'status': None
+    }
+
+    filepath = AI_STEPS_DIR / filename
+    with open(filepath, 'w') as f:
+        json.dump(step_data, f, indent=2)
+
+    return jsonify({'success': True, 'filename': filename})
+
+
+@app.route('/api/ai-steps/<filename>', methods=['GET'])
+def get_ai_step(filename):
+    """Get a specific AI step test."""
+    filepath = AI_STEPS_DIR / filename
+    if filepath.exists():
+        with open(filepath, 'r') as f:
+            step_data = json.load(f)
+        return jsonify(step_data)
+    return jsonify({'error': 'AI step not found'}), 404
+
+
+@app.route('/api/ai-steps/<filename>', methods=['PUT'])
+def update_ai_step(filename):
+    """Update an existing AI step test."""
+    filepath = AI_STEPS_DIR / filename
+    if not filepath.exists():
+        return jsonify({'error': 'AI step not found'}), 404
+
+    data = request.json
+    steps = data.get('steps')
+    name = data.get('name')
+
+    if not steps:
+        return jsonify({'error': 'Steps required'}), 400
+
+    step_data = {
+        'name': name or filename.replace('.json', '').replace('_', ' '),
+        'steps': steps,
+        'created': data.get('created', datetime.now().isoformat()),
+        'updated': datetime.now().isoformat(),
+        'last_run': data.get('last_run'),
+        'status': data.get('status')
+    }
+
+    with open(filepath, 'w') as f:
+        json.dump(step_data, f, indent=2)
+
+    return jsonify({'success': True})
+
+
+@app.route('/api/ai-steps/<filename>', methods=['DELETE'])
+def delete_ai_step(filename):
+    """Delete an AI step test."""
+    filepath = AI_STEPS_DIR / filename
+    if filepath.exists():
+        filepath.unlink()
+        return jsonify({'success': True})
+    return jsonify({'error': 'AI step not found'}), 404
+
+
+@app.route('/api/ai-steps/<filename>/markdown', methods=['GET'])
+def get_ai_step_markdown(filename):
+    """Get AI step in markdown format."""
+    filepath = AI_STEPS_DIR / filename
+    if filepath.exists():
+        with open(filepath, 'r') as f:
+            step_data = json.load(f)
+        markdown = json_to_markdown(step_data)
+        return jsonify({'markdown': markdown, 'filename': filename})
+    return jsonify({'error': 'AI step not found'}), 404
+
+
+@app.route('/api/ai-steps/<filename>/markdown', methods=['PUT'])
+def update_ai_step_markdown(filename):
+    """Update AI step from markdown format."""
+    filepath = AI_STEPS_DIR / filename
+    if not filepath.exists():
+        return jsonify({'error': 'AI step not found'}), 404
+
+    data = request.json
+    markdown_content = data.get('markdown')
+    if not markdown_content:
+        return jsonify({'error': 'Markdown content required'}), 400
+
+    # Read existing data to preserve metadata
+    try:
+        with open(filepath, 'r') as f:
+            step_data = json.load(f)
+    except:
+        # If file doesn't exist or is invalid, create new structure
+        step_data = {
+            'name': filename.replace('.json', '').replace('_', ' '),
+            'created': datetime.now().isoformat(),
+            'last_run': None,
+            'status': None
+        }
+
+    # Update only the steps content from markdown
+    updated_fields = markdown_to_json(markdown_content)
+    step_data.update(updated_fields)
+
+    # Update timestamp
+    step_data['updated'] = datetime.now().isoformat()
+
+    with open(filepath, 'w') as f:
+        json.dump(step_data, f, indent=2)
+
+    return jsonify({'success': True})
 
 
 @socketio.on('run_test')
@@ -1230,6 +1455,49 @@ def handle_run_saved_test(data):
 
     except Exception as e:
         emit('log', {'type': 'error', 'message': f'Error running saved test: {str(e)}'})
+
+
+@socketio.on('run_ai_step')
+def handle_run_ai_step(data):
+    """Handle running an AI step test from file."""
+    global current_ai_step
+
+    filename = data.get('filename')
+
+    if not filename:
+        emit('log', {'type': 'error', 'message': 'No AI step specified'})
+        return
+
+    filepath = AI_STEPS_DIR / filename
+    if not filepath.exists():
+        emit('log', {'type': 'error', 'message': 'AI step not found'})
+        return
+
+    try:
+        with open(filepath, 'r') as f:
+            step_data = json.load(f)
+            steps = step_data.get('steps')
+            name = step_data.get('name')
+
+        if not steps:
+            emit('log', {'type': 'error', 'message': 'No steps found in AI step test'})
+            return
+
+        emit('log', {'type': 'info', 'message': f'🤖 Running AI steps: {name}'})
+
+        # Update last_run timestamp
+        step_data['last_run'] = datetime.now().isoformat()
+        with open(filepath, 'w') as f:
+            json.dump(step_data, f, indent=2)
+
+        # Track current AI step for code generation prompt
+        current_ai_step = {'filename': filename, 'name': name}
+
+        # Run test using existing run_test_sync logic
+        socketio.start_background_task(run_test_sync, steps)
+
+    except Exception as e:
+        emit('log', {'type': 'error', 'message': f'Error running AI step: {str(e)}'})
 
 
 @socketio.on('chat_message')
