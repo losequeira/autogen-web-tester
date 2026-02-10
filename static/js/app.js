@@ -26,6 +26,7 @@ const startRecordingBtn = document.getElementById('start-recording');
 const cancelRecordingBtn = document.getElementById('cancel-recording');
 const logTabs = document.querySelectorAll('.log-tab');
 const playwrightCodeElement = document.getElementById('playwright-code');
+const runCodeBtn = document.getElementById('run-code');
 const copyCodeBtn = document.getElementById('copy-code');
 const saveTestBtn = document.getElementById('save-test');
 const refreshTestsBtn = document.getElementById('refresh-tests');
@@ -247,6 +248,8 @@ socket.on('test_complete', (data) => {
     runTestBtn.textContent = '▶ Run Test';
     runTestBtn.style.display = 'block';
     stopTestBtn.style.display = 'none';
+    runCodeBtn.disabled = false;
+    runCodeBtn.textContent = '▶ Run Code';
     browserStatus.textContent = 'Completed';
     browserStatus.classList.remove('running');
 
@@ -481,6 +484,46 @@ clearLogBtn.addEventListener('click', () => {
     humanLogContainer.innerHTML = '';
     technicalLogContainer.innerHTML = '';
     addLogEntry('info', 'Log cleared');
+});
+
+// Run Code button - Execute Playwright code with live browser preview
+runCodeBtn.addEventListener('click', () => {
+    const code = getPlaywrightCode();
+    if (!code || code.trim() === '') {
+        alert('No code to run. Please write or generate some Playwright code first.');
+        return;
+    }
+
+    if (isTestRunning) {
+        alert('A test is already running');
+        return;
+    }
+
+    // Clear previous results
+    humanLogContainer.innerHTML = '';
+    technicalLogContainer.innerHTML = '';
+
+    // Update UI
+    isTestRunning = true;
+    runCodeBtn.disabled = true;
+    runCodeBtn.textContent = '⏳ Running...';
+    browserStatus.textContent = 'Running';
+    browserStatus.classList.add('running');
+    browserStatus.style.background = '';
+
+    // Automatically open browser sidebar
+    if (!browserSidebar.classList.contains('open')) {
+        const codeEditorContainer = document.querySelector('.code-editor-container');
+        browserSidebar.classList.add('open');
+        codeEditorContainer.classList.add('browser-open');
+        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
+        toggleBrowserBtn.classList.add('active');
+    }
+
+    // Send code to backend for execution
+    socket.emit('run_playwright_code', { code });
+
+    addLogEntry('info', '▶️ Executing Playwright code...');
 });
 
 copyCodeBtn.addEventListener('click', () => {

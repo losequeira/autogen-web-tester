@@ -717,6 +717,16 @@ def run_playwright_code(code: str):
             loop.close()
 
 
+def run_playwright_code_with_streaming(code: str):
+    """
+    Execute Playwright code from editor.
+    Currently runs code as-is. Future enhancement: add automatic screenshot streaming.
+    """
+    # For now, just use the existing run_playwright_code function
+    # Future: Add page object wrapping to automatically capture screenshots
+    run_playwright_code(code)
+
+
 @app.route('/')
 def index():
     """Render main page."""
@@ -924,6 +934,22 @@ def handle_stop_test():
     global stop_requested
     stop_requested = True
     emit('log', {'type': 'info', 'message': 'Stop request received, stopping test...'})
+
+
+@socketio.on('run_playwright_code')
+def handle_run_playwright_code(data):
+    """Handle running Playwright code from the editor."""
+    code = data.get('code', '')
+
+    if not code:
+        emit('log', {'type': 'error', 'message': 'No code provided'})
+        return
+
+    emit('log', {'type': 'info', 'message': '▶️ Executing Playwright code from editor...'})
+    emit('log', {'type': 'info', 'message': '🚀 Starting browser session...'})
+
+    # Run the code with screenshot streaming
+    socketio.start_background_task(run_playwright_code_with_streaming, code)
 
 
 @socketio.on('run_saved_test')
