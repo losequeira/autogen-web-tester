@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoGen Web Tester - Live Testing UI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <h1>🤖 AutoGen Web Tester</h1>
+            <p class="subtitle">Write test steps in natural language, watch AI automate your browser</p>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Panel: Test Editor -->
+            <div class="panel editor-panel">
+                <div class="panel-header">
+                    <h2>✏️ Test Steps</h2>
+                    <div class="button-group">
+                        {% if not is_cloud %}
+                        <button id="record-test" class="btn btn-secondary">🎥 Record</button>
+                        {% else %}
+                        <button id="record-test" class="btn btn-secondary" disabled title="Recording only available in local environment">🎥 Record (Local Only)</button>
+                        {% endif %}
+                        <button id="load-example" class="btn btn-secondary">Load Example</button>
+                        <button id="stop-test" class="btn btn-danger" style="display: none;">⏹ Stop Test</button>
+                        <button id="run-test" class="btn btn-primary">▶ Run Test</button>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <textarea
+                        id="test-steps"
+                        placeholder="Write your test steps in natural language...
+
+Example:
+1. Go to https://example.com
+2. Click the 'Login' button
+3. Fill the form with:
+   - Email: test@example.com
+   - Password: password123
+4. Click 'Submit'
+5. Verify the page shows 'Welcome'"></textarea>
+                </div>
+
+                <!-- Saved Tests -->
+                <div class="saved-tests-section">
+                    <div class="panel-header">
+                        <h2>📚 Saved Tests</h2>
+                        <button id="refresh-tests" class="btn btn-small">🔄 Refresh</button>
+                    </div>
+                    <div class="panel-body">
+                        <div id="saved-tests-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel: Browser Preview & Logs -->
+            <div class="panel results-panel">
+                <!-- Browser Preview -->
+                <div class="browser-preview">
+                    <div class="panel-header">
+                        <h2>🌐 Live Browser</h2>
+                        <span id="browser-status" class="status-badge">Idle</span>
+                    </div>
+                    <div class="screenshot-container">
+                        <img id="browser-screenshot" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='600'%3E%3Crect fill='%23f0f0f0' width='800' height='600'/%3E%3Ctext x='50%25' y='50%25' font-family='Arial' font-size='24' fill='%23999' text-anchor='middle' dy='.3em'%3EBrowser will appear here%3C/text%3E%3C/svg%3E" alt="Browser preview">
+                        <div id="screenshot-timestamp"></div>
+                    </div>
+                </div>
+
+                <!-- Agent Log -->
+                <div class="agent-log">
+                    <div class="panel-header">
+                        <h2>📝 Agent Log</h2>
+                        <div class="button-group">
+                            <button id="clear-log" class="btn btn-small">Clear</button>
+                        </div>
+                    </div>
+                    <div class="log-tabs">
+                        <button class="log-tab active" data-tab="human">👤 Human-Readable</button>
+                        <button class="log-tab" data-tab="technical">🔧 Technical</button>
+                    </div>
+                    <div id="human-log-container" class="log-container active"></div>
+                    <div id="technical-log-container" class="log-container"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Playwright Code Section with Integrated AI Chat -->
+        <div class="panel playwright-code-panel">
+            <div class="panel-header">
+                <h2>💻 Playwright Code Editor</h2>
+                <div class="button-group">
+                    <button id="toggle-chat" class="btn btn-small">💬 Chat</button>
+                    <button id="save-test" class="btn btn-small">💾 Save</button>
+                    <button id="copy-code" class="btn btn-small">📋 Copy</button>
+                </div>
+            </div>
+            <div class="panel-body code-editor-container">
+                <!-- File Explorer Sidebar (Left) -->
+                <div id="file-explorer" class="file-explorer">
+                    <div class="file-explorer-header">
+                        <span class="file-explorer-title">SAVED TESTS</span>
+                        <button id="new-test-btn" class="btn-icon-small" title="New Test">+</button>
+                    </div>
+                    <div id="file-list" class="file-list">
+                        <!-- Files will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Resizer -->
+                <div id="explorer-resizer" class="explorer-resizer"></div>
+
+                <!-- Code Editor Section (Center) -->
+                <div class="code-editor-section">
+                    <!-- Tabs -->
+                    <div id="editor-tabs" class="editor-tabs">
+                        <div class="editor-tabs-container"></div>
+                        <div class="editor-tabs-actions">
+                            <button id="close-all-tabs" class="btn-icon-small" title="Close All">⊗</button>
+                        </div>
+                    </div>
+
+                    <!-- Editor Content -->
+                    <div class="editor-content">
+                        <pre id="playwright-code-wrapper"><code id="playwright-code" class="language-python" contenteditable="true" spellcheck="false"></code></pre>
+                    </div>
+                </div>
+
+                <!-- AI Chat Sidebar (Right) -->
+                <div id="ai-chat-sidebar" class="ai-chat-sidebar">
+                    <div class="chat-sidebar-header">
+                        <h3>💬 AI Assistant</h3>
+                        <button id="close-chat-sidebar" class="btn-icon">✕</button>
+                    </div>
+                    <div class="chat-sidebar-body">
+                        <div id="chat-messages" class="chat-messages"></div>
+                        <div class="chat-input-container">
+                            <div id="image-preview-container" class="image-preview-container" style="display: none;">
+                                <div class="image-preview-header">
+                                    <span class="image-preview-label">📎 Image attached</span>
+                                    <button id="remove-image" class="btn-icon-small">✕</button>
+                                </div>
+                                <img id="image-preview" class="image-preview" alt="Preview">
+                            </div>
+                            <div id="drop-zone" class="drop-zone">
+                                <textarea id="chat-input" placeholder="Ask AI to generate or modify code... (drag & drop images here)" rows="3"></textarea>
+                                <div class="drop-zone-overlay">
+                                    <div class="drop-zone-content">
+                                        <span class="drop-zone-icon">📁</span>
+                                        <span class="drop-zone-text">Drop image here</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="chat-buttons">
+                                <label for="file-input" class="btn btn-small" style="cursor: pointer; margin: 0;">
+                                    📎 Attach
+                                    <input type="file" id="file-input" accept="image/*" style="display: none;">
+                                </label>
+                                <button id="send-chat" class="btn btn-primary btn-small">Send</button>
+                                <button id="clear-chat-btn" class="btn btn-small">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Example Tests Modal -->
+        <div id="example-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Example Tests</h2>
+                    <span class="close">&times;</span>
+                </div>
+                <div class="modal-body" id="example-list"></div>
+            </div>
+        </div>
+
+        <!-- Record Test Modal -->
+        <div id="record-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>🎥 Record New Test</h2>
+                    <span class="close-record">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <p style="margin-bottom: 20px; color: #6b7280;">
+                        Playwright will open a browser window where you can manually interact with a website.
+                        Your actions will be automatically recorded and converted to test code.
+                    </p>
+                    <div class="form-group">
+                        <label for="record-url">Starting URL *</label>
+                        <input type="url" id="record-url" class="form-input" placeholder="https://example.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="record-name">Test Name (optional)</label>
+                        <input type="text" id="record-name" class="form-input" placeholder="My Test">
+                    </div>
+                    <div class="button-group">
+                        <button id="start-recording" class="btn btn-primary">Start Recording</button>
+                        <button id="cancel-recording" class="btn btn-secondary">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# AutoGen Web Tester - Minimal Dependencies
+# Python 3.10-3.13 required
+
+# AutoGen v0.4 - Modern async agent framework
+autogen-agentchat~=0.4.0
+autogen-ext[openai]~=0.4.0
+
+# Browser automation
+playwright~=1.48.0
+
+# Environment management
+python-dotenv~=1.0.0
+
+# Web UI
+Flask~=3.0.0
+Flask-SocketIO~=5.3.0
+python-socketio~=5.11.0
+
+# Production server (for Cloud Run)
+gunicorn~=21.2.0
+eventlet~=0.33.0

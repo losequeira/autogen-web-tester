@@ -1,0 +1,6 @@
+{
+  "name": "Sign Up 2",
+  "code": "from playwright.async_api import async_playwright\nimport asyncio\nimport random\nimport string\n\nasync def run():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=False)\n        page = await browser.new_page()\n\n        # Generate random 10-character string for unique email\n        random_chars = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))\n        random_email = f\"test+{random_chars}@example.com\"\n\n        await page.goto(\"https://sunny-staging.vercel.app/\")\n        await page.get_by_text(\"Sign Up\").click()\n        await page.click(\"input[name='fullName']\")\n        await page.click(\"input[name='email']\")\n        await page.fill(\"input[name='fullName']\", \"John Doe\")\n        await page.fill(\"input[name='email']\", random_email)\n        await page.get_by_role(\"button\", name=\"Sign Up\").click()\n        await page.get_by_text(\"2 Beds\").click()\n        await page.get_by_role(\"button\", name=\"Next\").click()\n        await page.click(\"input\")\n        await page.fill(\"input\", \"phoenix\")\n        await page.get_by_text(\"Phoenix, AZ\").click()\n\n        await browser.close()\n\nasyncio.run(run())",
+  "created": "2026-02-09T22:47:57.542997",
+  "updated": "2026-02-09T23:04:54.711164"
+}
