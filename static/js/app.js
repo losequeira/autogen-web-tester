@@ -1805,28 +1805,32 @@ closeChatSidebarBtn.addEventListener('click', () => {
     toggleChatBtn.classList.remove('active');
 });
 
-// Live Browser Sidebar Toggle
-toggleBrowserBtn.addEventListener('click', () => {
-    const isOpen = browserSidebar.classList.toggle('open');
-    const codeEditorContainer = document.querySelector('.code-editor-container');
+// Live Browser Sidebar Toggle (removed from UI - browser opens automatically during test runs)
+if (toggleBrowserBtn) {
+    toggleBrowserBtn.addEventListener('click', () => {
+        const isOpen = browserSidebar.classList.toggle('open');
+        const codeEditorContainer = document.querySelector('.code-editor-container');
 
-    if (isOpen) {
-        codeEditorContainer.classList.add('browser-open');
-        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
-        toggleBrowserBtn.classList.add('active');
-    } else {
-        codeEditorContainer.classList.remove('browser-open');
-        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
-        toggleBrowserBtn.classList.remove('active');
-    }
-});
+        if (isOpen) {
+            codeEditorContainer.classList.add('browser-open');
+            toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
+            toggleBrowserBtn.classList.add('active');
+        } else {
+            codeEditorContainer.classList.remove('browser-open');
+            toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
+            toggleBrowserBtn.classList.remove('active');
+        }
+    });
+}
 
 closeBrowserSidebarBtn.addEventListener('click', () => {
     const codeEditorContainer = document.querySelector('.code-editor-container');
     browserSidebar.classList.remove('open');
     codeEditorContainer.classList.remove('browser-open');
-    toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
-    toggleBrowserBtn.classList.remove('active');
+    if (toggleBrowserBtn) {
+        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
+        toggleBrowserBtn.classList.remove('active');
+    }
 });
 
 // Close browser sidebar when clicking outside (but not on logs)
@@ -1836,7 +1840,7 @@ document.addEventListener('click', (e) => {
 
     // Check if click is inside browser sidebar or its toggle button
     const clickInsideBrowser = browserSidebar.contains(e.target);
-    const clickOnToggleButton = toggleBrowserBtn.contains(e.target);
+    const clickOnToggleButton = toggleBrowserBtn && toggleBrowserBtn.contains(e.target);
 
     // Check if click is inside output panel (logs)
     const clickInsideLogs = outputPanel.contains(e.target);
@@ -1846,8 +1850,10 @@ document.addEventListener('click', (e) => {
         const codeEditorContainer = document.querySelector('.code-editor-container');
         browserSidebar.classList.remove('open');
         codeEditorContainer.classList.remove('browser-open');
-        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
-        toggleBrowserBtn.classList.remove('active');
+        if (toggleBrowserBtn) {
+            toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
+            toggleBrowserBtn.classList.remove('active');
+        }
     }
 });
 
