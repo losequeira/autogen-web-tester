@@ -1071,12 +1071,13 @@ function renderTabs() {
         tabEl.className = 'editor-tab' + (tab.id === activeTabId ? ' active' : '') + (tab.isDirty ? ' dirty' : '');
 
         // Dashboard tab doesn't need an icon (already has emoji in name)
-        const icon = tab.fileType === 'dashboard' ? '' : (tab.fileType === 'ai-step' ? '🤖' : '📄');
+        const icon = tab.fileType === 'dashboard' ? '' : (tab.fileType === 'ai-step' ? '📝' : '🐍');
         const iconHtml = icon ? `<span class="editor-tab-icon">${icon}</span>` : '';
 
+        const displayName = getDisplayName(tab.name, tab.fileType);
         tabEl.innerHTML = `
             ${iconHtml}
-            <span class="editor-tab-name">${escapeHtml(tab.name)}</span>
+            <span class="editor-tab-name">${escapeHtml(displayName)}</span>
             <button class="editor-tab-close" data-tab-id="${tab.id}">×</button>
         `;
 
@@ -1144,7 +1145,7 @@ function loadFileExplorer() {
                 fileItem.className = 'file-item';
                 fileItem.dataset.filename = test.filename;
 
-                const sourceIcon = test.source === 'codegen' ? '🎥' : '🤖';
+                const sourceIcon = test.source === 'codegen' ? '🎥' : '🐍';
 
                 // Status icon based on last run
                 let statusIcon = '';
@@ -1160,9 +1161,10 @@ function loadFileExplorer() {
                     viewRecordingBtn = `<button class="file-item-action" data-action="view-recording" title="View Recording (${test.artifacts.length})">📹</button>`;
                 }
 
+                const testDisplayName = getDisplayName(test.name, 'test');
                 fileItem.innerHTML = `
                     <span class="file-item-icon">${sourceIcon}</span>
-                    <span class="file-item-name">${escapeHtml(test.name)}</span>
+                    <span class="file-item-name">${escapeHtml(testDisplayName)}</span>
                     ${statusIcon}
                     <div class="file-item-actions">
                         ${viewRecordingBtn}
@@ -1540,9 +1542,10 @@ async function loadAiSteps() {
             const item = document.createElement('div');
             item.className = 'file-item';
             item.dataset.filename = step.filename;
+            const stepDisplayName = getDisplayName(step.name, 'ai-step');
             item.innerHTML = `
-                <span class="file-item-icon">🤖</span>
-                <span class="file-item-name">${escapeHtml(step.name)}</span>
+                <span class="file-item-icon">📝</span>
+                <span class="file-item-name">${escapeHtml(stepDisplayName)}</span>
                 <div class="file-item-actions">
                     <button class="file-item-action" data-action="run" title="Run AI Step">▶</button>
                     <button class="file-item-action" data-action="edit" title="Edit">✏️</button>
@@ -2083,6 +2086,22 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Helper function to get display name with proper extension
+function getDisplayName(name, fileType) {
+    // Remove .json extension if present
+    const baseName = name.replace(/\.json$/, '');
+
+    // Add proper extension based on file type
+    if (fileType === 'ai-step') {
+        return baseName + '.md';
+    } else if (fileType === 'test') {
+        return baseName + '.py';
+    }
+
+    // Return as-is for other types (like dashboard)
+    return name;
 }
 
 // Helper functions for Playwright code editor
