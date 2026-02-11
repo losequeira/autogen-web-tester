@@ -1,10 +1,40 @@
 {
   "name": "Two",
-  "code": "from playwright.async_api import async_playwright\nimport asyncio\nimport random\nimport string\n\nasync def run():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=False)\n        page = await browser.new_page()\n\n        # Step 1: Go to the website\n        await page.goto(\"https://sunny-staging.vercel.app/\")\n\n        # Step 2: Click the \"Sign Up\" button at the header\n        await page.get_by_role(\"link\", name=\"Sign Up\").click()\n\n        # Step 3: Fill out the signup form\n        # Generate random 10 character string for email\n        random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))\n        email = f\"test+{random_string}@example.com\"\n        \n        await page.fill(\"input[name='fullName']\", \"Test User\")\n        await page.fill(\"input[name='email']\", email)\n\n        # Wait for 10 seconds after filling the email\n        await page.wait_for_timeout(3000)\n\n        # Step 4: Submit the form by clicking the \"Sign Up\" button\n#         await page.get_by_role(\"button\", name=\"Sign Up\").click()\n\n        # Step 5: Verify the success page\n        # Validate the presence of the specific texts\n#         await page.locator(\"h2:has-text('Just a couple of questions to save you time')\").wait_for()\n#         await page.locator(\"p:has-text('Bedrooms help us find your perfect fit')\").wait_for()\n#         bedroom_options = await page.query_selector_all(\"div.bedroom-option-card\")\n#         assert len(bedroom_options) == 4, \"Expected 4 bedroom option cards\"\n\n        await browser.close()\n\nasyncio.run(run())",
+  "code": "from playwright.async_api import async_playwright\nimport asyncio\nimport random\nimport string\n\nasync def run():\n    async with async_playwright() as p:\n        # Launch browser\n        browser = await p.chromium.launch(headless=False)\n        \n        # Create a new browser context with iPhone 13 Pro settings\n        context = await browser.new_context(\n            viewport={'width': 390, 'height': 844},\n            user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1',\n            is_mobile=True,\n            has_touch=True\n        )\n        \n        # Create a new page in the context\n        page = await context.new_page()\n\n        # Step 1: Go to the website\n        await page.goto(\"https://sunny-staging.vercel.app/\")\n\n        # Step 2: Click the \"Sign Up\" button at the header\n        await page.get_by_role(\"link\", name=\"Sign Up\").click()\n\n        # Step 3: Fill out the signup form\n        random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))\n        email = f\"test+{random_string}@example.com\"\n\n        await page.fill(\"input[name='fullName']\", \"Test User\")\n        await page.fill(\"input[name='email']\", email)\n\n        # Wait for 3 seconds\n        await page.wait_for_timeout(3000)\n\n        await browser.close()\n\nasyncio.run(run())",
   "source": "ai",
-  "created": "2026-02-10T01:29:05.117727",
-  "updated": "2026-02-10T01:29:05.117751",
+  "created": "2026-02-10T23:44:06.228682",
+  "updated": "2026-02-10T23:44:06.228709",
   "last_run_status": "success",
-  "last_run_time": 1770755158.0309162,
-  "last_error": "unexpected indent (<string>, line 4)\nTraceback (most recent call last):\n  File \"/Users/losequeira/Documents/autogen-web-tester/web_ui.py\", line 1038, in execute_headless\n    exec(code_body, local_vars)\n    ~~~~^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<string>\", line 4\n    async with async_playwright() as p:\nIndentationError: unexpected indent\n"
+  "last_run_time": "2026-02-11T00:57:28.554017",
+  "artifacts": [
+    {
+      "timestamp": "2026-02-10_23-44-08",
+      "video_path": null,
+      "video_size_mb": 0,
+      "har_path": "test_artifacts/Two/2026-02-10_23-44-08/network.har",
+      "status": "success"
+    },
+    {
+      "timestamp": "2026-02-10_23-44-50",
+      "video_path": null,
+      "video_size_mb": 0,
+      "har_path": "test_artifacts/Two/2026-02-10_23-44-50/network.har",
+      "status": "success"
+    },
+    {
+      "timestamp": "2026-02-11_00-53-33",
+      "video_path": null,
+      "video_size_mb": 0,
+      "har_path": "test_artifacts/Two/2026-02-11_00-53-33/network.har",
+      "status": "success"
+    },
+    {
+      "timestamp": "2026-02-11_00-57-21",
+      "video_path": null,
+      "video_size_mb": 0,
+      "har_path": "test_artifacts/Two/2026-02-11_00-57-21/network.har",
+      "status": "success"
+    }
+  ],
+  "last_run": "2026-02-11T00:57:29.553039"
 }
