@@ -791,10 +791,11 @@ function switchToTab(filename) {
         lastSavedCode = tab.code;  // Set lastSavedCode to prevent false dirty flag
         setPlaywrightCode(tab.code);
 
-        // Use consistent editor mode for all file types
-        // AI Steps and Tests both use the same editor appearance
+        // Set CodeMirror mode based on file type
+        // AI Steps use markdown, Tests use Python
         if (codeMirrorEditor) {
-            codeMirrorEditor.setOption('mode', 'python');
+            const mode = tab.fileType === 'ai-step' ? 'markdown' : 'python';
+            codeMirrorEditor.setOption('mode', mode);
         }
 
         if (editorContent) editorContent.classList.remove('empty');
