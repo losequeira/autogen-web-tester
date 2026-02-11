@@ -132,13 +132,14 @@ body {
 
 #screenshot-timestamp {
     position: absolute;
-    bottom: 30px;
-    right: 30px;
-    background: rgba(0,0,0,0.7);
+    top: 12px;
+    left: 12px;
+    background: rgba(0, 0, 0, 0.8);
     color: white;
-    padding: 5px 10px;
+    padding: 6px 12px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 11px;
+    z-index: 10;
 }
 
 .status-badge {
@@ -1383,7 +1384,7 @@ body {
 
 .screenshot-timestamp {
     position: absolute;
-    bottom: 12px;
+    top: 12px;
     left: 12px;
     background: rgba(0, 0, 0, 0.8);
     color: #ffffff;
@@ -1392,6 +1393,7 @@ body {
     font-size: 11px;
     font-family: 'Consolas', 'Monaco', monospace;
     letter-spacing: 0.5px;
+    z-index: 10;
     backdrop-filter: blur(4px);
 }
 
