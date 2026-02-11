@@ -792,6 +792,7 @@ function switchToTab(filename) {
         setPlaywrightCode(tab.code);
 
         // Set CodeMirror mode based on file type
+        // AI Steps use markdown, Tests use Python
         if (codeMirrorEditor) {
             const mode = tab.fileType === 'ai-step' ? 'markdown' : 'python';
             codeMirrorEditor.setOption('mode', mode);
@@ -810,16 +811,22 @@ function switchToTab(filename) {
 function saveTabsState() {
     try {
         const tabsState = {
-            // Filter out dashboard tab - it will be created fresh on load
+            // Filter out temporary tabs (new_, generated_, chat_) but KEEP dashboard
             openTabs: openTabs
-                .filter(tab => tab.fileType !== 'dashboard')
+                .filter(tab => {
+                    // Exclude temporary tabs
+                    if (tab.id.startsWith('new_')) return false;
+                    if (tab.id.startsWith('generated_')) return false;
+                    if (tab.id.startsWith('chat_')) return false;
+                    return true;
+                })
                 .map(tab => ({
                     id: tab.id,
                     name: tab.name,
-                    fileType: tab.fileType  // Save file type
+                    fileType: tab.fileType  // Save file type (including 'dashboard')
                     // Don't save code or isDirty, we'll reload fresh from files
                 })),
-            activeTabId: activeTabId === '__dashboard__' ? null : activeTabId
+            activeTabId: activeTabId  // Keep dashboard as activeTabId if it was active
         };
         localStorage.setItem('editorTabsState', JSON.stringify(tabsState));
     } catch (err) {
@@ -843,8 +850,21 @@ async function restoreTabsState() {
                 !tabInfo.id.startsWith('chat_')) {
 
                 try {
+                    // Handle dashboard tab restoration (no API fetch needed)
+                    if (tabInfo.fileType === 'dashboard') {
+                        const existingTab = openTabs.find(t => t.id === tabInfo.id);
+                        if (!existingTab) {
+                            openTabs.push({
+                                id: '__dashboard__',
+                                name: '📊 Dashboard',
+                                code: '',
+                                isDirty: false,
+                                fileType: 'dashboard'
+                            });
+                        }
+                    }
                     // Handle AI step restoration
-                    if (tabInfo.fileType === 'ai-step') {
+                    else if (tabInfo.fileType === 'ai-step') {
                         const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown`);
                         if (response.ok) {
                             const data = await response.json();
@@ -859,13 +879,13 @@ async function restoreTabsState() {
                                 });
                             }
                         }
-                    } else {
-                        // Fetch regular test file content
+                    }
+                    // Handle regular test file restoration
+                    else {
                         const response = await fetch(`/api/saved-tests/${tabInfo.id}`);
                         if (response.ok) {
                             const data = await response.json();
 
-                            // Open the tab (without triggering saveTabsState recursively)
                             const existingTab = openTabs.find(t => t.id === tabInfo.id);
                             if (!existingTab) {
                                 openTabs.push({
@@ -1051,12 +1071,13 @@ function renderTabs() {
         tabEl.className = 'editor-tab' + (tab.id === activeTabId ? ' active' : '') + (tab.isDirty ? ' dirty' : '');
 
         // Dashboard tab doesn't need an icon (already has emoji in name)
-        const icon = tab.fileType === 'dashboard' ? '' : (tab.fileType === 'ai-step' ? '🤖' : '📄');
+        const icon = tab.fileType === 'dashboard' ? '' : (tab.fileType === 'ai-step' ? '📝' : '🐍');
         const iconHtml = icon ? `<span class="editor-tab-icon">${icon}</span>` : '';
 
+        const displayName = getDisplayName(tab.name, tab.fileType);
         tabEl.innerHTML = `
             ${iconHtml}
-            <span class="editor-tab-name">${escapeHtml(tab.name)}</span>
+            <span class="editor-tab-name">${escapeHtml(displayName)}</span>
             <button class="editor-tab-close" data-tab-id="${tab.id}">×</button>
         `;
 
@@ -1124,7 +1145,7 @@ function loadFileExplorer() {
                 fileItem.className = 'file-item';
                 fileItem.dataset.filename = test.filename;
 
-                const sourceIcon = test.source === 'codegen' ? '🎥' : '🤖';
+                const sourceIcon = test.source === 'codegen' ? '🎥' : '🐍';
 
                 // Status icon based on last run
                 let statusIcon = '';
@@ -1140,9 +1161,10 @@ function loadFileExplorer() {
                     viewRecordingBtn = `<button class="file-item-action" data-action="view-recording" title="View Recording (${test.artifacts.length})">📹</button>`;
                 }
 
+                const testDisplayName = getDisplayName(test.name, 'test');
                 fileItem.innerHTML = `
                     <span class="file-item-icon">${sourceIcon}</span>
-                    <span class="file-item-name">${escapeHtml(test.name)}</span>
+                    <span class="file-item-name">${escapeHtml(testDisplayName)}</span>
                     ${statusIcon}
                     <div class="file-item-actions">
                         ${viewRecordingBtn}
@@ -1215,6 +1237,12 @@ if (hasFileExplorer && explorerResizer) {
     let startX = 0;
     let startWidth = 0;
 
+    // Restore saved width on load
+    const savedWidth = localStorage.getItem('fileExplorerWidth');
+    if (savedWidth) {
+        fileExplorer.style.width = savedWidth + 'px';
+    }
+
     explorerResizer.addEventListener('mousedown', (e) => {
         isResizing = true;
         startX = e.clientX;
@@ -1238,6 +1266,10 @@ if (hasFileExplorer && explorerResizer) {
             explorerResizer.classList.remove('resizing');
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
+
+            // Save the new width to localStorage
+            const currentWidth = fileExplorer.offsetWidth;
+            localStorage.setItem('fileExplorerWidth', currentWidth);
         }
     });
 }
@@ -1491,10 +1523,7 @@ window.addEventListener('load', () => {
         loadAiSteps();
         if (editorContent) editorContent.classList.add('empty');
 
-        // Open dashboard tab by default if no tabs are open
-        if (openTabs.length === 0) {
-            openDashboardTab();
-        }
+        // Dashboard opening is now handled by the main load handler after tab restoration
     }
 });
 
@@ -1523,9 +1552,10 @@ async function loadAiSteps() {
             const item = document.createElement('div');
             item.className = 'file-item';
             item.dataset.filename = step.filename;
+            const stepDisplayName = getDisplayName(step.name, 'ai-step');
             item.innerHTML = `
-                <span class="file-item-icon">🤖</span>
-                <span class="file-item-name">${escapeHtml(step.name)}</span>
+                <span class="file-item-icon">📝</span>
+                <span class="file-item-name">${escapeHtml(stepDisplayName)}</span>
                 <div class="file-item-actions">
                     <button class="file-item-action" data-action="run" title="Run AI Step">▶</button>
                     <button class="file-item-action" data-action="edit" title="Edit">✏️</button>
@@ -2068,6 +2098,22 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// Helper function to get display name with proper extension
+function getDisplayName(name, fileType) {
+    // Remove .json extension if present
+    const baseName = name.replace(/\.json$/, '');
+
+    // Add proper extension based on file type
+    if (fileType === 'ai-step') {
+        return baseName + '.md';
+    } else if (fileType === 'test') {
+        return baseName + '.py';
+    }
+
+    // Return as-is for other types (like dashboard)
+    return name;
+}
+
 // Helper functions for Playwright code editor
 // CodeMirror code editor functions
 function setPlaywrightCode(code) {
@@ -2137,6 +2183,15 @@ function sendChatMessage() {
     // Get existing code from bottom panel
     const existingCode = getPlaywrightCode();
 
+    // Detect current file type
+    let fileType = 'unknown';
+    if (activeTabId) {
+        const activeTab = openTabs.find(t => t.id === activeTabId);
+        if (activeTab) {
+            fileType = activeTab.fileType || 'test';  // Default to 'test' if not specified
+        }
+    }
+
     // Add user message to chat (with image if present)
     if (currentImage) {
         appendChatMessageWithImage('user', message || 'Analyze this image', currentImage);
@@ -2150,7 +2205,8 @@ function sendChatMessage() {
     socket.emit('chat_message', {
         message: message || 'Analyze this image and generate relevant Playwright code',
         existing_code: existingCode || null,
-        image: currentImage
+        image: currentImage,
+        file_type: fileType  // Send file type for context-aware assistance
     });
 
     // Clear image after sending
@@ -2249,16 +2305,19 @@ socket.on('chat_response', (data) => {
 });
 
 socket.on('code_suggestion', (data) => {
-    // Show code in chat
+    // Show code/steps in chat
     appendChatMessage('code', data.code, true);
 
     // Store suggestion and show preview
     const currentCode = activeTabId ? getPlaywrightCode() : '';
+    const contentType = data.content_type || 'code';  // 'code' or 'steps'
+
     pendingCodeSuggestion = {
         code: data.code,
-        explanation: data.explanation || 'AI-generated code suggestion',
+        explanation: data.explanation || (contentType === 'steps' ? 'AI-generated test steps' : 'AI-generated code suggestion'),
         currentCode: currentCode,
-        targetTabId: activeTabId
+        targetTabId: activeTabId,
+        contentType: contentType
     };
 
     showCodePreview();
@@ -2283,6 +2342,22 @@ socket.on('chat_error', (data) => {
 function showCodePreview() {
     if (!pendingCodeSuggestion) return;
 
+    const contentType = pendingCodeSuggestion.contentType || 'code';
+    const isSteps = contentType === 'steps';
+
+    // Update panel labels based on content type
+    const previewLabel = document.querySelector('.code-preview-label');
+    if (previewLabel) {
+        previewLabel.textContent = isSteps ? 'TEST STEPS SUGGESTION' : 'CODE SUGGESTION';
+    }
+
+    // Update diff column headers
+    const diffHeaders = document.querySelectorAll('.diff-column-header');
+    if (diffHeaders.length >= 2) {
+        diffHeaders[0].textContent = isSteps ? 'CURRENT STEPS' : 'CURRENT CODE';
+        diffHeaders[1].textContent = isSteps ? 'SUGGESTED STEPS (AI)' : 'SUGGESTED CODE (AI)';
+    }
+
     // Set explanation
     codePreviewExplanation.textContent = pendingCodeSuggestion.explanation;
 
@@ -2292,7 +2367,7 @@ function showCodePreview() {
     // Show panel
     codePreviewPanel.classList.add('open');
 
-    addLogEntry('info', '📝 Code suggestion ready for review');
+    addLogEntry('info', isSteps ? '📝 Test steps suggestion ready for review' : '📝 Code suggestion ready for review');
 }
 
 function highlightCodeDiff() {
@@ -2328,9 +2403,11 @@ function highlightCodeDiff() {
         }
     }
 
-    // Handle empty current code
+    // Handle empty current content
     if (!pendingCodeSuggestion.currentCode) {
-        currentHtml = '<div style="color: #858585; font-style: italic;">No existing code in editor</div>';
+        const contentType = pendingCodeSuggestion.contentType || 'code';
+        const emptyMessage = contentType === 'steps' ? 'No existing steps in editor' : 'No existing code in editor';
+        currentHtml = `<div style="color: #858585; font-style: italic;">${emptyMessage}</div>`;
     }
 
     codePreviewCurrent.innerHTML = currentHtml;
@@ -2374,8 +2451,13 @@ acceptCodeBtn.addEventListener('click', () => {
         renderTabs();
     }
 
-    addLogEntry('success', '✓ Code suggestion accepted and applied');
-    appendChatMessage('system', '✓ Code applied to editor');
+    const contentType = pendingCodeSuggestion.contentType || 'code';
+    const isSteps = contentType === 'steps';
+    const acceptMessage = isSteps ? '✓ Test steps suggestion accepted and applied' : '✓ Code suggestion accepted and applied';
+    const chatMessage = isSteps ? '✓ Steps applied to editor' : '✓ Code applied to editor';
+
+    addLogEntry('success', acceptMessage);
+    appendChatMessage('system', chatMessage);
 
     closeCodePreview();
 });
@@ -2383,7 +2465,11 @@ acceptCodeBtn.addEventListener('click', () => {
 rejectCodeBtn.addEventListener('click', () => {
     if (!pendingCodeSuggestion) return;
 
-    addLogEntry('info', '✗ Code suggestion rejected');
+    const contentType = pendingCodeSuggestion.contentType || 'code';
+    const isSteps = contentType === 'steps';
+    const rejectMessage = isSteps ? '✗ Test steps suggestion rejected' : '✗ Code suggestion rejected';
+
+    addLogEntry('info', rejectMessage);
     appendChatMessage('system', '✗ Suggestion rejected - editor unchanged');
 
     closeCodePreview();
@@ -2525,8 +2611,8 @@ window.addEventListener('load', async () => {
     // Restore previously open tabs
     await restoreTabsState();
 
-    // Show welcome page if no tabs are open
+    // Open dashboard tab if no tabs were restored
     if (openTabs.length === 0) {
-        showWelcomePage();
+        openDashboardTab();
     }
 });

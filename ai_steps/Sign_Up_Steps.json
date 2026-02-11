@@ -1,8 +1,8 @@
 {
   "name": "Landing Steps",
-  "steps": "Complete the signup process on https://sunny-staging.vercel.app/\n\n1. Go to the website\n2. Click the \"Sign Up\" Button in the header.\n3. Click the \"full name\" input\n4. Fill the with Roliver Hola",
+  "steps": "Test Case: Complete Signup Process on Sunny Staging\n\n1. **Navigate to the Website**\n   - Open a web browser.\n   - Go to the URL: [https://sunny-staging.vercel.app/](https://sunny-staging.vercel.app/).\n\n2. **Initiate Signup Process**\n   - Locate and click the \"Sign Up\" button in the header of the homepage.\n\n3. **Enter Full Name**\n   - Click on the \"Full Name\" input field.\n   - Enter \"Roliver Hola\" into the \"Full Name\" input field.\n\n4. **Enter Email Address**\n   - Click on the \"Email\" input field.\n   - Enter a valid email address, e.g., \"roliver@example.com\".\n\n5. **Enter Password**\n   - Click on the \"Password\" input field.\n   - Enter a strong password, e.g., \"SecurePass123!\".\n\n6. **Submit Signup Form**\n   - Click the \"Sign Up\" button to submit the form.\n\n7. **Verify Successful Signup**\n   - Verify that the page redirects to the user dashboard.\n   - Ensure a welcome message is displayed, e.g., \"Welcome, Roliver!\".\n   - Confirm that the user's name is displayed in the account section or header.\n\n8. **Error Handling (Optional)**\n   - If the signup fails, verify that an error message is displayed, e.g., \"Email already in use.\"\n   - Ensure that the error message is clear and provides guidance on how to correct the issue.\n\nBy following these steps, you can ensure a comprehensive test of the signup functionality on the Sunny Staging website.",
   "created": "2026-02-10T00:49:09.341586",
-  "updated": "2026-02-10T14:22:54.889524",
+  "updated": "2026-02-11T01:31:14.751216",
   "last_run": "2026-02-10T14:24:09.421906",
   "status": null,
   "artifacts": [
