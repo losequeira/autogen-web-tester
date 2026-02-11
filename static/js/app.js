@@ -714,9 +714,6 @@ async function runAllTests() {
 
 // Tab Management Functions
 function openTab(filename, name, code, fileType = 'test') {
-    // Hide dashboard when opening a tab
-    hideDashboard();
-
     // Check if tab is already open
     const existingTab = openTabs.find(tab => tab.id === filename);
     if (existingTab) {
@@ -767,9 +764,8 @@ function closeTab(filename) {
             activeTabId = null;
             setPlaywrightCode('');
             if (editorContent) editorContent.classList.add('empty');
-
-            // Show dashboard when last tab is closed
-            showDashboard();
+            // Hide dashboard content if it was showing
+            hideDashboardContent();
         }
     }
 
@@ -782,16 +778,26 @@ function switchToTab(filename) {
     if (!tab) return;
 
     activeTabId = filename;
-    lastSavedCode = tab.code;  // Set lastSavedCode to prevent false dirty flag
-    setPlaywrightCode(tab.code);
 
-    // Set CodeMirror mode based on file type
-    if (codeMirrorEditor) {
-        const mode = tab.fileType === 'ai-step' ? 'markdown' : 'python';
-        codeMirrorEditor.setOption('mode', mode);
+    // Handle dashboard tab specially
+    if (tab.fileType === 'dashboard') {
+        showDashboardContent();
+    } else {
+        // Hide dashboard content if switching away from it
+        hideDashboardContent();
+
+        lastSavedCode = tab.code;  // Set lastSavedCode to prevent false dirty flag
+        setPlaywrightCode(tab.code);
+
+        // Set CodeMirror mode based on file type
+        if (codeMirrorEditor) {
+            const mode = tab.fileType === 'ai-step' ? 'markdown' : 'python';
+            codeMirrorEditor.setOption('mode', mode);
+        }
+
+        if (editorContent) editorContent.classList.remove('empty');
     }
 
-    if (editorContent) editorContent.classList.remove('empty');
     hideWelcomePage();
     renderTabs();
     updateFileListActiveState();
@@ -802,13 +808,16 @@ function switchToTab(filename) {
 function saveTabsState() {
     try {
         const tabsState = {
-            openTabs: openTabs.map(tab => ({
-                id: tab.id,
-                name: tab.name,
-                fileType: tab.fileType  // Save file type
-                // Don't save code or isDirty, we'll reload fresh from files
-            })),
-            activeTabId: activeTabId
+            // Filter out dashboard tab - it will be created fresh on load
+            openTabs: openTabs
+                .filter(tab => tab.fileType !== 'dashboard')
+                .map(tab => ({
+                    id: tab.id,
+                    name: tab.name,
+                    fileType: tab.fileType  // Save file type
+                    // Don't save code or isDirty, we'll reload fresh from files
+                })),
+            activeTabId: activeTabId === '__dashboard__' ? null : activeTabId
         };
         localStorage.setItem('editorTabsState', JSON.stringify(tabsState));
     } catch (err) {
@@ -1039,9 +1048,12 @@ function renderTabs() {
         const tabEl = document.createElement('div');
         tabEl.className = 'editor-tab' + (tab.id === activeTabId ? ' active' : '') + (tab.isDirty ? ' dirty' : '');
 
-        const icon = tab.fileType === 'ai-step' ? '🤖' : '📄';
+        // Dashboard tab doesn't need an icon (already has emoji in name)
+        const icon = tab.fileType === 'dashboard' ? '' : (tab.fileType === 'ai-step' ? '🤖' : '📄');
+        const iconHtml = icon ? `<span class="editor-tab-icon">${icon}</span>` : '';
+
         tabEl.innerHTML = `
-            <span class="editor-tab-icon">${icon}</span>
+            ${iconHtml}
             <span class="editor-tab-name">${escapeHtml(tab.name)}</span>
             <button class="editor-tab-close" data-tab-id="${tab.id}">×</button>
         `;
@@ -1276,7 +1288,7 @@ const codemirrorEditor = document.getElementById('codemirror-editor');
 
 if (dashboardBtn) {
     dashboardBtn.addEventListener('click', () => {
-        showDashboard();
+        openDashboardTab();
     });
 }
 
@@ -1296,31 +1308,51 @@ if (newAiStepCard) {
     });
 }
 
-function showDashboard() {
+function openDashboardTab() {
+    const dashboardTabId = '__dashboard__';
+
+    // Check if dashboard tab already exists
+    const existingDashboard = openTabs.find(tab => tab.id === dashboardTabId);
+    if (existingDashboard) {
+        // Just switch to it
+        switchToTab(dashboardTabId);
+        return;
+    }
+
+    // Create dashboard tab and insert at the beginning
+    const dashboardTab = {
+        id: dashboardTabId,
+        name: '📊 Dashboard',
+        code: '', // Dashboard doesn't use code
+        isDirty: false,
+        fileType: 'dashboard'
+    };
+
+    // Insert at the beginning
+    openTabs.unshift(dashboardTab);
+    activeTabId = dashboardTabId;
+
+    // Show dashboard view
+    showDashboardContent();
+    renderTabs();
+    updateFileListActiveState();
+    saveTabsState();
+}
+
+function showDashboardContent() {
     // Hide editor, show dashboard
     if (codemirrorEditor) codemirrorEditor.style.display = 'none';
     if (dashboardView) dashboardView.style.display = 'block';
-
-    // Update dashboard button state
-    if (dashboardBtn) dashboardBtn.classList.add('active');
-
-    // Close all tabs
-    openTabs = [];
-    activeTabId = null;
-    renderTabs();
-    updateFileListActiveState();
+    if (editorContent) editorContent.classList.remove('empty');
 
     // Load dashboard statistics
     loadDashboardStats();
 }
 
-function hideDashboard() {
+function hideDashboardContent() {
     // Show editor, hide dashboard
     if (codemirrorEditor) codemirrorEditor.style.display = 'block';
     if (dashboardView) dashboardView.style.display = 'none';
-
-    // Update dashboard button state
-    if (dashboardBtn) dashboardBtn.classList.remove('active');
 }
 
 async function loadDashboardStats() {
@@ -1368,9 +1400,6 @@ if (closeAllTabsBtn) {
         renderTabs();
         updateFileListActiveState();
         saveTabsState();  // Save state when closing all tabs
-
-        // Show dashboard when all tabs are closed
-        showDashboard();
     });
 }
 
@@ -1384,9 +1413,9 @@ window.addEventListener('load', () => {
         loadAiSteps();
         if (editorContent) editorContent.classList.add('empty');
 
-        // Show dashboard by default if no tabs are open
+        // Open dashboard tab by default if no tabs are open
         if (openTabs.length === 0) {
-            showDashboard();
+            openDashboardTab();
         }
     }
 });
