@@ -818,14 +818,9 @@ function saveTabsState() {
         console.log('💾 Attempting to save tabs. Current openTabs:', openTabs.map(t => ({ id: t.id, fileType: t.fileType })));
 
         const tabsState = {
-            // Filter out dashboard tab and temporary tabs (new_, generated_, chat_)
+            // Filter out temporary tabs (new_, generated_, chat_) but KEEP dashboard
             openTabs: openTabs
                 .filter(tab => {
-                    // Exclude dashboard tab
-                    if (tab.fileType === 'dashboard') {
-                        console.log('💾 Filtering out dashboard tab:', tab.id);
-                        return false;
-                    }
                     // Exclude temporary tabs
                     if (tab.id.startsWith('new_')) {
                         console.log('💾 Filtering out new_ tab:', tab.id);
@@ -845,12 +840,13 @@ function saveTabsState() {
                 .map(tab => ({
                     id: tab.id,
                     name: tab.name,
-                    fileType: tab.fileType  // Save file type
+                    fileType: tab.fileType  // Save file type (including 'dashboard')
                     // Don't save code or isDirty, we'll reload fresh from files
                 })),
-            activeTabId: activeTabId === '__dashboard__' ? null : activeTabId
+            activeTabId: activeTabId  // Keep dashboard as activeTabId if it was active
         };
         localStorage.setItem('editorTabsState', JSON.stringify(tabsState));
+        console.log('💾 Saved tabs state:', tabsState);
     } catch (err) {
         console.error('Error saving tabs state:', err);
     }
@@ -876,8 +872,22 @@ async function restoreTabsState() {
                 !tabInfo.id.startsWith('chat_')) {
 
                 try {
+                    // Handle dashboard tab restoration (no API fetch needed)
+                    if (tabInfo.fileType === 'dashboard') {
+                        console.log(`📂 Restoring dashboard tab`);
+                        const existingTab = openTabs.find(t => t.id === tabInfo.id);
+                        if (!existingTab) {
+                            openTabs.push({
+                                id: '__dashboard__',
+                                name: '📊 Dashboard',
+                                code: '',
+                                isDirty: false,
+                                fileType: 'dashboard'
+                            });
+                        }
+                    }
                     // Handle AI step restoration
-                    if (tabInfo.fileType === 'ai-step') {
+                    else if (tabInfo.fileType === 'ai-step') {
                         console.log(`📂 Fetching AI step: ${tabInfo.id}`);
                         const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown`);
                         console.log(`📂 AI step fetch response ok:`, response.ok);
@@ -895,15 +905,15 @@ async function restoreTabsState() {
                                 });
                             }
                         }
-                    } else {
-                        // Fetch regular test file content
+                    }
+                    // Handle regular test file restoration
+                    else {
                         console.log(`📂 Fetching test file: ${tabInfo.id}`);
                         const response = await fetch(`/api/saved-tests/${tabInfo.id}`);
                         console.log(`📂 Test file fetch response ok:`, response.ok);
                         if (response.ok) {
                             const data = await response.json();
 
-                            // Open the tab (without triggering saveTabsState recursively)
                             const existingTab = openTabs.find(t => t.id === tabInfo.id);
                             if (!existingTab) {
                                 console.log(`📂 Adding test tab to openTabs:`, tabInfo.id);
