@@ -1376,9 +1376,85 @@ async function loadDashboardStats() {
         document.getElementById('dashboard-passed').textContent = passedTests;
         document.getElementById('dashboard-failed').textContent = failedTests;
         document.getElementById('dashboard-ai-steps').textContent = totalAiSteps;
+
+        // Load recordings gallery
+        await loadRecordingsGallery(tests, aiSteps);
     } catch (error) {
         console.error('Error loading dashboard stats:', error);
     }
+}
+
+async function loadRecordingsGallery(tests, aiSteps) {
+    const recordingsGallery = document.getElementById('recordings-gallery');
+    const noRecordingsMessage = document.getElementById('no-recordings-message');
+
+    if (!recordingsGallery) return;
+
+    // Combine tests and AI steps that have video artifacts
+    const allItems = [...tests, ...aiSteps];
+    const itemsWithVideos = allItems.filter(item =>
+        item.artifacts && item.artifacts.length > 0
+    );
+
+    // Sort by most recent first
+    itemsWithVideos.sort((a, b) => {
+        const aTime = a.artifacts[a.artifacts.length - 1].timestamp;
+        const bTime = b.artifacts[b.artifacts.length - 1].timestamp;
+        return bTime.localeCompare(aTime);
+    });
+
+    // Clear gallery
+    recordingsGallery.innerHTML = '';
+
+    if (itemsWithVideos.length === 0) {
+        noRecordingsMessage.style.display = 'block';
+        recordingsGallery.style.display = 'none';
+        return;
+    }
+
+    noRecordingsMessage.style.display = 'none';
+    recordingsGallery.style.display = 'grid';
+
+    // Create cards for each recording
+    itemsWithVideos.forEach(item => {
+        const latestArtifact = item.artifacts[item.artifacts.length - 1];
+        const card = createRecordingCard(item, latestArtifact);
+        recordingsGallery.appendChild(card);
+    });
+}
+
+function createRecordingCard(item, artifact) {
+    const card = document.createElement('div');
+    card.className = 'recording-card';
+
+    const statusClass = artifact.status === 'success' || artifact.status === 'passed' ? 'passed' : 'failed';
+    const statusText = artifact.status === 'success' || artifact.status === 'passed' ? 'Passed' : 'Failed';
+
+    // Format timestamp
+    const timestamp = artifact.timestamp.replace(/_/g, ' ').replace(/-/g, ':');
+
+    card.innerHTML = `
+        <div class="recording-thumbnail">
+            <div class="recording-placeholder">🎬</div>
+            <div class="recording-play-overlay">
+                <div class="recording-play-icon">▶</div>
+            </div>
+        </div>
+        <div class="recording-info">
+            <div class="recording-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+            <div class="recording-meta">
+                <span class="recording-status ${statusClass}">${statusText}</span>
+                <span class="recording-timestamp">${timestamp}</span>
+            </div>
+        </div>
+    `;
+
+    // Click handler to open video viewer modal
+    card.addEventListener('click', () => {
+        showVideoViewerModal(item.filename, item.name);
+    });
+
+    return card;
 }
 
 // Close All Tabs
