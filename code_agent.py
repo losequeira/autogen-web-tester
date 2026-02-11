@@ -64,7 +64,60 @@ RULES:
 7. Be concise and helpful. Focus on generating working, clean code.
 """
 
-    def generate_response(self, user_message: str, existing_code: Optional[str] = None, image_data: Optional[str] = None) -> Dict:
+        # System prompt for AI Steps (use case generation)
+        self.steps_system_prompt = """You are a test case design assistant. Help users create detailed, step-by-step test cases for web applications.
+
+RULES:
+1. Generate clear, numbered step-by-step test scenarios
+2. Each step should be actionable and specific
+3. Include verification/validation steps where appropriate
+4. Format as plain text or markdown
+
+5. Test case structure:
+   - Clear test case name/description
+   - Numbered steps (1., 2., 3., etc.)
+   - Each step describes ONE action or validation
+   - Include expected results where relevant
+
+6. Common test patterns:
+   - User flows (signup, login, checkout, etc.)
+   - Form validation scenarios
+   - Navigation and UI interactions
+   - Data entry and submission
+   - Error handling and edge cases
+
+7. Example format:
+   Test Case: User Signup Flow
+
+   1. Navigate to the signup page
+   2. Fill in the email field with "test@example.com"
+   3. Fill in the password field with a valid password
+   4. Click the "Sign Up" button
+   5. Verify that the user is redirected to the dashboard
+   6. Verify that a welcome message is displayed
+
+8. Be specific about selectors, text, and actions
+9. Include validation steps to ensure the test is working correctly
+10. Consider edge cases and error scenarios when relevant
+"""
+
+    def _get_system_prompt(self, file_type: str) -> str:
+        """
+        Get the appropriate system prompt based on file type.
+
+        Args:
+            file_type: Type of file being edited ('test', 'ai-step', or 'unknown')
+
+        Returns:
+            System prompt string
+        """
+        if file_type == 'ai-step':
+            return self.steps_system_prompt
+        else:
+            # For 'test', 'unknown', or any other type, use the code generation prompt
+            return self.system_prompt
+
+    def generate_response(self, user_message: str, existing_code: Optional[str] = None, image_data: Optional[str] = None, file_type: str = 'unknown') -> Dict:
         """
         Generate AI response and code based on user message.
 
@@ -72,6 +125,7 @@ RULES:
             user_message: User's request or question
             existing_code: Optional existing code to modify
             image_data: Optional base64 encoded image data
+            file_type: Type of file being edited ('test', 'ai-step', or 'unknown')
 
         Returns:
             Dictionary with:
@@ -80,10 +134,15 @@ RULES:
                 - explanation: Brief explanation of what was done
         """
         try:
-            # Build context with existing code if provided
+            # Build context with existing content if provided
             context = ""
             if existing_code:
-                context = f"Current code:\n```python\n{existing_code}\n```\n\n"
+                if file_type == 'ai-step':
+                    # For AI steps, treat existing content as test steps
+                    context = f"Current test steps:\n{existing_code}\n\n"
+                else:
+                    # For test files, treat existing content as code
+                    context = f"Current code:\n```python\n{existing_code}\n```\n\n"
 
             full_message = context + user_message
 
@@ -108,11 +167,14 @@ RULES:
                 "content": user_content
             })
 
+            # Get the appropriate system prompt based on file type
+            system_prompt = self._get_system_prompt(file_type)
+
             # Call OpenAI API
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": self.system_prompt}
+                    {"role": "system", "content": system_prompt}
                 ] + self.conversation_history,
                 temperature=0.7,
                 max_tokens=2000

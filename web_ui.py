@@ -1875,20 +1875,21 @@ def handle_chat_message(data):
     message = data.get('message')
     existing_code = data.get('existing_code')
     image = data.get('image')  # Base64 encoded image
+    file_type = data.get('file_type', 'unknown')  # Get file type for context-aware assistance
 
     if not message and not image:
         emit('chat_error', {'message': 'No message or image provided'})
         return
 
     # Run in background to avoid blocking
-    socketio.start_background_task(handle_code_chat, message, existing_code, image)
+    socketio.start_background_task(handle_code_chat, message, existing_code, image, file_type)
 
 
-def handle_code_chat(message, existing_code, image=None):
+def handle_code_chat(message, existing_code, image=None, file_type='unknown'):
     """Background task to handle code generation chat."""
     try:
-        # Generate response using code agent (with optional image)
-        result = code_agent.generate_response(message, existing_code, image)
+        # Generate response using code agent (with optional image and file type)
+        result = code_agent.generate_response(message, existing_code, image, file_type)
 
         # Emit AI response
         socketio.emit('chat_response', {
