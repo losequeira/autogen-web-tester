@@ -716,9 +716,12 @@ async function runAllTests() {
 
 // Tab Management Functions
 function openTab(filename, name, code, fileType = 'test') {
+    console.log('📂 Opening tab:', { filename, name, fileType });
+
     // Check if tab is already open
     const existingTab = openTabs.find(tab => tab.id === filename);
     if (existingTab) {
+        console.log('📂 Tab already open, switching to it');
         switchToTab(filename);
         return;
     }
@@ -731,6 +734,8 @@ function openTab(filename, name, code, fileType = 'test') {
         isDirty: false,
         fileType: fileType  // 'test' or 'ai-step'
     });
+
+    console.log('📂 Total tabs open:', openTabs.length);
 
     // Hide welcome page before switching to tab
     hideWelcomePage();
@@ -810,16 +815,31 @@ function switchToTab(filename) {
 // Tab State Persistence Functions
 function saveTabsState() {
     try {
+        console.log('💾 Attempting to save tabs. Current openTabs:', openTabs.map(t => ({ id: t.id, fileType: t.fileType })));
+
         const tabsState = {
             // Filter out dashboard tab and temporary tabs (new_, generated_, chat_)
             openTabs: openTabs
                 .filter(tab => {
                     // Exclude dashboard tab
-                    if (tab.fileType === 'dashboard') return false;
+                    if (tab.fileType === 'dashboard') {
+                        console.log('💾 Filtering out dashboard tab:', tab.id);
+                        return false;
+                    }
                     // Exclude temporary tabs
-                    if (tab.id.startsWith('new_')) return false;
-                    if (tab.id.startsWith('generated_')) return false;
-                    if (tab.id.startsWith('chat_')) return false;
+                    if (tab.id.startsWith('new_')) {
+                        console.log('💾 Filtering out new_ tab:', tab.id);
+                        return false;
+                    }
+                    if (tab.id.startsWith('generated_')) {
+                        console.log('💾 Filtering out generated_ tab:', tab.id);
+                        return false;
+                    }
+                    if (tab.id.startsWith('chat_')) {
+                        console.log('💾 Filtering out chat_ tab:', tab.id);
+                        return false;
+                    }
+                    console.log('💾 Keeping tab:', tab.id);
                     return true;
                 })
                 .map(tab => ({
