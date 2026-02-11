@@ -1898,12 +1898,22 @@ def handle_code_chat(message, existing_code, image=None, file_type='unknown'):
             'timestamp': datetime.now().isoformat()
         })
 
-        # Emit generated code if available
-        if result['code']:
+        # Emit generated code or content (steps) if available
+        if result.get('code'):
+            # For test files - send code
             socketio.emit('code_suggestion', {
                 'code': result['code'],
                 'explanation': result.get('explanation', ''),
-                'action': 'suggest'
+                'action': 'suggest',
+                'content_type': 'code'
+            })
+        elif result.get('content'):
+            # For AI steps files - send steps content
+            socketio.emit('code_suggestion', {
+                'code': result['content'],  # Using 'code' field for compatibility with frontend
+                'explanation': result.get('explanation', ''),
+                'action': 'suggest',
+                'content_type': 'steps'
             })
 
     except Exception as e:

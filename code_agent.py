@@ -188,14 +188,26 @@ RULES:
                 "content": ai_message
             })
 
-            # Extract code from response
-            code = self._extract_code_from_response(ai_message)
-            explanation = self._extract_explanation_from_response(ai_message)
+            # Extract content based on file type
+            code = None
+            content = None
+            explanation = None
+
+            if file_type == 'ai-step':
+                # For AI steps, extract the full response as content (steps)
+                content = self._extract_steps_from_response(ai_message)
+                explanation = self._extract_explanation_from_response(ai_message)
+            else:
+                # For test files, extract code blocks
+                code = self._extract_code_from_response(ai_message)
+                explanation = self._extract_explanation_from_response(ai_message)
 
             return {
                 "message": ai_message,
                 "code": code,
-                "explanation": explanation
+                "content": content,
+                "explanation": explanation,
+                "file_type": file_type
             }
 
         except Exception as e:
@@ -230,6 +242,32 @@ RULES:
                 return code
 
         return None
+
+    def _extract_steps_from_response(self, response: str) -> Optional[str]:
+        """
+        Extract test steps content from the response.
+        For AI Steps files, we want the full response content (which should be steps).
+
+        Args:
+            response: AI response text
+
+        Returns:
+            Extracted steps content or the full response if it looks like steps
+        """
+        # Clean up the response
+        content = response.strip()
+
+        # If the response contains numbered steps, return it as-is
+        # Look for patterns like "1.", "2.", etc.
+        if re.search(r'^\d+\.', content, re.MULTILINE):
+            return content
+
+        # If it contains "Test Case:" or similar headers, return it
+        if re.search(r'Test Case:|Steps:|Scenario:', content, re.IGNORECASE):
+            return content
+
+        # Otherwise, return the full response
+        return content
 
     def _extract_explanation_from_response(self, response: str) -> str:
         """
