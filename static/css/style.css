@@ -2076,29 +2076,6 @@ body {
     padding: 40px;
 }
 
-.dashboard-header {
-    text-align: center;
-    margin-bottom: 40px;
-}
-
-.dashboard-icon-large {
-    font-size: 64px;
-    display: block;
-    margin-bottom: 16px;
-}
-
-.dashboard-title h1 {
-    color: #cccccc;
-    font-size: 32px;
-    font-weight: 400;
-    margin-bottom: 8px;
-}
-
-.dashboard-subtitle {
-    color: #858585;
-    font-size: 16px;
-}
-
 /* Dashboard Stats */
 .dashboard-stats {
     display: grid;
