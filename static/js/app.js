@@ -714,6 +714,9 @@ async function runAllTests() {
 
 // Tab Management Functions
 function openTab(filename, name, code, fileType = 'test') {
+    // Hide dashboard when opening a tab
+    hideDashboard();
+
     // Check if tab is already open
     const existingTab = openTabs.find(tab => tab.id === filename);
     if (existingTab) {
@@ -764,6 +767,9 @@ function closeTab(filename) {
             activeTabId = null;
             setPlaywrightCode('');
             if (editorContent) editorContent.classList.add('empty');
+
+            // Show dashboard when last tab is closed
+            showDashboard();
         }
     }
 
@@ -1263,6 +1269,86 @@ if (runAllTestsBtn) {
     });
 }
 
+// Dashboard Button
+const dashboardBtn = document.getElementById('dashboard-btn');
+const dashboardView = document.getElementById('dashboard-view');
+const codemirrorEditor = document.getElementById('codemirror-editor');
+
+if (dashboardBtn) {
+    dashboardBtn.addEventListener('click', () => {
+        showDashboard();
+    });
+}
+
+// Get Started Cards in Dashboard
+const newTestCard = document.getElementById('new-test-card');
+const newAiStepCard = document.getElementById('new-ai-step-card');
+
+if (newTestCard) {
+    newTestCard.addEventListener('click', () => {
+        if (newTestBtn) newTestBtn.click();
+    });
+}
+
+if (newAiStepCard) {
+    newAiStepCard.addEventListener('click', () => {
+        if (newAiStepBtn) newAiStepBtn.click();
+    });
+}
+
+function showDashboard() {
+    // Hide editor, show dashboard
+    if (codemirrorEditor) codemirrorEditor.style.display = 'none';
+    if (dashboardView) dashboardView.style.display = 'block';
+
+    // Update dashboard button state
+    if (dashboardBtn) dashboardBtn.classList.add('active');
+
+    // Close all tabs
+    openTabs = [];
+    activeTabId = null;
+    renderTabs();
+    updateFileListActiveState();
+
+    // Load dashboard statistics
+    loadDashboardStats();
+}
+
+function hideDashboard() {
+    // Show editor, hide dashboard
+    if (codemirrorEditor) codemirrorEditor.style.display = 'block';
+    if (dashboardView) dashboardView.style.display = 'none';
+
+    // Update dashboard button state
+    if (dashboardBtn) dashboardBtn.classList.remove('active');
+}
+
+async function loadDashboardStats() {
+    try {
+        // Fetch saved tests
+        const testsResponse = await fetch('/api/saved-tests');
+        const tests = await testsResponse.json();
+
+        // Fetch AI steps
+        const aiStepsResponse = await fetch('/api/ai-steps');
+        const aiSteps = await aiStepsResponse.json();
+
+        // Calculate statistics
+        const totalTests = tests.length;
+        const passedTests = tests.filter(t => t.last_run_status === 'success').length;
+        const failedTests = tests.filter(t => t.last_run_status === 'error').length;
+        const totalAiSteps = aiSteps.length;
+
+        // Update dashboard stats
+        document.getElementById('dashboard-saved-tests').textContent = totalTests;
+        document.getElementById('dashboard-passed').textContent = passedTests;
+        document.getElementById('dashboard-failed').textContent = failedTests;
+        document.getElementById('dashboard-ai-steps').textContent = totalAiSteps;
+    } catch (error) {
+        console.error('Error loading dashboard stats:', error);
+    }
+}
+
 // Close All Tabs
 if (closeAllTabsBtn) {
     closeAllTabsBtn.addEventListener('click', () => {
@@ -1282,6 +1368,9 @@ if (closeAllTabsBtn) {
         renderTabs();
         updateFileListActiveState();
         saveTabsState();  // Save state when closing all tabs
+
+        // Show dashboard when all tabs are closed
+        showDashboard();
     });
 }
 
@@ -1294,6 +1383,11 @@ window.addEventListener('load', () => {
         loadFileExplorer();
         loadAiSteps();
         if (editorContent) editorContent.classList.add('empty');
+
+        // Show dashboard by default if no tabs are open
+        if (openTabs.length === 0) {
+            showDashboard();
+        }
     }
 });
 

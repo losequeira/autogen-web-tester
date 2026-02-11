@@ -2026,3 +2026,229 @@ body {
     background: rgba(100, 100, 100, 0.7);
     background-clip: content-box;
 }
+
+/* Dashboard Menu Item */
+.dashboard-section {
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+}
+
+.dashboard-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 16px;
+    background: transparent;
+    border: none;
+    color: #cccccc;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    transition: background 0.2s;
+    text-align: left;
+}
+
+.dashboard-menu-item:hover {
+    background: #2a2d2e;
+}
+
+.dashboard-menu-item.active {
+    background: #37373d;
+}
+
+.dashboard-icon {
+    font-size: 14px;
+}
+
+.dashboard-label {
+    flex: 1;
+}
+
+/* Dashboard View */
+.dashboard-view {
+    width: 100%;
+    height: 100%;
+    background: #1e1e1e;
+    overflow-y: auto;
+    padding: 40px;
+}
+
+.dashboard-header {
+    text-align: center;
+    margin-bottom: 40px;
+}
+
+.dashboard-icon-large {
+    font-size: 64px;
+    display: block;
+    margin-bottom: 16px;
+}
+
+.dashboard-title h1 {
+    color: #cccccc;
+    font-size: 32px;
+    font-weight: 400;
+    margin-bottom: 8px;
+}
+
+.dashboard-subtitle {
+    color: #858585;
+    font-size: 16px;
+}
+
+/* Dashboard Stats */
+.dashboard-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 20px;
+    margin-bottom: 48px;
+}
+
+.dashboard-stats .stat-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: #252526;
+    border: 1px solid #3c3c3c;
+    border-radius: 12px;
+    padding: 24px;
+    transition: all 0.3s;
+}
+
+.dashboard-stats .stat-card:hover {
+    background: #2d2d30;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.dashboard-stats .stat-card.stat-primary {
+    border-left: 4px solid #007acc;
+}
+
+.dashboard-stats .stat-card.stat-success {
+    border-left: 4px solid #10b981;
+}
+
+.dashboard-stats .stat-card.stat-error {
+    border-left: 4px solid #ef4444;
+}
+
+.dashboard-stats .stat-card.stat-info {
+    border-left: 4px solid #f59e0b;
+}
+
+.dashboard-stats .stat-icon {
+    font-size: 32px;
+}
+
+.dashboard-stats .stat-content {
+    flex: 1;
+}
+
+.dashboard-stats .stat-value {
+    font-size: 36px;
+    font-weight: 700;
+    color: #cccccc;
+    margin-bottom: 4px;
+}
+
+.dashboard-stats .stat-label {
+    font-size: 11px;
+    color: #858585;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Get Started Section */
+.dashboard-get-started {
+    margin-bottom: 48px;
+}
+
+.dashboard-get-started h2 {
+    color: #cccccc;
+    font-size: 20px;
+    font-weight: 400;
+    margin-bottom: 20px;
+}
+
+.get-started-cards {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+}
+
+.get-started-card {
+    background: #252526;
+    border: 1px solid #3c3c3c;
+    border-radius: 12px;
+    padding: 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.get-started-card:hover {
+    background: #2d2d30;
+    border-color: #007acc;
+    transform: translateY(-2px);
+}
+
+.get-started-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    color: #007acc;
+}
+
+.get-started-card h3 {
+    color: #cccccc;
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.get-started-card p {
+    color: #858585;
+    font-size: 14px;
+}
+
+/* Dashboard Empty State */
+.dashboard-empty-state {
+    display: none;
+    text-align: center;
+    padding: 80px 20px;
+}
+
+.empty-state-text {
+    color: #858585;
+    font-size: 14px;
+    margin-bottom: 8px;
+}
+
+.empty-state-subtext {
+    color: #6e6e6e;
+    font-size: 12px;
+}
+
+/* Responsive Dashboard */
+@media (max-width: 1200px) {
+    .dashboard-stats {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .dashboard-view {
+        padding: 20px;
+    }
+
+    .dashboard-stats {
+        grid-template-columns: 1fr;
+    }
+
+    .get-started-cards {
+        grid-template-columns: 1fr;
+    }
+}

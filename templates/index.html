@@ -57,6 +57,14 @@
 
                 <!-- File Explorer Sidebar (Left) -->
                 <div id="file-explorer" class="file-explorer">
+                    <!-- Dashboard Section -->
+                    <div class="file-explorer-section dashboard-section">
+                        <button id="dashboard-btn" class="dashboard-menu-item">
+                            <span class="dashboard-icon">📊</span>
+                            <span class="dashboard-label">DASHBOARD</span>
+                        </button>
+                    </div>
+
                     <!-- Saved Tests Section -->
                     <div class="file-explorer-section">
                         <div class="file-explorer-header">
@@ -101,6 +109,69 @@
                     <!-- Editor Content -->
                     <div class="editor-content">
                         <div id="codemirror-editor"></div>
+                    </div>
+
+                    <!-- Dashboard View -->
+                    <div id="dashboard-view" class="dashboard-view" style="display: none;">
+                        <div class="dashboard-header">
+                            <div class="dashboard-title">
+                                <span class="dashboard-icon-large">🤖</span>
+                                <h1>AutoGen Web Tester</h1>
+                                <p class="dashboard-subtitle">AI-powered browser automation and testing</p>
+                            </div>
+                        </div>
+
+                        <div class="dashboard-stats">
+                            <div class="stat-card stat-primary">
+                                <div class="stat-icon">📝</div>
+                                <div class="stat-content">
+                                    <div class="stat-value" id="dashboard-saved-tests">0</div>
+                                    <div class="stat-label">SAVED TESTS</div>
+                                </div>
+                            </div>
+                            <div class="stat-card stat-success">
+                                <div class="stat-icon">✓</div>
+                                <div class="stat-content">
+                                    <div class="stat-value" id="dashboard-passed">0</div>
+                                    <div class="stat-label">PASSED</div>
+                                </div>
+                            </div>
+                            <div class="stat-card stat-error">
+                                <div class="stat-icon">✗</div>
+                                <div class="stat-content">
+                                    <div class="stat-value" id="dashboard-failed">0</div>
+                                    <div class="stat-label">FAILED</div>
+                                </div>
+                            </div>
+                            <div class="stat-card stat-info">
+                                <div class="stat-icon">🤖</div>
+                                <div class="stat-content">
+                                    <div class="stat-value" id="dashboard-ai-steps">0</div>
+                                    <div class="stat-label">AI STEPS</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="dashboard-get-started">
+                            <h2>Get Started</h2>
+                            <div class="get-started-cards">
+                                <div class="get-started-card" id="new-test-card">
+                                    <div class="get-started-icon">+</div>
+                                    <h3>New Test</h3>
+                                    <p>Create a new Playwright test</p>
+                                </div>
+                                <div class="get-started-card" id="new-ai-step-card">
+                                    <div class="get-started-icon">🤖</div>
+                                    <h3>New AI Step</h3>
+                                    <p>Write tests in natural language</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="dashboard-empty-state" id="dashboard-empty-state">
+                            <p class="empty-state-text">No file open</p>
+                            <p class="empty-state-subtext">Open a file from the explorer or use AI Chat to generate code</p>
+                        </div>
                     </div>
                 </div>
 
