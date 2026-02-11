@@ -1237,6 +1237,12 @@ if (hasFileExplorer && explorerResizer) {
     let startX = 0;
     let startWidth = 0;
 
+    // Restore saved width on load
+    const savedWidth = localStorage.getItem('fileExplorerWidth');
+    if (savedWidth) {
+        fileExplorer.style.width = savedWidth + 'px';
+    }
+
     explorerResizer.addEventListener('mousedown', (e) => {
         isResizing = true;
         startX = e.clientX;
@@ -1260,6 +1266,10 @@ if (hasFileExplorer && explorerResizer) {
             explorerResizer.classList.remove('resizing');
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
+
+            // Save the new width to localStorage
+            const currentWidth = fileExplorer.offsetWidth;
+            localStorage.setItem('fileExplorerWidth', currentWidth);
         }
     });
 }
