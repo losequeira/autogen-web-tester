@@ -878,11 +878,14 @@ async function restoreTabsState() {
                 try {
                     // Handle AI step restoration
                     if (tabInfo.fileType === 'ai-step') {
+                        console.log(`📂 Fetching AI step: ${tabInfo.id}`);
                         const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown`);
+                        console.log(`📂 AI step fetch response ok:`, response.ok);
                         if (response.ok) {
                             const data = await response.json();
                             const existingTab = openTabs.find(t => t.id === tabInfo.id);
                             if (!existingTab) {
+                                console.log(`📂 Adding AI step tab to openTabs:`, tabInfo.id);
                                 openTabs.push({
                                     id: tabInfo.id,
                                     name: tabInfo.name,
@@ -894,13 +897,16 @@ async function restoreTabsState() {
                         }
                     } else {
                         // Fetch regular test file content
+                        console.log(`📂 Fetching test file: ${tabInfo.id}`);
                         const response = await fetch(`/api/saved-tests/${tabInfo.id}`);
+                        console.log(`📂 Test file fetch response ok:`, response.ok);
                         if (response.ok) {
                             const data = await response.json();
 
                             // Open the tab (without triggering saveTabsState recursively)
                             const existingTab = openTabs.find(t => t.id === tabInfo.id);
                             if (!existingTab) {
+                                console.log(`📂 Adding test tab to openTabs:`, tabInfo.id);
                                 openTabs.push({
                                     id: tabInfo.id,
                                     name: tabInfo.name,
@@ -2548,6 +2554,10 @@ function handleImageFile(file) {
 
 // Load default example on page load
 window.addEventListener('load', async () => {
+    console.log('🔄 Page loaded, checking localStorage...');
+    const savedState = localStorage.getItem('editorTabsState');
+    console.log('🔄 localStorage content:', savedState);
+
     addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
     addLogEntry('info', '🤖 Create AI Steps in the file explorer to run natural language tests');
     addLogEntry('info', '💬 Use AI Chat to generate and modify Playwright code');
@@ -2555,11 +2565,16 @@ window.addEventListener('load', async () => {
     // Initialize CodeMirror editor
     initializeCodeMirror();
 
+    console.log('🔄 About to restore tabs...');
     // Restore previously open tabs
     await restoreTabsState();
+    console.log('🔄 After restore, openTabs.length:', openTabs.length);
 
     // Show welcome page if no tabs are open
     if (openTabs.length === 0) {
+        console.log('🔄 No tabs restored, showing welcome page');
         showWelcomePage();
+    } else {
+        console.log('🔄 Tabs restored, not showing welcome page');
     }
 });
