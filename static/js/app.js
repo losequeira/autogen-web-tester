@@ -1530,10 +1530,7 @@ window.addEventListener('load', () => {
         loadAiSteps();
         if (editorContent) editorContent.classList.add('empty');
 
-        // Open dashboard tab by default if no tabs are open
-        if (openTabs.length === 0) {
-            openDashboardTab();
-        }
+        // Dashboard opening is now handled by the main load handler after tab restoration
     }
 });
 
@@ -2570,11 +2567,11 @@ window.addEventListener('load', async () => {
     await restoreTabsState();
     console.log('🔄 After restore, openTabs.length:', openTabs.length);
 
-    // Show welcome page if no tabs are open
+    // Open dashboard tab if no tabs were restored
     if (openTabs.length === 0) {
-        console.log('🔄 No tabs restored, showing welcome page');
-        showWelcomePage();
+        console.log('🔄 No tabs restored, opening dashboard');
+        openDashboardTab();
     } else {
-        console.log('🔄 Tabs restored, not showing welcome page');
+        console.log('🔄 Tabs restored successfully!');
     }
 });
