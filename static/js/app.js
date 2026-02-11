@@ -642,8 +642,10 @@ function runSavedTest(filename, name) {
         const codeEditorContainer = document.querySelector('.code-editor-container');
         browserSidebar.classList.add('open');
         codeEditorContainer.classList.add('browser-open');
-        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
-        toggleBrowserBtn.classList.add('active');
+        if (toggleBrowserBtn) {
+            toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
+            toggleBrowserBtn.classList.add('active');
+        }
     }
 
     // Automatically open output panel to show logs
@@ -1601,8 +1603,10 @@ function runAiStep(filename, name) {
         const codeEditorContainer = document.querySelector('.code-editor-container');
         browserSidebar.classList.add('open');
         codeEditorContainer.classList.add('browser-open');
-        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
-        toggleBrowserBtn.classList.add('active');
+        if (toggleBrowserBtn) {
+            toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
+            toggleBrowserBtn.classList.add('active');
+        }
     }
     openOutputPanel();
 
