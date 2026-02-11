@@ -2154,6 +2154,15 @@ function sendChatMessage() {
     // Get existing code from bottom panel
     const existingCode = getPlaywrightCode();
 
+    // Detect current file type
+    let fileType = 'unknown';
+    if (activeTabId) {
+        const activeTab = openTabs.find(t => t.id === activeTabId);
+        if (activeTab) {
+            fileType = activeTab.fileType || 'test';  // Default to 'test' if not specified
+        }
+    }
+
     // Add user message to chat (with image if present)
     if (currentImage) {
         appendChatMessageWithImage('user', message || 'Analyze this image', currentImage);
@@ -2167,7 +2176,8 @@ function sendChatMessage() {
     socket.emit('chat_message', {
         message: message || 'Analyze this image and generate relevant Playwright code',
         existing_code: existingCode || null,
-        image: currentImage
+        image: currentImage,
+        file_type: fileType  // Send file type for context-aware assistance
     });
 
     // Clear image after sending
@@ -2266,16 +2276,19 @@ socket.on('chat_response', (data) => {
 });
 
 socket.on('code_suggestion', (data) => {
-    // Show code in chat
+    // Show code/steps in chat
     appendChatMessage('code', data.code, true);
 
     // Store suggestion and show preview
     const currentCode = activeTabId ? getPlaywrightCode() : '';
+    const contentType = data.content_type || 'code';  // 'code' or 'steps'
+
     pendingCodeSuggestion = {
         code: data.code,
-        explanation: data.explanation || 'AI-generated code suggestion',
+        explanation: data.explanation || (contentType === 'steps' ? 'AI-generated test steps' : 'AI-generated code suggestion'),
         currentCode: currentCode,
-        targetTabId: activeTabId
+        targetTabId: activeTabId,
+        contentType: contentType
     };
 
     showCodePreview();
@@ -2300,6 +2313,22 @@ socket.on('chat_error', (data) => {
 function showCodePreview() {
     if (!pendingCodeSuggestion) return;
 
+    const contentType = pendingCodeSuggestion.contentType || 'code';
+    const isSteps = contentType === 'steps';
+
+    // Update panel labels based on content type
+    const previewLabel = document.querySelector('.code-preview-label');
+    if (previewLabel) {
+        previewLabel.textContent = isSteps ? 'TEST STEPS SUGGESTION' : 'CODE SUGGESTION';
+    }
+
+    // Update diff column headers
+    const diffHeaders = document.querySelectorAll('.diff-column-header');
+    if (diffHeaders.length >= 2) {
+        diffHeaders[0].textContent = isSteps ? 'CURRENT STEPS' : 'CURRENT CODE';
+        diffHeaders[1].textContent = isSteps ? 'SUGGESTED STEPS (AI)' : 'SUGGESTED CODE (AI)';
+    }
+
     // Set explanation
     codePreviewExplanation.textContent = pendingCodeSuggestion.explanation;
 
@@ -2309,7 +2338,7 @@ function showCodePreview() {
     // Show panel
     codePreviewPanel.classList.add('open');
 
-    addLogEntry('info', '📝 Code suggestion ready for review');
+    addLogEntry('info', isSteps ? '📝 Test steps suggestion ready for review' : '📝 Code suggestion ready for review');
 }
 
 function highlightCodeDiff() {
@@ -2345,9 +2374,11 @@ function highlightCodeDiff() {
         }
     }
 
-    // Handle empty current code
+    // Handle empty current content
     if (!pendingCodeSuggestion.currentCode) {
-        currentHtml = '<div style="color: #858585; font-style: italic;">No existing code in editor</div>';
+        const contentType = pendingCodeSuggestion.contentType || 'code';
+        const emptyMessage = contentType === 'steps' ? 'No existing steps in editor' : 'No existing code in editor';
+        currentHtml = `<div style="color: #858585; font-style: italic;">${emptyMessage}</div>`;
     }
 
     codePreviewCurrent.innerHTML = currentHtml;
@@ -2391,8 +2422,13 @@ acceptCodeBtn.addEventListener('click', () => {
         renderTabs();
     }
 
-    addLogEntry('success', '✓ Code suggestion accepted and applied');
-    appendChatMessage('system', '✓ Code applied to editor');
+    const contentType = pendingCodeSuggestion.contentType || 'code';
+    const isSteps = contentType === 'steps';
+    const acceptMessage = isSteps ? '✓ Test steps suggestion accepted and applied' : '✓ Code suggestion accepted and applied';
+    const chatMessage = isSteps ? '✓ Steps applied to editor' : '✓ Code applied to editor';
+
+    addLogEntry('success', acceptMessage);
+    appendChatMessage('system', chatMessage);
 
     closeCodePreview();
 });
@@ -2400,7 +2436,11 @@ acceptCodeBtn.addEventListener('click', () => {
 rejectCodeBtn.addEventListener('click', () => {
     if (!pendingCodeSuggestion) return;
 
-    addLogEntry('info', '✗ Code suggestion rejected');
+    const contentType = pendingCodeSuggestion.contentType || 'code';
+    const isSteps = contentType === 'steps';
+    const rejectMessage = isSteps ? '✗ Test steps suggestion rejected' : '✗ Code suggestion rejected';
+
+    addLogEntry('info', rejectMessage);
     appendChatMessage('system', '✗ Suggestion rejected - editor unchanged');
 
     closeCodePreview();
