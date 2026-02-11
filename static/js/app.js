@@ -716,12 +716,9 @@ async function runAllTests() {
 
 // Tab Management Functions
 function openTab(filename, name, code, fileType = 'test') {
-    console.log('📂 Opening tab:', { filename, name, fileType });
-
     // Check if tab is already open
     const existingTab = openTabs.find(tab => tab.id === filename);
     if (existingTab) {
-        console.log('📂 Tab already open, switching to it');
         switchToTab(filename);
         return;
     }
@@ -734,8 +731,6 @@ function openTab(filename, name, code, fileType = 'test') {
         isDirty: false,
         fileType: fileType  // 'test' or 'ai-step'
     });
-
-    console.log('📂 Total tabs open:', openTabs.length);
 
     // Hide welcome page before switching to tab
     hideWelcomePage();
@@ -815,26 +810,14 @@ function switchToTab(filename) {
 // Tab State Persistence Functions
 function saveTabsState() {
     try {
-        console.log('💾 Attempting to save tabs. Current openTabs:', openTabs.map(t => ({ id: t.id, fileType: t.fileType })));
-
         const tabsState = {
             // Filter out temporary tabs (new_, generated_, chat_) but KEEP dashboard
             openTabs: openTabs
                 .filter(tab => {
                     // Exclude temporary tabs
-                    if (tab.id.startsWith('new_')) {
-                        console.log('💾 Filtering out new_ tab:', tab.id);
-                        return false;
-                    }
-                    if (tab.id.startsWith('generated_')) {
-                        console.log('💾 Filtering out generated_ tab:', tab.id);
-                        return false;
-                    }
-                    if (tab.id.startsWith('chat_')) {
-                        console.log('💾 Filtering out chat_ tab:', tab.id);
-                        return false;
-                    }
-                    console.log('💾 Keeping tab:', tab.id);
+                    if (tab.id.startsWith('new_')) return false;
+                    if (tab.id.startsWith('generated_')) return false;
+                    if (tab.id.startsWith('chat_')) return false;
                     return true;
                 })
                 .map(tab => ({
@@ -846,7 +829,6 @@ function saveTabsState() {
             activeTabId: activeTabId  // Keep dashboard as activeTabId if it was active
         };
         localStorage.setItem('editorTabsState', JSON.stringify(tabsState));
-        console.log('💾 Saved tabs state:', tabsState);
     } catch (err) {
         console.error('Error saving tabs state:', err);
     }
@@ -855,13 +837,9 @@ function saveTabsState() {
 async function restoreTabsState() {
     try {
         const savedState = localStorage.getItem('editorTabsState');
-        if (!savedState) {
-            console.log('📂 No saved tabs state found');
-            return;
-        }
+        if (!savedState) return;
 
         const tabsState = JSON.parse(savedState);
-        console.log('📂 Restoring tabs state:', tabsState);
         if (!tabsState.openTabs || tabsState.openTabs.length === 0) return;
 
         // Restore each tab
@@ -874,7 +852,6 @@ async function restoreTabsState() {
                 try {
                     // Handle dashboard tab restoration (no API fetch needed)
                     if (tabInfo.fileType === 'dashboard') {
-                        console.log(`📂 Restoring dashboard tab`);
                         const existingTab = openTabs.find(t => t.id === tabInfo.id);
                         if (!existingTab) {
                             openTabs.push({
@@ -888,14 +865,11 @@ async function restoreTabsState() {
                     }
                     // Handle AI step restoration
                     else if (tabInfo.fileType === 'ai-step') {
-                        console.log(`📂 Fetching AI step: ${tabInfo.id}`);
                         const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown`);
-                        console.log(`📂 AI step fetch response ok:`, response.ok);
                         if (response.ok) {
                             const data = await response.json();
                             const existingTab = openTabs.find(t => t.id === tabInfo.id);
                             if (!existingTab) {
-                                console.log(`📂 Adding AI step tab to openTabs:`, tabInfo.id);
                                 openTabs.push({
                                     id: tabInfo.id,
                                     name: tabInfo.name,
@@ -908,15 +882,12 @@ async function restoreTabsState() {
                     }
                     // Handle regular test file restoration
                     else {
-                        console.log(`📂 Fetching test file: ${tabInfo.id}`);
                         const response = await fetch(`/api/saved-tests/${tabInfo.id}`);
-                        console.log(`📂 Test file fetch response ok:`, response.ok);
                         if (response.ok) {
                             const data = await response.json();
 
                             const existingTab = openTabs.find(t => t.id === tabInfo.id);
                             if (!existingTab) {
-                                console.log(`📂 Adding test tab to openTabs:`, tabInfo.id);
                                 openTabs.push({
                                     id: tabInfo.id,
                                     name: tabInfo.name,
@@ -2561,10 +2532,6 @@ function handleImageFile(file) {
 
 // Load default example on page load
 window.addEventListener('load', async () => {
-    console.log('🔄 Page loaded, checking localStorage...');
-    const savedState = localStorage.getItem('editorTabsState');
-    console.log('🔄 localStorage content:', savedState);
-
     addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
     addLogEntry('info', '🤖 Create AI Steps in the file explorer to run natural language tests');
     addLogEntry('info', '💬 Use AI Chat to generate and modify Playwright code');
@@ -2572,16 +2539,11 @@ window.addEventListener('load', async () => {
     // Initialize CodeMirror editor
     initializeCodeMirror();
 
-    console.log('🔄 About to restore tabs...');
     // Restore previously open tabs
     await restoreTabsState();
-    console.log('🔄 After restore, openTabs.length:', openTabs.length);
 
     // Open dashboard tab if no tabs were restored
     if (openTabs.length === 0) {
-        console.log('🔄 No tabs restored, opening dashboard');
         openDashboardTab();
-    } else {
-        console.log('🔄 Tabs restored successfully!');
     }
 });
