@@ -811,9 +811,17 @@ function switchToTab(filename) {
 function saveTabsState() {
     try {
         const tabsState = {
-            // Filter out dashboard tab - it will be created fresh on load
+            // Filter out dashboard tab and temporary tabs (new_, generated_, chat_)
             openTabs: openTabs
-                .filter(tab => tab.fileType !== 'dashboard')
+                .filter(tab => {
+                    // Exclude dashboard tab
+                    if (tab.fileType === 'dashboard') return false;
+                    // Exclude temporary tabs
+                    if (tab.id.startsWith('new_')) return false;
+                    if (tab.id.startsWith('generated_')) return false;
+                    if (tab.id.startsWith('chat_')) return false;
+                    return true;
+                })
                 .map(tab => ({
                     id: tab.id,
                     name: tab.name,
@@ -831,9 +839,13 @@ function saveTabsState() {
 async function restoreTabsState() {
     try {
         const savedState = localStorage.getItem('editorTabsState');
-        if (!savedState) return;
+        if (!savedState) {
+            console.log('📂 No saved tabs state found');
+            return;
+        }
 
         const tabsState = JSON.parse(savedState);
+        console.log('📂 Restoring tabs state:', tabsState);
         if (!tabsState.openTabs || tabsState.openTabs.length === 0) return;
 
         // Restore each tab
