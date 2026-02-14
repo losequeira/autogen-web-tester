@@ -76,6 +76,7 @@ let currentImage = null; // Store current image as base64
 const toggleBrowserBtn = document.getElementById('toggle-browser');
 const closeBrowserSidebarBtn = document.getElementById('close-browser-sidebar');
 const browserSidebar = document.getElementById('browser-sidebar');
+const stopTestBtn = document.getElementById('stop-test-btn');
 
 // Output panel elements
 const outputPanel = document.getElementById('output-panel');
@@ -127,6 +128,7 @@ let isBatchRunning = false;
 let runningTestsSet = new Set();
 let batchRunStartTime = null;
 let batchRunResults = [];
+let isStopRequested = false;
 
 // Helper function to update browser status
 function updateBrowserStatus(status, text) {
@@ -138,6 +140,23 @@ function updateBrowserStatus(status, text) {
     // Add new status class
     browserStatus.classList.add(`status-${status.toLowerCase()}`);
     browserStatus.textContent = text || status.toUpperCase();
+}
+
+// Helper function to update stop button visibility
+function updateStopButtonVisibility() {
+    if (!stopTestBtn) return;
+
+    if (isTestRunning || isBatchRunning) {
+        stopTestBtn.style.display = 'flex';
+        stopTestBtn.disabled = false;
+        stopTestBtn.textContent = '⏹';
+        stopTestBtn.title = 'Stop Test';
+    } else {
+        stopTestBtn.style.display = 'none';
+        stopTestBtn.disabled = false;
+        stopTestBtn.textContent = '⏹';
+        stopTestBtn.title = 'Stop Test';
+    }
 }
 
 // Socket.IO Event Handlers
@@ -313,6 +332,8 @@ socket.on('agent_message', (data) => {
 
 socket.on('test_complete', (data) => {
     isTestRunning = false;
+    isStopRequested = false;
+    updateStopButtonVisibility();
 
     if (data.status === 'success') {
         updateBrowserStatus('passed', 'PASSED');
@@ -374,7 +395,9 @@ socket.on('batch_run_complete', (data) => {
 
     // Reset state
     isBatchRunning = false;
+    isStopRequested = false;
     runningTestsSet.clear();
+    updateStopButtonVisibility();
 
     // Remove batch classes
     document.querySelectorAll('.file-item').forEach(item => {
@@ -401,6 +424,8 @@ socket.on('batch_run_complete', (data) => {
 socket.on('ai_step_complete_with_code', (data) => {
     // AI step completed successfully - prompt user to save generated code
     isTestRunning = false;
+    isStopRequested = false;
+    updateStopButtonVisibility();
     updateBrowserStatus('passed', 'PASSED');
     addLogEntry('success', '✅ AI Step completed successfully!', '🎉 AI Step completed!');
 
@@ -528,6 +553,29 @@ clearLogBtn.addEventListener('click', () => {
     addLogEntry('info', 'Log cleared');
 });
 
+// Stop test button handler
+if (stopTestBtn) {
+    stopTestBtn.addEventListener('click', () => {
+        if (isStopRequested) {
+            return; // Prevent double-click
+        }
+
+        // Confirm stop action
+        if (!confirm('Are you sure you want to stop the running test?')) {
+            return;
+        }
+
+        isStopRequested = true;
+        stopTestBtn.disabled = true;
+        stopTestBtn.textContent = 'STOPPING...';
+        stopTestBtn.title = 'Stopping test...';
+
+        // Emit stop event to backend
+        socket.emit('stop_test');
+        addLogEntry('info', '⏹ Stop request sent to server');
+    });
+}
+
 // Save current test - used by Cmd+S keyboard shortcut and context menu
 function saveCurrentTest() {
     const code = getPlaywrightCode();
@@ -652,18 +700,25 @@ function runSavedTest(filename, name) {
     // Track the running test for status update
     currentRunningTestFilename = filename;
 
+    // Reload file explorer to show stop button
+    if (hasFileExplorer) {
+        loadFileExplorer();
+    }
+
     // Clear previous results
     humanLogContainer.innerHTML = '';
     technicalLogContainer.innerHTML = '';
 
     addLogEntry('info', `🚀 Running: ${name} (no AI tokens used!)`, `🚀 Running: ${name}`);
     isTestRunning = true;
+    isStopRequested = false;
 
     // Update browser header with test name and status
     if (browserTestName) {
         browserTestName.textContent = name;
     }
     updateBrowserStatus('running', 'RUNNING');
+    updateStopButtonVisibility();
 
     // Show loading state in browser preview
     if (browserLoading) {
@@ -708,6 +763,7 @@ async function runAllTests() {
 
     // Initialize batch state
     isBatchRunning = true;
+    isStopRequested = false;
     batchRunStartTime = Date.now();
     batchRunResults = [];
     runningTestsSet.clear();
@@ -716,6 +772,9 @@ async function runAllTests() {
     humanLogContainer.innerHTML = '';
     technicalLogContainer.innerHTML = '';
     addLogEntry('info', `🚀 Running ${tests.length} tests in parallel...`);
+
+    // Show stop button
+    updateStopButtonVisibility();
 
     // Mark all file items as batch running
     document.querySelectorAll('.file-item').forEach(item => {
@@ -1199,6 +1258,14 @@ function loadFileExplorer() {
                     viewRecordingBtn = `<button class="file-item-action" data-action="view-recording" title="View Recording (${test.artifacts.length})">📹</button>`;
                 }
 
+                // Show stop button if this test is currently running, otherwise show run button
+                let runOrStopBtn = '';
+                if (currentRunningTestFilename === test.filename) {
+                    runOrStopBtn = `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: #ef4444;">⏹</button>`;
+                } else {
+                    runOrStopBtn = `<button class="file-item-action" data-action="run" title="Run Test">▶</button>`;
+                }
+
                 const testDisplayName = getDisplayName(test.name, 'test');
                 fileItem.innerHTML = `
                     <span class="file-item-icon">${sourceIcon}</span>
@@ -1206,7 +1273,7 @@ function loadFileExplorer() {
                     ${statusIcon}
                     <div class="file-item-actions">
                         ${viewRecordingBtn}
-                        <button class="file-item-action" data-action="run" title="Run Test">▶</button>
+                        ${runOrStopBtn}
                         <button class="file-item-action" data-action="delete" title="Delete">🗑</button>
                     </div>
                 `;
@@ -1219,6 +1286,22 @@ function loadFileExplorer() {
                     } else if (action === 'run') {
                         e.stopPropagation();
                         runSavedTest(test.filename, test.name);
+                    } else if (action === 'stop') {
+                        e.stopPropagation();
+                        if (isStopRequested) {
+                            return; // Prevent double-click
+                        }
+                        if (confirm('Are you sure you want to stop the running test?')) {
+                            isStopRequested = true;
+                            socket.emit('stop_test');
+                            addLogEntry('info', '⏹ Stop request sent to server');
+                            // Update button immediately
+                            if (stopTestBtn) {
+                                stopTestBtn.disabled = true;
+                                stopTestBtn.textContent = 'STOPPING...';
+                                stopTestBtn.title = 'Stopping test...';
+                            }
+                        }
                     } else if (action === 'view-recording') {
                         e.stopPropagation();
                         showVideoViewerModal(test.filename, test.name);

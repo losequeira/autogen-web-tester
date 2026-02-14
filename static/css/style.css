@@ -1501,6 +1501,32 @@ body {
     color: #cccccc;
 }
 
+#stop-test-btn {
+    background: transparent;
+    border: none;
+    color: #ef4444;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px 8px;
+    transition: all 0.2s;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#stop-test-btn:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+}
+
+#stop-test-btn:disabled {
+    color: #6b7280;
+    background: transparent;
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
 .chat-sidebar-body {
     flex: 1;
     display: flex;
