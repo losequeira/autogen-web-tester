@@ -3,6 +3,22 @@
 // Initialize Socket.IO
 const socket = io();
 
+// Authentication state
+let currentUser = null;
+let currentWorkspaceId = null;
+
+// Authentication modal elements
+const loginModal = document.getElementById('login-modal');
+const registerModal = document.getElementById('register-modal');
+const loginForm = document.getElementById('login-form');
+const registerForm = document.getElementById('register-form');
+const closeLoginBtn = document.querySelector('.close-login');
+const closeRegisterBtn = document.querySelector('.close-register');
+const showRegisterBtn = document.getElementById('show-register-btn');
+const showLoginBtn = document.getElementById('show-login-btn');
+const loginError = document.getElementById('login-error');
+const registerError = document.getElementById('register-error');
+
 // DOM Elements
 const clearLogBtn = document.getElementById('clear-log');
 const browserScreenshot = document.getElementById('browser-screenshot');
@@ -2599,8 +2615,195 @@ function handleImageFile(file) {
     reader.readAsDataURL(file);
 }
 
+// ========== AUTHENTICATION FUNCTIONS ==========
+
+function showLoginModal() {
+    loginModal.style.display = 'block';
+    registerModal.style.display = 'none';
+    loginError.style.display = 'none';
+    loginForm.reset();
+}
+
+function showRegisterModal() {
+    registerModal.style.display = 'block';
+    loginModal.style.display = 'none';
+    registerError.style.display = 'none';
+    registerForm.reset();
+}
+
+function hideAuthModals() {
+    loginModal.style.display = 'none';
+    registerModal.style.display = 'none';
+}
+
+async function checkAuthentication() {
+    try {
+        const response = await fetch('/api/check-auth');
+        const data = await response.json();
+
+        if (data.authenticated) {
+            currentUser = data.user;
+            await loadUserWorkspaces();
+            return true;
+        } else {
+            showLoginModal();
+            return false;
+        }
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        showLoginModal();
+        return false;
+    }
+}
+
+async function loadUserWorkspaces() {
+    try {
+        const response = await fetch('/api/current-user');
+        if (!response.ok) {
+            if (response.status === 401) {
+                showLoginModal();
+                return;
+            }
+            throw new Error('Failed to load workspaces');
+        }
+
+        const data = await response.json();
+        currentUser = data.user;
+
+        // Set default workspace (first workspace)
+        if (data.workspaces && data.workspaces.length > 0) {
+            currentWorkspaceId = data.workspaces[0].id;
+        }
+
+        console.log('User authenticated:', currentUser.username);
+        console.log('Current workspace:', currentWorkspaceId);
+    } catch (error) {
+        console.error('Failed to load workspaces:', error);
+    }
+}
+
+async function handleLogin(event) {
+    event.preventDefault();
+
+    const username = document.getElementById('login-username').value;
+    const password = document.getElementById('login-password').value;
+    const remember = document.getElementById('login-remember').checked;
+
+    try {
+        const response = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, remember })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            currentUser = data.user;
+            if (data.workspaces && data.workspaces.length > 0) {
+                currentWorkspaceId = data.workspaces[0].id;
+            }
+            hideAuthModals();
+            addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
+
+            // Reload file lists
+            if (hasFileExplorer) {
+                loadFiles();
+                loadAiSteps();
+            }
+        } else {
+            loginError.textContent = data.error || 'Login failed';
+            loginError.style.display = 'block';
+        }
+    } catch (error) {
+        console.error('Login error:', error);
+        loginError.textContent = 'Login failed. Please try again.';
+        loginError.style.display = 'block';
+    }
+}
+
+async function handleRegister(event) {
+    event.preventDefault();
+
+    const username = document.getElementById('register-username').value;
+    const email = document.getElementById('register-email').value;
+    const password = document.getElementById('register-password').value;
+    const passwordConfirm = document.getElementById('register-password-confirm').value;
+
+    // Client-side validation
+    if (password !== passwordConfirm) {
+        registerError.textContent = 'Passwords do not match';
+        registerError.style.display = 'block';
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, email, password })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            currentUser = data.user;
+            currentWorkspaceId = data.default_workspace_id;
+            hideAuthModals();
+            addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
+
+            // Reload file lists
+            if (hasFileExplorer) {
+                loadFiles();
+                loadAiSteps();
+            }
+        } else {
+            registerError.textContent = data.error || 'Registration failed';
+            registerError.style.display = 'block';
+        }
+    } catch (error) {
+        console.error('Registration error:', error);
+        registerError.textContent = 'Registration failed. Please try again.';
+        registerError.style.display = 'block';
+    }
+}
+
+// Event listeners for auth modals
+if (loginForm) loginForm.addEventListener('submit', handleLogin);
+if (registerForm) registerForm.addEventListener('submit', handleRegister);
+if (closeLoginBtn) closeLoginBtn.addEventListener('click', () => loginModal.style.display = 'none');
+if (closeRegisterBtn) closeRegisterBtn.addEventListener('click', () => registerModal.style.display = 'none');
+if (showRegisterBtn) showRegisterBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    showRegisterModal();
+});
+if (showLoginBtn) showLoginBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    showLoginModal();
+});
+
+// Close modals when clicking outside
+window.addEventListener('click', (event) => {
+    if (event.target === loginModal) {
+        loginModal.style.display = 'none';
+    }
+    if (event.target === registerModal) {
+        registerModal.style.display = 'none';
+    }
+});
+
+// ========== END AUTHENTICATION FUNCTIONS ==========
+
 // Load default example on page load
 window.addEventListener('load', async () => {
+    // Check authentication first
+    const isAuthenticated = await checkAuthentication();
+
+    if (!isAuthenticated) {
+        // Don't proceed with loading if not authenticated
+        return;
+    }
+
     addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
     addLogEntry('info', '🤖 Create AI Steps in the file explorer to run natural language tests');
     addLogEntry('info', '💬 Use AI Chat to generate and modify Playwright code');

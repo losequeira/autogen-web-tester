@@ -25,10 +25,33 @@ from autogen_core.tools import FunctionTool
 from browser_tool import BrowserTool
 from code_agent import CodeGenerationAgent
 import config
+from config import Config
+
+# Import multi-user modules
+from models import init_db, get_db_session, close_db_session
+from auth import init_auth
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'autogen-web-tester-secret'
+
+# Apply multi-user configuration
+app.config.from_object(Config)
+
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Initialize database
+print("Initializing database...")
+os.makedirs(Config.USER_DATA_PATH, exist_ok=True)
+os.makedirs(os.path.join(Config.USER_DATA_PATH, 'workspaces'), exist_ok=True)
+init_db(Config.DATABASE_URL)
+
+# Initialize authentication
+print("Initializing authentication...")
+init_auth(app)
+
+# Cleanup database connections on app shutdown
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    close_db_session()
 
 # Initialize code generation agent
 code_agent = CodeGenerationAgent(api_key=config.OPENAI_API_KEY)

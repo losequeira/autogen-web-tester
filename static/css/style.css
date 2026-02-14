@@ -2384,3 +2384,49 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+/* Authentication Forms */
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 8px;
+    color: #cccccc;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.form-group input[type="text"],
+.form-group input[type="email"],
+.form-group input[type="password"] {
+    width: 100%;
+    padding: 10px 12px;
+    background: #2d2d30;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    color: #cccccc;
+    font-size: 14px;
+    font-family: inherit;
+    transition: border-color 0.2s;
+}
+
+.form-group input:focus {
+    outline: none;
+    border-color: #007acc;
+}
+
+.form-group input::placeholder {
+    color: #6e6e6e;
+}
+
+.error-message {
+    background: rgba(244, 67, 54, 0.1);
+    border: 1px solid rgba(244, 67, 54, 0.3);
+    color: #f44336;
+    padding: 10px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    margin-bottom: 16px;
+}
