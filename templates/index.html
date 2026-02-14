@@ -65,6 +65,36 @@
                         </button>
                     </div>
 
+                    <!-- User & Workspace Section -->
+                    <div class="file-explorer-section workspace-section">
+                        <div class="workspace-selector-container">
+                            <div class="user-info">
+                                <span class="user-icon">👤</span>
+                                <span id="current-username" class="current-username">Loading...</span>
+                                <button id="logout-btn" class="btn-icon-small" title="Logout">🚪</button>
+                            </div>
+
+                            <div class="workspace-selector">
+                                <label for="workspace-dropdown" style="font-size: 11px; color: #858585; margin-bottom: 4px; display: block;">WORKSPACE</label>
+                                <select id="workspace-dropdown" class="workspace-dropdown">
+                                    <option value="">Loading workspaces...</option>
+                                </select>
+                                <button id="new-workspace-btn" class="btn-icon-small" title="New Workspace" style="margin-top: 8px;">+ New</button>
+                            </div>
+                        </div>
+
+                        <!-- Workspace Members (shown for shared workspaces) -->
+                        <div id="workspace-members-container" class="workspace-members-container" style="display: none;">
+                            <div class="workspace-members-header">
+                                <span style="font-size: 11px; color: #858585;">MEMBERS</span>
+                                <button id="invite-member-btn" class="btn-icon-small" title="Invite Member">+</button>
+                            </div>
+                            <div id="workspace-members-list" class="workspace-members-list">
+                                <!-- Members will be loaded here -->
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Saved Tests Section -->
                     <div class="file-explorer-section">
                         <div class="file-explorer-header">
@@ -451,6 +481,72 @@
                     <div class="button-group">
                         <button type="submit" class="btn btn-primary" id="register-submit-btn">Create Account</button>
                         <button type="button" class="btn btn-secondary" id="show-login-btn">Back to Login</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Workspace Modal -->
+    <div id="new-workspace-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h2>📁 Create New Workspace</h2>
+                <span class="close-new-workspace">&times;</span>
+            </div>
+            <div class="modal-body">
+                <form id="new-workspace-form">
+                    <div class="form-group">
+                        <label for="workspace-name">Workspace Name</label>
+                        <input type="text" id="workspace-name" name="name" required
+                               placeholder="e.g., My Tests, Team QA">
+                    </div>
+                    <div class="form-group">
+                        <label for="workspace-type">Type</label>
+                        <select id="workspace-type" name="type" class="workspace-dropdown">
+                            <option value="private">Private (only you)</option>
+                            <option value="shared">Shared (invite others)</option>
+                        </select>
+                        <small style="color: #858585; font-size: 11px;">You can invite members to shared workspaces</small>
+                    </div>
+                    <div id="new-workspace-error" class="error-message" style="display: none;"></div>
+                    <div class="button-group">
+                        <button type="submit" class="btn btn-primary" id="create-workspace-btn">Create</button>
+                        <button type="button" class="btn btn-secondary close-new-workspace">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Invite Member Modal -->
+    <div id="invite-member-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h2>👥 Invite Member</h2>
+                <span class="close-invite-member">&times;</span>
+            </div>
+            <div class="modal-body">
+                <form id="invite-member-form">
+                    <div class="form-group">
+                        <label for="invite-username">Username</label>
+                        <input type="text" id="invite-username" name="username" required
+                               placeholder="Enter username to invite">
+                    </div>
+                    <div class="form-group">
+                        <label for="invite-role">Role</label>
+                        <select id="invite-role" name="role" class="workspace-dropdown">
+                            <option value="viewer">Viewer (read-only)</option>
+                            <option value="editor">Editor (can modify tests)</option>
+                        </select>
+                        <small style="color: #858585; font-size: 11px;">
+                            Viewers can run tests, editors can also create and modify them
+                        </small>
+                    </div>
+                    <div id="invite-member-error" class="error-message" style="display: none;"></div>
+                    <div class="button-group">
+                        <button type="submit" class="btn btn-primary" id="invite-submit-btn">Invite</button>
+                        <button type="button" class="btn btn-secondary close-invite-member">Cancel</button>
                     </div>
                 </form>
             </div>

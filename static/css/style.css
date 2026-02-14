@@ -2430,3 +2430,87 @@ body {
     font-size: 13px;
     margin-bottom: 16px;
 }
+
+/* Workspace Selector */
+.workspace-section {
+    border-bottom: 1px solid #2d2d30;
+    padding-bottom: 12px;
+}
+
+.workspace-selector-container {
+    padding: 12px;
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    background: #2d2d30;
+    border-radius: 4px;
+    margin-bottom: 12px;
+}
+
+.user-icon {
+    font-size: 16px;
+}
+
+.current-username {
+    flex: 1;
+    font-size: 13px;
+    color: #cccccc;
+    font-weight: 500;
+}
+
+.workspace-selector {
+    margin-top: 8px;
+}
+
+.workspace-dropdown {
+    width: 100%;
+    padding: 8px 10px;
+    background: #2d2d30;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    color: #cccccc;
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+
+.workspace-dropdown:hover {
+    border-color: #007acc;
+}
+
+.workspace-dropdown:focus {
+    outline: none;
+    border-color: #007acc;
+}
+
+.workspace-members-container {
+    margin-top: 12px;
+    padding: 8px;
+    background: #252526;
+    border-radius: 4px;
+}
+
+.workspace-members-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    margin-bottom: 8px;
+}
+
+.workspace-members-list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.workspace-member-item {
+    transition: background 0.2s;
+}
+
+.workspace-member-item:hover {
+    background: #2d2d30;
+}
