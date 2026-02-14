@@ -912,6 +912,9 @@ def run_playwright_code(code: str):
 
 def run_playwright_code_with_streaming(code: str, filename: str = None):
     """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
+    global stop_requested
+    stop_requested = False  # Reset stop flag at the start of execution
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -971,9 +974,14 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def _start_streaming(self):
                 """Start continuous screenshot streaming."""
+                global stop_requested
                 self._streaming = True
                 while self._streaming:
                     try:
+                        # Check if stop was requested
+                        if stop_requested:
+                            print("⏹ Stop requested - cancelling streaming")
+                            raise asyncio.CancelledError("Test stopped by user")
                         await send_screenshot(self._page, 'stream')
                         await asyncio.sleep(0.1)  # 10 FPS
                     except asyncio.CancelledError:
@@ -989,6 +997,10 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def goto(self, url, **kwargs):
                 """Navigate and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling goto action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 print(f"🌐 PageWrapper.goto() called for URL: {url}")
                 result = await self._page.goto(url, **kwargs)
                 await send_screenshot(self._page, 'navigate')
@@ -1000,6 +1012,10 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def click(self, selector, **kwargs):
                 """Click and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling click action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 print(f"👆 PageWrapper.click() called for selector: {selector}")
                 result = await self._page.click(selector, **kwargs)
                 await send_screenshot(self._page, 'click')
@@ -1007,6 +1023,10 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def fill(self, selector, value, **kwargs):
                 """Fill and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling fill action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 print(f"✍️ PageWrapper.fill() called for selector: {selector}")
                 result = await self._page.fill(selector, value, **kwargs)
                 await send_screenshot(self._page, 'fill')
@@ -1014,12 +1034,20 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def type(self, selector, text, **kwargs):
                 """Type and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling type action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 result = await self._page.type(selector, text, **kwargs)
                 await send_screenshot(self._page, 'type')
                 return result
 
             async def press(self, selector, key, **kwargs):
                 """Press key and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling press action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 result = await self._page.press(selector, key, **kwargs)
                 await send_screenshot(self._page, 'press')
                 return result
@@ -1210,6 +1238,11 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
             socketio.emit('log', {'type': 'success', 'message': '✅ Code execution completed successfully!'})
             socketio.emit('test_complete', {'status': 'success'})
 
+        except asyncio.CancelledError:
+            # Test was stopped by user
+            test_status = 'stopped'
+            socketio.emit('log', {'type': 'info', 'message': '⏹ Test stopped by user'})
+            socketio.emit('test_complete', {'status': 'stopped'})
         except Exception as e:
             import traceback
             error_msg = f'Error executing code: {str(e)}'
@@ -2389,6 +2422,15 @@ def run_all_tests_parallel(filenames):
         future_to_filename = {executor.submit(run_single_test, fn): fn for fn in filenames}
 
         for future in as_completed(future_to_filename):
+            # Check if stop was requested
+            global stop_requested
+            if stop_requested:
+                socketio.emit('log', {'type': 'info', 'message': '⏹ Batch run stopped by user'})
+                # Cancel remaining futures
+                for f in future_to_filename:
+                    f.cancel()
+                break
+
             result = future.result()
             results.append(result)
 
