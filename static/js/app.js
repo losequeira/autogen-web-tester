@@ -456,7 +456,7 @@ socket.on('ai_step_complete_with_code', (data) => {
 
                 if (testName && testName.trim()) {
                     // Save the generated code as a new test
-                    fetch('/api/save-test', {
+                    fetch(`/api/workspaces/${currentWorkspaceId}/tests`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -650,7 +650,7 @@ function saveCurrentTest() {
         const name = prompt('Save as:', defaultName);
         if (!name) return;
 
-        fetch('/api/save-test', {
+        fetch(`/api/workspaces/${currentWorkspaceId}/tests`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, code, source: 'ai' })
@@ -1227,9 +1227,15 @@ function loadFileExplorer() {
         return;
     }
 
-    fetch('/api/saved-tests')
+    if (!currentWorkspaceId) {
+        fileList.innerHTML = '<div style="padding: 20px; text-align: center; color: #858585; font-size: 12px;">Select a workspace</div>';
+        return;
+    }
+
+    fetch(`/api/workspaces/${currentWorkspaceId}/tests`)
         .then(res => res.json())
-        .then(tests => {
+        .then(data => {
+            const tests = data.tests || [];
             fileList.innerHTML = '';
 
             if (tests.length === 0) {
@@ -1321,11 +1327,11 @@ function loadFileExplorer() {
 }
 
 function openFileFromExplorer(filename, name) {
-    fetch(`/api/saved-tests/${filename}`)
+    fetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`)
         .then(res => res.json())
         .then(data => {
-            if (data.code) {
-                openTab(filename, name, data.code);
+            if (data.test && data.test.code) {
+                openTab(filename, name, data.test.code);
             }
         })
         .catch(err => {
@@ -1336,7 +1342,7 @@ function openFileFromExplorer(filename, name) {
 function deleteFileFromExplorer(filename, name) {
     if (!confirm(`Delete "${name}"?`)) return;
 
-    fetch(`/api/saved-tests/${filename}`, { method: 'DELETE' })
+    fetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`, { method: 'DELETE' })
         .then(res => res.json())
         .then(data => {
             if (data.success) {
@@ -1658,9 +1664,15 @@ async function loadAiSteps() {
         return;
     }
 
+    if (!currentWorkspaceId) {
+        aiStepsList.innerHTML = '<div class="file-list-empty">Select a workspace</div>';
+        return;
+    }
+
     try {
-        const response = await fetch('/api/ai-steps');
-        const steps = await response.json();
+        const response = await fetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
+        const data = await response.json();
+        const steps = data.ai_steps || [];
 
         aiStepsList.innerHTML = '';
 
