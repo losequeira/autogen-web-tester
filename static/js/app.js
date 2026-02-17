@@ -7,6 +7,44 @@ const socket = io();
 let currentUser = null;
 let currentWorkspaceId = null;
 
+// ========== USER PREFERENCES SYNC ==========
+// Debounce timer for batching preference saves to DB
+let _prefSaveTimer = null;
+let _pendingPrefUpdates = {};
+
+function savePreferenceToDb(key, value) {
+    _pendingPrefUpdates[key] = value;
+    if (_prefSaveTimer) clearTimeout(_prefSaveTimer);
+    _prefSaveTimer = setTimeout(_flushPreferences, 500);
+}
+
+function _flushPreferences() {
+    const updates = _pendingPrefUpdates;
+    _pendingPrefUpdates = {};
+    _prefSaveTimer = null;
+
+    if (Object.keys(updates).length === 0) return;
+
+    fetch('/api/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferences: updates })
+    }).catch(err => console.error('Failed to save preferences to DB:', err));
+}
+
+async function loadPreferencesFromDb() {
+    try {
+        const response = await fetch('/api/preferences');
+        if (!response.ok) return null;
+        const data = await response.json();
+        return data.preferences || {};
+    } catch (err) {
+        console.error('Failed to load preferences from DB:', err);
+        return null;
+    }
+}
+// ========== END USER PREFERENCES SYNC ==========
+
 // Authentication modal elements
 const loginModal = document.getElementById('login-modal');
 const registerModal = document.getElementById('register-modal');
@@ -957,7 +995,9 @@ function saveTabsState() {
                 })),
             activeTabId: activeTabId  // Keep dashboard as activeTabId if it was active
         };
-        localStorage.setItem('editorTabsState', JSON.stringify(tabsState));
+        const json = JSON.stringify(tabsState);
+        localStorage.setItem('editorTabsState', json);
+        savePreferenceToDb('editorTabsState', json);
     } catch (err) {
         console.error('Error saving tabs state:', err);
     }
@@ -965,7 +1005,17 @@ function saveTabsState() {
 
 async function restoreTabsState() {
     try {
-        const savedState = localStorage.getItem('editorTabsState');
+        let savedState = localStorage.getItem('editorTabsState');
+
+        // Fall back to DB if localStorage is empty
+        if (!savedState) {
+            const dbPrefs = await loadPreferencesFromDb();
+            if (dbPrefs && dbPrefs.editorTabsState) {
+                savedState = dbPrefs.editorTabsState;
+                localStorage.setItem('editorTabsState', savedState);
+            }
+        }
+
         if (!savedState) return;
 
         const tabsState = JSON.parse(savedState);
@@ -3225,12 +3275,24 @@ async function loadUserWorkspaces() {
         const data = await response.json();
         currentUser = data.user;
 
-        // Try to restore previously selected workspace from localStorage
-        const savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+        // Try to restore previously selected workspace from localStorage, then DB
+        let savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
         let workspaceFound = false;
 
+        // Fall back to DB if localStorage is empty
+        if (!savedWorkspaceId) {
+            const dbPrefs = await loadPreferencesFromDb();
+            if (dbPrefs && dbPrefs.selectedWorkspaceId) {
+                savedWorkspaceId = dbPrefs.selectedWorkspaceId;
+                localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
+            }
+            // Also restore editorTabsState from DB if missing locally
+            if (dbPrefs && dbPrefs.editorTabsState && !localStorage.getItem('editorTabsState')) {
+                localStorage.setItem('editorTabsState', dbPrefs.editorTabsState);
+            }
+        }
+
         if (savedWorkspaceId && data.workspaces && data.workspaces.length > 0) {
-            // Check if saved workspace exists and user has access to it
             const savedId = parseInt(savedWorkspaceId);
             const hasAccess = data.workspaces.some(w => w.id === savedId);
 
@@ -3250,6 +3312,7 @@ async function loadUserWorkspaces() {
         // Persist the selection so it survives page reloads and re-login
         if (currentWorkspaceId) {
             localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
+            savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
         }
 
         console.log('User authenticated:', currentUser.username);
@@ -3426,9 +3489,24 @@ async function loadWorkspaces() {
             workspaceDropdown.appendChild(option);
         });
 
-        // Set current workspace - always try to restore from localStorage
+        // Set current workspace - try localStorage, then DB, then default
         if (userWorkspaces.length > 0) {
-            const savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+            let savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+
+            // Fall back to DB if localStorage is empty
+            if (!savedWorkspaceId) {
+                const dbPrefs = await loadPreferencesFromDb();
+                if (dbPrefs && dbPrefs.selectedWorkspaceId) {
+                    savedWorkspaceId = dbPrefs.selectedWorkspaceId;
+                    localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
+
+                    // Also restore editorTabsState from DB if missing locally
+                    if (!localStorage.getItem('editorTabsState') && dbPrefs.editorTabsState) {
+                        localStorage.setItem('editorTabsState', dbPrefs.editorTabsState);
+                    }
+                }
+            }
+
             if (savedWorkspaceId) {
                 const savedId = parseInt(savedWorkspaceId);
                 const hasAccess = userWorkspaces.some(w => w.id === savedId);

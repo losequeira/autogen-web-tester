@@ -56,6 +56,8 @@ class User(Base, UserMixin):
                                         cascade='all, delete-orphan')
     created_tests = relationship('Test', back_populates='creator',
                                 foreign_keys='Test.created_by')
+    preferences = relationship('UserPreference', back_populates='user',
+                              cascade='all, delete-orphan')
 
     def set_password(self, password: str):
         """Hash and set user password using bcrypt."""
@@ -222,6 +224,26 @@ class Test(Base):
             'last_run_time': self.last_run_time.isoformat() if self.last_run_time else None,
             'description': self.description
         }
+
+
+class UserPreference(Base):
+    """User preferences stored server-side for cross-device/session persistence."""
+    __tablename__ = 'user_preferences'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    key = Column(String(100), nullable=False)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
+                       nullable=False)
+
+    # Relationships
+    user = relationship('User', back_populates='preferences')
+
+    # Unique constraint: one value per key per user
+    __table_args__ = (
+        UniqueConstraint('user_id', 'key', name='uq_user_preference_key'),
+    )
 
 
 # Database session management
