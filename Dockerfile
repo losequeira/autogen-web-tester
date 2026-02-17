@@ -18,8 +18,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create directories for saved tests and temp recordings
-RUN mkdir -p saved_tests temp_recordings
+# Create directories for saved tests and temp recordings (legacy)
+RUN mkdir -p saved_tests temp_recordings ai_steps
+
+# Create user_data directory for multi-user workspaces
+RUN mkdir -p user_data/workspaces
+
+# Set up volume for persistent user data
+VOLUME /app/user_data
 
 # Expose port (Cloud Run will set PORT env var)
 ENV PORT=8080
