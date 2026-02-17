@@ -3286,6 +3286,14 @@ async function handleLogin(event) {
             hideAuthModals();
             addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
 
+            // Update username display
+            if (currentUsernameEl) {
+                currentUsernameEl.textContent = currentUser.username;
+            }
+
+            // Initialize CodeMirror editor (skipped on page load when not authenticated)
+            initializeCodeMirror();
+
             // Load workspaces (will restore saved workspace from localStorage)
             await loadWorkspaces();
 
@@ -3293,6 +3301,11 @@ async function handleLogin(event) {
             if (hasFileExplorer && currentWorkspaceId) {
                 loadFileExplorer();
                 loadAiSteps();
+            }
+
+            // Open dashboard tab if no tabs
+            if (openTabs.length === 0) {
+                openDashboardTab();
             }
         } else {
             loginError.textContent = data.error || 'Login failed';
@@ -3334,6 +3347,14 @@ async function handleRegister(event) {
             hideAuthModals();
             addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
 
+            // Update username display
+            if (currentUsernameEl) {
+                currentUsernameEl.textContent = currentUser.username;
+            }
+
+            // Initialize CodeMirror editor (skipped on page load when not authenticated)
+            initializeCodeMirror();
+
             // Load workspaces (user's default workspace will be loaded)
             await loadWorkspaces();
 
@@ -3341,6 +3362,11 @@ async function handleRegister(event) {
             if (hasFileExplorer && currentWorkspaceId) {
                 loadFileExplorer();
                 loadAiSteps();
+            }
+
+            // Open dashboard tab
+            if (openTabs.length === 0) {
+                openDashboardTab();
             }
         } else {
             registerError.textContent = data.error || 'Registration failed';
