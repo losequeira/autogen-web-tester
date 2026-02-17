@@ -1760,12 +1760,14 @@ function runAiStep(filename, name) {
 
     // Update UI
     isTestRunning = true;
+    isStopRequested = false;
 
     // Update browser header with test name and status
     if (browserTestName) {
         browserTestName.textContent = name;
     }
     updateBrowserStatus('running', 'RUNNING');
+    updateStopButtonVisibility();
 
     // Show loading state in browser preview
     if (browserLoading) {
