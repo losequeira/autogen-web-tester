@@ -165,17 +165,12 @@ socket.on('connect', () => {
 });
 
 socket.on('connect_error', () => {
-    // Session likely invalidated after server restart
-    // Only auto-reload once to avoid infinite loop
-    const lastReload = sessionStorage.getItem('socket_reconnect_reload');
-    const now = Date.now();
-    if (!lastReload || (now - parseInt(lastReload)) > 10000) {
-        sessionStorage.setItem('socket_reconnect_reload', now.toString());
-        console.warn('Socket connection failed - session may be expired, reloading...');
-        window.location.reload();
-    } else {
-        console.warn('Socket connection failed after reload - manual login required');
-    }
+    console.warn('Socket connection failed - session may be expired');
+});
+
+// Reconnect socket after login so it picks up the new session
+socket.on('disconnect', () => {
+    console.warn('Socket disconnected');
 });
 
 socket.on('playwright_code', (data) => {
