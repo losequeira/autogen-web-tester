@@ -347,6 +347,25 @@ socket.on('test_complete', (data) => {
         addLogEntry('error', `❌ Test failed: ${errorMsg}`, `❌ Test failed`);
     }
 
+    // Restore AI step tab content if an AI step just finished
+    if (runningAiStepTabId) {
+        const aiTab = openTabs.find(t => t.id === runningAiStepTabId);
+        if (aiTab && activeTabId === runningAiStepTabId) {
+            // Reload fresh from DB to make sure we have the latest
+            fetch(`/api/ai-steps/${runningAiStepTabId}/markdown`)
+                .then(res => res.json())
+                .then(aiData => {
+                    if (aiData.markdown) {
+                        aiTab.code = aiData.markdown;
+                        setPlaywrightCode(aiData.markdown);
+                        lastSavedCode = aiData.markdown;
+                    }
+                })
+                .catch(err => console.error('Error restoring AI step content:', err));
+        }
+        runningAiStepTabId = null;
+    }
+
     // Update saved test status if this was a saved test run
     if (currentRunningTestFilename) {
         fetch(`/api/saved-tests/${currentRunningTestFilename}/status`, {
@@ -1747,15 +1766,20 @@ async function loadAiSteps() {
     }
 }
 
+let runningAiStepTabId = null;  // Track which AI step tab is running
+
 function runAiStep(filename, name) {
     if (isTestRunning) {
         alert('A test is already running');
         return;
     }
 
-    // Clear previous results
-    humanLogContainer.innerHTML = '';
-    technicalLogContainer.innerHTML = '';
+    // Track the AI step tab so we can restore its content after test completes
+    runningAiStepTabId = filename;
+
+    // Clear previous log results
+    while (humanLogContainer.firstChild) humanLogContainer.removeChild(humanLogContainer.firstChild);
+    while (technicalLogContainer.firstChild) technicalLogContainer.removeChild(technicalLogContainer.firstChild);
     setPlaywrightCode('');
 
     // Update UI
