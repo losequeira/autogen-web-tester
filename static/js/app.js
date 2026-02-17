@@ -3247,6 +3247,11 @@ async function loadUserWorkspaces() {
             console.log('Using default workspace:', currentWorkspaceId);
         }
 
+        // Persist the selection so it survives page reloads and re-login
+        if (currentWorkspaceId) {
+            localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
+        }
+
         console.log('User authenticated:', currentUser.username);
         console.log('Current workspace:', currentWorkspaceId);
 
@@ -3395,9 +3400,8 @@ async function loadWorkspaces() {
             workspaceDropdown.appendChild(option);
         });
 
-        // Set current workspace if not set
-        if (!currentWorkspaceId && userWorkspaces.length > 0) {
-            // Try to restore from localStorage first
+        // Set current workspace - always try to restore from localStorage
+        if (userWorkspaces.length > 0) {
             const savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
             if (savedWorkspaceId) {
                 const savedId = parseInt(savedWorkspaceId);
@@ -3407,9 +3411,11 @@ async function loadWorkspaces() {
                 } else {
                     currentWorkspaceId = userWorkspaces[0].id;
                 }
-            } else {
+            } else if (!currentWorkspaceId) {
                 currentWorkspaceId = userWorkspaces[0].id;
             }
+            // Persist the selection so it survives page reloads and re-login
+            localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
         }
 
         // Select current workspace
