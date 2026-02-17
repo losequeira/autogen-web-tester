@@ -747,11 +747,23 @@ body {
 
 #video-viewer-container {
     padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 200px;
 }
 
 #video-viewer-player {
     border: 1px solid #3c3c3c;
-    max-height: 70vh;
+    border-radius: 8px;
+    background: #000;
+    max-width: 100%;
+    max-height: 75vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    display: block;
+    margin: 0 auto;
 }
 
 .video-viewer-info {
