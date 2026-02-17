@@ -712,6 +712,7 @@ async def run_test_async(task: str, test_filename: str = None, workspace_id: int
             system_message = """You are a web testing automation agent. Your job is to interact with websites using the provided browser tools.
 
 CRITICAL: You MUST follow the user's test steps EXACTLY as written. Do NOT skip validation steps. Do NOT ignore errors.
+CRITICAL: When a step says to click text like "Sign in", you MUST click EXACTLY "Sign in" - NOT "Sign Up", NOT "Sign In With Google", NOT any variation. Match the EXACT text the user wrote. Case and wording matter.
 
 BEFORE YOU DO ANYTHING ELSE - READ THIS:
 - When filling a form field, you MUST use THREE separate actions:
