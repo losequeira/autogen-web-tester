@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from flask_login import UserMixin
 from sqlalchemy import (
-    Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text,
+    Boolean, Column, DateTime, Enum, Float, ForeignKey, Integer, String, Text,
     UniqueConstraint, create_engine
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -56,6 +56,8 @@ class User(Base, UserMixin):
                                         cascade='all, delete-orphan')
     created_tests = relationship('Test', back_populates='creator',
                                 foreign_keys='Test.created_by')
+    created_ai_steps = relationship('AiStep', back_populates='creator',
+                                   foreign_keys='AiStep.created_by')
     preferences = relationship('UserPreference', back_populates='user',
                               cascade='all, delete-orphan')
 
@@ -101,6 +103,8 @@ class Workspace(Base):
                           cascade='all, delete-orphan')
     tests = relationship('Test', back_populates='workspace',
                         cascade='all, delete-orphan')
+    ai_steps = relationship('AiStep', back_populates='workspace',
+                           cascade='all, delete-orphan')
 
     def to_dict(self, include_members=False):
         """Convert workspace to dictionary for JSON serialization."""
@@ -111,7 +115,8 @@ class Workspace(Base):
             'owner_id': self.owner_id,
             'owner_username': self.owner.username if self.owner else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'test_count': len(self.tests)
+            'test_count': len(self.tests),
+            'ai_step_count': len(self.ai_steps)
         }
 
         if include_members:
@@ -182,19 +187,20 @@ class WorkspaceMember(Base):
 
 
 class Test(Base):
-    """Test metadata model."""
+    """Test model — stores Playwright test code and metadata."""
     __tablename__ = 'tests'
 
     id = Column(Integer, primary_key=True)
     filename = Column(String(255), nullable=False)
     name = Column(String(255), nullable=False)
+    code = Column(Text, nullable=True)
     workspace_id = Column(Integer, ForeignKey('workspaces.id'), nullable=False)
     source = Column(Enum(TestSource), nullable=False, default=TestSource.MANUAL)
     created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
                        nullable=False)
-    last_run_status = Column(String(20))  # 'success', 'failure', 'running', etc.
+    last_run_status = Column(String(20))
     last_run_time = Column(DateTime)
     description = Column(Text)
 
@@ -202,15 +208,18 @@ class Test(Base):
     workspace = relationship('Workspace', back_populates='tests')
     creator = relationship('User', back_populates='created_tests',
                           foreign_keys=[created_by])
+    artifacts = relationship('TestArtifact', back_populates='test',
+                            cascade='all, delete-orphan',
+                            order_by='TestArtifact.created_at.desc()')
 
     # Unique constraint: filename must be unique within workspace
     __table_args__ = (
         UniqueConstraint('workspace_id', 'filename', name='uq_workspace_filename'),
     )
 
-    def to_dict(self):
+    def to_dict(self, include_code=False):
         """Convert test to dictionary for JSON serialization."""
-        return {
+        result = {
             'id': self.id,
             'filename': self.filename,
             'name': self.name,
@@ -222,7 +231,74 @@ class Test(Base):
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'last_run_status': self.last_run_status,
             'last_run_time': self.last_run_time.isoformat() if self.last_run_time else None,
-            'description': self.description
+            'description': self.description,
+            'artifacts': [a.to_dict() for a in self.artifacts]
+        }
+        if include_code:
+            result['code'] = self.code
+        return result
+
+
+class AiStep(Base):
+    """AI step test model — stores natural language test steps."""
+    __tablename__ = 'ai_steps'
+
+    id = Column(Integer, primary_key=True)
+    filename = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False)
+    steps = Column(Text, nullable=False)
+    workspace_id = Column(Integer, ForeignKey('workspaces.id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
+                       nullable=False)
+    last_run_status = Column(String(20))
+    last_run_time = Column(DateTime)
+
+    # Relationships
+    workspace = relationship('Workspace', back_populates='ai_steps')
+    creator = relationship('User', back_populates='created_ai_steps',
+                          foreign_keys=[created_by])
+
+    __table_args__ = (
+        UniqueConstraint('workspace_id', 'filename', name='uq_workspace_ai_step_filename'),
+    )
+
+    def to_dict(self):
+        return {
+            'filename': self.filename,
+            'name': self.name,
+            'steps': self.steps,
+            'created': self.created_at.isoformat() if self.created_at else None,
+            'updated': self.updated_at.isoformat() if self.updated_at else None,
+            'last_run_status': self.last_run_status,
+            'last_run_time': self.last_run_time.isoformat() if self.last_run_time else None,
+        }
+
+
+class TestArtifact(Base):
+    """Test artifact metadata — references binary files on disk."""
+    __tablename__ = 'test_artifacts'
+
+    id = Column(Integer, primary_key=True)
+    test_id = Column(Integer, ForeignKey('tests.id'), nullable=False)
+    timestamp = Column(String(50), nullable=False)
+    video_path = Column(String(500))
+    video_size_mb = Column(Float, default=0)
+    har_path = Column(String(500))
+    status = Column(String(20))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    test = relationship('Test', back_populates='artifacts')
+
+    def to_dict(self):
+        return {
+            'timestamp': self.timestamp,
+            'video_path': self.video_path,
+            'video_size_mb': self.video_size_mb,
+            'har_path': self.har_path,
+            'status': self.status,
         }
 
 

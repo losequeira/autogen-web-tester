@@ -28,9 +28,10 @@ import config
 from config import Config
 
 # Import multi-user modules
-from models import init_db, get_db_session, close_db_session, Test, TestSource
+from models import init_db, get_db_session, close_db_session, Test, TestSource, Workspace
 from auth import init_auth
 from decorators import workspace_access_required, workspace_owner_required
+import data_access
 
 app = Flask(__name__)
 
@@ -62,16 +63,6 @@ def get_workspace_path(workspace_id: int) -> Path:
     return Path(Config.USER_DATA_PATH) / 'workspaces' / str(workspace_id)
 
 
-def get_workspace_tests_dir(workspace_id: int) -> Path:
-    """Get the saved tests directory for a workspace."""
-    return get_workspace_path(workspace_id) / 'saved_tests'
-
-
-def get_workspace_ai_steps_dir(workspace_id: int) -> Path:
-    """Get the AI steps directory for a workspace."""
-    return get_workspace_path(workspace_id) / 'ai_steps'
-
-
 def get_workspace_artifacts_dir(workspace_id: int) -> Path:
     """Get the artifacts directory for a workspace."""
     return get_workspace_path(workspace_id) / 'artifacts'
@@ -90,111 +81,21 @@ stop_requested = False
 # Track current AI step execution for code generation prompt
 current_ai_step = None  # {'filename': '...', 'name': '...'}
 
-# Saved tests directory
-SAVED_TESTS_DIR = Path(__file__).parent / 'saved_tests'
-SAVED_TESTS_DIR.mkdir(exist_ok=True)
-
-# AI Steps directory
-AI_STEPS_DIR = Path(__file__).parent / 'ai_steps'
-AI_STEPS_DIR.mkdir(exist_ok=True)
-
 # Codegen recordings tracking
 active_recordings = {}
 TEMP_RECORDINGS_DIR = Path(__file__).parent / 'temp_recordings'
 TEMP_RECORDINGS_DIR.mkdir(exist_ok=True)
 
 
-def cleanup_old_artifacts(test_name: str, keep_last_n: int = 10):
-    """Remove old artifact directories, keeping only the last N."""
-    import shutil
-    artifact_base = Path(__file__).parent / "test_artifacts" / test_name
-    if not artifact_base.exists():
-        return
-
-    # Get all timestamp directories, sorted by creation time (newest first)
-    try:
-        dirs = sorted(artifact_base.iterdir(), key=lambda x: x.stat().st_ctime, reverse=True)
-    except Exception as e:
-        print(f"Warning: Could not list artifact directories: {e}")
-        return
-
-    # Remove all but the last N
-    for old_dir in dirs[keep_last_n:]:
-        try:
-            shutil.rmtree(old_dir)
-            print(f"Cleaned up old artifact: {old_dir}")
-        except Exception as e:
-            print(f"Warning: Could not remove old artifacts: {e}")
-
 
 def update_test_artifacts(filename: str, artifact_dir: Path, test_status: str = 'unknown', workspace_id: int = None):
-    """Update test JSON metadata with artifact information."""
-    if not filename:
-        return
-
-    # Determine which directory to use (workspace-scoped or global fallback)
-    if workspace_id:
-        # Use workspace-scoped directories
-        if filename.endswith('.json'):
-            # Could be either saved test or AI step
-            test_file = get_workspace_tests_dir(workspace_id) / filename
-            if not test_file.exists():
-                test_file = get_workspace_ai_steps_dir(workspace_id) / filename
-        else:
-            test_file = get_workspace_ai_steps_dir(workspace_id) / filename
-    else:
-        # Fallback to global directories (for backward compatibility)
-        if filename.endswith('.json'):
-            test_file = SAVED_TESTS_DIR / filename
-            if not test_file.exists():
-                test_file = AI_STEPS_DIR / filename
-        else:
-            test_file = AI_STEPS_DIR / filename
-
-    if not test_file.exists():
-        print(f"Warning: Test file not found for artifact update: {filename}")
+    """Update test artifact metadata in the database."""
+    if not filename or not workspace_id:
+        print(f"Warning: Cannot update artifacts without filename and workspace_id")
         return
 
     try:
-        with open(test_file, 'r') as f:
-            test_data = json.load(f)
-
-        # Find video file (Playwright names it automatically)
-        video_files = list(artifact_dir.glob("*.webm"))
-        video_path = video_files[0].relative_to(Path(__file__).parent) if video_files else None
-        video_size_mb = video_files[0].stat().st_size / (1024*1024) if video_files else 0
-
-        # Find HAR file
-        har_files = list(artifact_dir.glob("*.har"))
-        har_path = har_files[0].relative_to(Path(__file__).parent) if har_files else None
-
-        # Add artifact info
-        if 'artifacts' not in test_data:
-            test_data['artifacts'] = []
-
-        timestamp = artifact_dir.name  # Directory name is the timestamp
-        test_data['artifacts'].append({
-            'timestamp': timestamp,
-            'video_path': str(video_path) if video_path else None,
-            'video_size_mb': round(video_size_mb, 2),
-            'har_path': str(har_path) if har_path else None,
-            'status': test_status
-        })
-
-        # Update test metadata
-        test_data['last_run'] = datetime.now().isoformat()
-        test_data['last_run_status'] = test_status
-
-        # Save updated metadata
-        with open(test_file, 'w') as f:
-            json.dump(test_data, f, indent=2)
-
-        print(f"Updated test metadata with artifact: {video_path}")
-
-        # Cleanup old artifacts (keep last 10)
-        test_name = Path(filename).stem
-        cleanup_old_artifacts(test_name, keep_last_n=10)
-
+        data_access.add_test_artifact(workspace_id, filename, artifact_dir, test_status)
     except Exception as e:
         print(f"Warning: Could not update test metadata: {e}")
 
@@ -2042,175 +1943,121 @@ def start_codegen():
 
 
 @app.route('/api/save-test', methods=['POST'])
+@login_required
 def save_test():
     """Save a Playwright test for later reuse."""
     data = request.json
     name = data.get('name')
     code = data.get('code')
-    source = data.get('source', 'ai')  # Default to 'ai' for backward compatibility
+    source = data.get('source', 'ai')
 
     if not name or not code:
         return jsonify({'error': 'Name and code required'}), 400
 
-    # Sanitize filename
-    filename = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-    filename = filename.replace(' ', '_') + '.json'
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify({'error': 'No workspace found'}), 400
 
-    test_data = {
-        'name': name,
-        'code': code,
-        'source': source,
-        'created': datetime.now().isoformat()
-    }
-
-    filepath = SAVED_TESTS_DIR / filename
-    with open(filepath, 'w') as f:
-        json.dump(test_data, f, indent=2)
-
-    return jsonify({'success': True, 'filename': filename})
+    try:
+        result = data_access.create_test(ws_id, name, code, source, current_user.id)
+        return jsonify({'success': True, 'filename': result['filename']})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 409
+    except Exception as e:
+        print(f"Error saving test: {e}")
+        return jsonify({'error': 'Failed to save test'}), 500
 
 
 @app.route('/api/saved-tests')
+@login_required
 def get_saved_tests():
     """Get list of saved tests."""
-    tests = []
-    for filepath in SAVED_TESTS_DIR.glob('*.json'):
-        try:
-            with open(filepath, 'r') as f:
-                test_data = json.load(f)
-                tests.append({
-                    'filename': filepath.name,
-                    'name': test_data.get('name'),
-                    'created': test_data.get('created'),
-                    'source': test_data.get('source', 'ai'),  # Default to 'ai' for backward compatibility
-                    'last_run_status': test_data.get('last_run_status'),  # 'success', 'error', or 'stopped'
-                    'artifacts': test_data.get('artifacts', []),  # Include artifacts for video recordings
-                    'last_run_time': test_data.get('last_run_time')
-                })
-        except Exception as e:
-            print(f"Error loading {filepath}: {e}")
-
-    # Sort by creation date, newest first
-    tests.sort(key=lambda x: x.get('created', ''), reverse=True)
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify([])
+    tests = data_access.get_tests(ws_id)
     return jsonify(tests)
 
 
 @app.route('/api/saved-tests/<filename>', methods=['GET'])
+@login_required
 def get_saved_test(filename):
     """Get a specific saved test."""
-    filepath = SAVED_TESTS_DIR / filename
-    if filepath.exists():
-        with open(filepath, 'r') as f:
-            test_data = json.load(f)
-        return jsonify(test_data)
-    return jsonify({'error': 'Test not found'}), 404
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify({'error': 'Test not found'}), 404
+    test_data = data_access.get_test(ws_id, filename)
+    if not test_data:
+        return jsonify({'error': 'Test not found'}), 404
+    return jsonify(test_data)
 
 
 @app.route('/api/saved-tests/<filename>', methods=['PUT'])
+@login_required
 def update_saved_test(filename):
     """Update a saved test."""
-    filepath = SAVED_TESTS_DIR / filename
-    if not filepath.exists():
+    data = request.json
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
         return jsonify({'error': 'Test not found'}), 404
 
-    data = request.json
-    code = data.get('code')
-    name = data.get('name')
+    fields = {}
+    if 'code' in data:
+        fields['code'] = data['code']
+    if 'name' in data:
+        fields['name'] = data['name']
+    if 'source' in data:
+        fields['source'] = data['source']
 
-    if not code:
-        return jsonify({'error': 'Code required'}), 400
-
-    test_data = {
-        'name': name or filename.replace('.json', '').replace('_', ' '),
-        'code': code,
-        'source': data.get('source', 'ai'),  # Preserve source field
-        'created': data.get('created', datetime.now().isoformat()),
-        'updated': datetime.now().isoformat()
-    }
-
-    with open(filepath, 'w') as f:
-        json.dump(test_data, f, indent=2)
-
+    result = data_access.update_test(ws_id, filename, **fields)
+    if not result:
+        return jsonify({'error': 'Test not found'}), 404
     return jsonify({'success': True})
 
 
 @app.route('/api/saved-tests/<filename>', methods=['DELETE'])
+@login_required
 def delete_saved_test(filename):
     """Delete a saved test."""
-    filepath = SAVED_TESTS_DIR / filename
-    if filepath.exists():
-        filepath.unlink()
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify({'error': 'Test not found'}), 404
+    if data_access.delete_test(ws_id, filename):
         return jsonify({'success': True})
     return jsonify({'error': 'Test not found'}), 404
 
 
 @app.route('/api/saved-tests/<filename>/status', methods=['POST'])
+@login_required
 def update_test_status(filename):
     """Update the last run status of a saved test."""
-    filepath = SAVED_TESTS_DIR / filename
-    if not filepath.exists():
+    data = request.json
+    status = data.get('status')
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
         return jsonify({'error': 'Test not found'}), 404
 
-    data = request.json
-    status = data.get('status')  # 'success', 'error', or 'stopped'
-
-    try:
-        # Read existing test data
-        with open(filepath, 'r') as f:
-            test_data = json.load(f)
-
-        # Update status fields
-        test_data['last_run_status'] = status
-        test_data['last_run_time'] = datetime.now().isoformat()
-
-        # Write back
-        with open(filepath, 'w') as f:
-            json.dump(test_data, f, indent=2)
-
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-def json_to_markdown(step_data):
-    """Convert AI step JSON to markdown (just the steps content)."""
-    # Return just the steps content - metadata stays in JSON
-    return step_data.get('steps', '')
-
-
-def markdown_to_json(markdown_content):
-    """Convert markdown content back to JSON structure (just updates steps field)."""
-    # Return just the steps content - other fields will be preserved from original JSON
-    return {
-        'steps': markdown_content.strip()
-    }
+    result = data_access.update_test(ws_id, filename,
+                                     last_run_status=status,
+                                     last_run_time=datetime.now())
+    if not result:
+        return jsonify({'error': 'Test not found'}), 404
+    return jsonify({'success': True})
 
 
 @app.route('/api/ai-steps')
+@login_required
 def get_ai_steps():
     """Get list of AI step tests."""
-    steps = []
-    for filepath in AI_STEPS_DIR.glob('*.json'):
-        try:
-            with open(filepath, 'r') as f:
-                step_data = json.load(f)
-                steps.append({
-                    'filename': filepath.name,
-                    'name': step_data.get('name'),
-                    'steps': step_data.get('steps'),
-                    'created': step_data.get('created'),
-                    'last_run': step_data.get('last_run'),
-                    'status': step_data.get('status')
-                })
-        except Exception as e:
-            print(f"Error loading {filepath}: {e}")
-
-    # Sort by creation date, newest first
-    steps.sort(key=lambda x: x.get('created', ''), reverse=True)
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify([])
+    steps = data_access.get_ai_steps(ws_id)
     return jsonify(steps)
 
 
 @app.route('/api/ai-steps', methods=['POST'])
+@login_required
 def save_ai_step():
     """Save new AI step test."""
     data = request.json
@@ -2220,136 +2067,110 @@ def save_ai_step():
     if not name or not steps:
         return jsonify({'error': 'Name and steps required'}), 400
 
-    # Sanitize filename
-    filename = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-    filename = filename.replace(' ', '_') + '.json'
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify({'error': 'No workspace found'}), 400
 
-    step_data = {
-        'name': name,
-        'steps': steps,
-        'created': datetime.now().isoformat(),
-        'last_run': None,
-        'status': None
-    }
-
-    filepath = AI_STEPS_DIR / filename
-    with open(filepath, 'w') as f:
-        json.dump(step_data, f, indent=2)
-
-    return jsonify({'success': True, 'filename': filename})
+    try:
+        result = data_access.create_ai_step(ws_id, name, steps, current_user.id)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 409
+    except Exception as e:
+        print(f"Error saving AI step: {e}")
+        return jsonify({'error': 'Failed to save AI step'}), 500
 
 
 @app.route('/api/ai-steps/<filename>', methods=['GET'])
+@login_required
 def get_ai_step(filename):
     """Get a specific AI step test."""
-    filepath = AI_STEPS_DIR / filename
-    if filepath.exists():
-        with open(filepath, 'r') as f:
-            step_data = json.load(f)
-        return jsonify(step_data)
-    return jsonify({'error': 'AI step not found'}), 404
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify({'error': 'AI step not found'}), 404
+    step_data = data_access.get_ai_step(ws_id, filename)
+    if not step_data:
+        return jsonify({'error': 'AI step not found'}), 404
+    return jsonify(step_data)
 
 
 @app.route('/api/ai-steps/<filename>', methods=['PUT'])
+@login_required
 def update_ai_step(filename):
     """Update an existing AI step test."""
-    filepath = AI_STEPS_DIR / filename
-    if not filepath.exists():
+    data = request.json
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
         return jsonify({'error': 'AI step not found'}), 404
 
-    data = request.json
-    steps = data.get('steps')
-    name = data.get('name')
+    fields = {}
+    if 'steps' in data:
+        fields['steps'] = data['steps']
+    if 'name' in data:
+        fields['name'] = data['name']
 
-    if not steps:
-        return jsonify({'error': 'Steps required'}), 400
-
-    step_data = {
-        'name': name or filename.replace('.json', '').replace('_', ' '),
-        'steps': steps,
-        'created': data.get('created', datetime.now().isoformat()),
-        'updated': datetime.now().isoformat(),
-        'last_run': data.get('last_run'),
-        'status': data.get('status')
-    }
-
-    with open(filepath, 'w') as f:
-        json.dump(step_data, f, indent=2)
-
+    result = data_access.update_ai_step(ws_id, filename, **fields)
+    if not result:
+        return jsonify({'error': 'AI step not found'}), 404
     return jsonify({'success': True})
 
 
 @app.route('/api/ai-steps/<filename>', methods=['DELETE'])
+@login_required
 def delete_ai_step(filename):
     """Delete an AI step test."""
-    filepath = AI_STEPS_DIR / filename
-    if filepath.exists():
-        filepath.unlink()
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify({'error': 'AI step not found'}), 404
+    if data_access.delete_ai_step(ws_id, filename):
         return jsonify({'success': True})
     return jsonify({'error': 'AI step not found'}), 404
 
 
 @app.route('/api/ai-steps/<filename>/markdown', methods=['GET'])
+@login_required
 def get_ai_step_markdown(filename):
     """Get AI step in markdown format."""
-    filepath = AI_STEPS_DIR / filename
-    if filepath.exists():
-        with open(filepath, 'r') as f:
-            step_data = json.load(f)
-        markdown = json_to_markdown(step_data)
-        return jsonify({'markdown': markdown, 'filename': filename})
-    return jsonify({'error': 'AI step not found'}), 404
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify({'error': 'AI step not found'}), 404
+    step_data = data_access.get_ai_step(ws_id, filename)
+    if not step_data:
+        return jsonify({'error': 'AI step not found'}), 404
+    return jsonify({'markdown': step_data.get('steps', ''), 'filename': filename})
 
 
 @app.route('/api/ai-steps/<filename>/markdown', methods=['PUT'])
+@login_required
 def update_ai_step_markdown(filename):
     """Update AI step from markdown format."""
-    filepath = AI_STEPS_DIR / filename
-    if not filepath.exists():
-        return jsonify({'error': 'AI step not found'}), 404
-
     data = request.json
     markdown_content = data.get('markdown')
     if not markdown_content:
         return jsonify({'error': 'Markdown content required'}), 400
 
-    # Read existing data to preserve metadata
-    try:
-        with open(filepath, 'r') as f:
-            step_data = json.load(f)
-    except:
-        # If file doesn't exist or is invalid, create new structure
-        step_data = {
-            'name': filename.replace('.json', '').replace('_', ' '),
-            'created': datetime.now().isoformat(),
-            'last_run': None,
-            'status': None
-        }
+    ws_id = data_access.get_default_workspace_id(current_user.id)
+    if not ws_id:
+        return jsonify({'error': 'AI step not found'}), 404
 
-    # Update only the steps content from markdown
-    updated_fields = markdown_to_json(markdown_content)
-    step_data.update(updated_fields)
-
-    # Update timestamp
-    step_data['updated'] = datetime.now().isoformat()
-
-    with open(filepath, 'w') as f:
-        json.dump(step_data, f, indent=2)
-
+    result = data_access.update_ai_step(ws_id, filename, steps=markdown_content.strip())
+    if not result:
+        return jsonify({'error': 'AI step not found'}), 404
     return jsonify({'success': True})
 
 
 @app.route('/api/artifacts/<path:filepath>')
 def serve_artifact(filepath):
     """Serve test artifact files (videos, HAR, traces)."""
-    # filepath already includes "test_artifacts/" prefix, so just use it directly
     artifact_path = Path(__file__).parent / filepath
 
-    # Security: Ensure path is within test_artifacts directory
+    # Security: Ensure path is within allowed directories
     try:
         artifact_path = artifact_path.resolve()
         base_path = (Path(__file__).parent / "test_artifacts").resolve()
-        if not str(artifact_path).startswith(str(base_path)):
+        user_data_path = (Path(__file__).parent / Config.USER_DATA_PATH).resolve()
+        if not (str(artifact_path).startswith(str(base_path)) or
+                str(artifact_path).startswith(str(user_data_path))):
             return jsonify({'error': 'Invalid path'}), 403
     except Exception:
         return jsonify({'error': 'Invalid path'}), 400

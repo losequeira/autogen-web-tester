@@ -139,18 +139,6 @@ def register():
 
         db.commit()
 
-        # Create workspace directory structure
-        import os
-        from config import Config
-        workspace_path = os.path.join(
-            Config.USER_DATA_PATH,
-            'workspaces',
-            str(default_workspace.id)
-        )
-        os.makedirs(os.path.join(workspace_path, 'saved_tests'), exist_ok=True)
-        os.makedirs(os.path.join(workspace_path, 'ai_steps'), exist_ok=True)
-        os.makedirs(os.path.join(workspace_path, 'artifacts'), exist_ok=True)
-
         # Auto-login after registration
         login_user(user, remember=True)
 
