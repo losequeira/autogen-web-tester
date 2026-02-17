@@ -1923,31 +1923,10 @@ def update_workspace_test(workspace_id, filename):
 def delete_workspace_test(workspace_id, filename):
     """Delete a test from a workspace."""
     try:
-        tests_dir = get_workspace_tests_dir(workspace_id)
-        filepath = tests_dir / filename
-
-        if not filepath.exists():
+        if not data_access.delete_test(workspace_id, filename):
             return jsonify({'error': 'Test not found'}), 404
-
-        # Delete file
-        filepath.unlink()
-
-        # Delete database record
-        db = get_db_session()
-        test = db.query(Test).filter(
-            Test.workspace_id == workspace_id,
-            Test.filename == filename
-        ).first()
-
-        if test:
-            db.delete(test)
-            db.commit()
-
-        return jsonify({'message': 'Test deleted successfully'}), 200
-
+        return jsonify({'success': True, 'message': 'Test deleted successfully'}), 200
     except Exception as e:
-        if db:
-            db.rollback()
         print(f"Error deleting test: {e}")
         return jsonify({'error': 'Failed to delete test'}), 500
 
