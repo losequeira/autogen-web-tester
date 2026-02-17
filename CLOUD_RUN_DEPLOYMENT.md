@@ -93,11 +93,88 @@ docker run -p 8080:8080 \
   autogen-web-tester
 ```
 
+## Multi-User Setup
+
+### Database Configuration
+
+For multi-user deployments, you need a PostgreSQL database. Cloud SQL is recommended for production.
+
+#### Option 1: Cloud SQL (Recommended for 50+ users)
+
+```bash
+# Create Cloud SQL instance
+gcloud sql instances create autogen-db \
+  --database-version=POSTGRES_15 \
+  --tier=db-f1-micro \
+  --region=us-central1
+
+# Create database
+gcloud sql databases create autogen_tester --instance=autogen-db
+
+# Create user
+gcloud sql users create autogen_user \
+  --instance=autogen-db \
+  --password=your-secure-password
+
+# Deploy with Cloud SQL
+gcloud run deploy autogen-web-tester \
+  --source . \
+  --region us-central1 \
+  --add-cloudsql-instances PROJECT_ID:us-central1:autogen-db \
+  --set-env-vars DATABASE_URL="postgresql://autogen_user:your-secure-password@/autogen_tester?host=/cloudsql/PROJECT_ID:us-central1:autogen-db" \
+  --set-env-vars SECRET_KEY=$(openssl rand -hex 32) \
+  --set-env-vars SESSION_COOKIE_SECURE=true \
+  --set-env-vars OPENAI_API_KEY=your-openai-api-key
+```
+
+#### Option 2: SQLite with Persistent Volume (5-20 users)
+
+```bash
+# Create persistent volume
+gcloud compute disks create autogen-data \
+  --size=10GB \
+  --region=us-central1
+
+# Deploy with volume mount
+gcloud run deploy autogen-web-tester \
+  --source . \
+  --region us-central1 \
+  --execution-environment gen2 \
+  --add-volume name=user-data,type=cloud-storage,bucket=your-bucket-name \
+  --add-volume-mount volume=user-data,mount-path=/app/user_data \
+  --set-env-vars DATABASE_URL="sqlite:///user_data/autogen_tester.db" \
+  --set-env-vars SECRET_KEY=$(openssl rand -hex 32) \
+  --set-env-vars SESSION_COOKIE_SECURE=true \
+  --set-env-vars OPENAI_API_KEY=your-openai-api-key
+```
+
+### Initial Setup
+
+After deploying, run the migration script to import existing tests:
+
+```bash
+# SSH into Cloud Run instance (if using Cloud Shell)
+# Or run locally against production database:
+export DATABASE_URL="your-production-database-url"
+python migrate_existing_tests.py
+```
+
+Default admin credentials:
+- **Username**: `admin`
+- **Password**: `changeme123`
+
+**⚠️ IMPORTANT**: Change the admin password immediately after first login!
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `OPENAI_API_KEY` | Yes | - | Your OpenAI API key |
+| `SECRET_KEY` | Yes | - | Flask secret key for sessions (generate with `openssl rand -hex 32`) |
+| `DATABASE_URL` | Yes | SQLite | Database connection string |
+| `USER_DATA_PATH` | No | `user_data` | Base path for workspaces |
+| `SESSION_COOKIE_SECURE` | No | `false` | Set to `true` in production (HTTPS) |
+| `PERMANENT_SESSION_LIFETIME` | No | `604800` | Session lifetime in seconds (7 days) |
 | `MODEL_NAME` | No | `gpt-4` | OpenAI model to use |
 | `TIMEOUT` | No | `60000` | Browser timeout in ms |
 | `PORT` | No | `8080` | Server port (set by Cloud Run) |
@@ -126,28 +203,64 @@ gcloud run deploy autogen-web-tester \
 
 ## Persistent Storage
 
-Cloud Run is **stateless** - saved tests will be lost on container restart. For production:
+### Multi-User Workspace Storage
 
-### Option 1: Cloud Storage (Recommended)
-Modify `web_ui.py` to use Cloud Storage for `saved_tests/`:
+The application uses a hybrid approach:
+- **Database** (SQLite or PostgreSQL): User accounts, workspace metadata, test records
+- **File System**: Test code, artifacts (videos, HAR files)
 
-```python
-from google.cloud import storage
+#### Option 1: Cloud SQL + Cloud Storage (Production)
 
-# Save to Cloud Storage instead of local filesystem
+**Database**: Cloud SQL (PostgreSQL)
+**Files**: Cloud Storage bucket with volume mount
+
+```bash
+# Create Cloud Storage bucket
+gsutil mb -l us-central1 gs://your-project-autogen-data
+
+# Deploy with both Cloud SQL and Storage
+gcloud run deploy autogen-web-tester \
+  --source . \
+  --region us-central1 \
+  --add-cloudsql-instances PROJECT_ID:us-central1:autogen-db \
+  --execution-environment gen2 \
+  --add-volume name=user-data,type=cloud-storage,bucket=your-project-autogen-data \
+  --add-volume-mount volume=user-data,mount-path=/app/user_data \
+  --set-env-vars DATABASE_URL="postgresql://user:pass@/dbname?host=/cloudsql/PROJECT_ID:us-central1:autogen-db"
 ```
 
-### Option 2: Cloud Firestore
-Use Firestore for test storage:
+#### Option 2: SQLite + Cloud Storage (Small Teams)
 
-```python
-from google.cloud import firestore
+**Database**: SQLite file in Cloud Storage
+**Files**: Same Cloud Storage bucket
 
-db = firestore.Client()
+```bash
+gcloud run deploy autogen-web-tester \
+  --source . \
+  --region us-central1 \
+  --execution-environment gen2 \
+  --add-volume name=user-data,type=cloud-storage,bucket=your-project-autogen-data \
+  --add-volume-mount volume=user-data,mount-path=/app/user_data \
+  --set-env-vars DATABASE_URL="sqlite:///user_data/autogen_tester.db"
 ```
 
-### Option 3: Accept Statelessness
-For development/demo purposes, accept that tests reset on each deployment.
+### Backup Strategy
+
+```bash
+# Automated daily backup script
+#!/bin/bash
+
+# Backup Cloud SQL database
+gcloud sql export sql autogen-db \
+  gs://your-backup-bucket/backups/db_$(date +%Y%m%d).sql \
+  --database=autogen_tester
+
+# Backup Cloud Storage workspace data
+gsutil -m rsync -r gs://your-project-autogen-data gs://your-backup-bucket/data_$(date +%Y%m%d)
+
+# Retain last 30 days
+gsutil -m rm gs://your-backup-bucket/**/*$(date -d '30 days ago' +%Y%m%d)*
+```
 
 ## Monitoring and Logs
 

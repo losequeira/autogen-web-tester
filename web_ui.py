@@ -25,10 +25,59 @@ from autogen_core.tools import FunctionTool
 from browser_tool import BrowserTool
 from code_agent import CodeGenerationAgent
 import config
+from config import Config
+
+# Import multi-user modules
+from models import init_db, get_db_session, close_db_session, Test, TestSource
+from auth import init_auth
+from decorators import workspace_access_required, workspace_owner_required
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'autogen-web-tester-secret'
+
+# Apply multi-user configuration
+app.config.from_object(Config)
+
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Initialize database
+print("Initializing database...")
+os.makedirs(Config.USER_DATA_PATH, exist_ok=True)
+os.makedirs(os.path.join(Config.USER_DATA_PATH, 'workspaces'), exist_ok=True)
+init_db(Config.DATABASE_URL)
+
+# Initialize authentication
+print("Initializing authentication...")
+init_auth(app)
+
+# Cleanup database connections on app shutdown
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    close_db_session()
+
+
+# ========== WORKSPACE HELPER FUNCTIONS ==========
+
+def get_workspace_path(workspace_id: int) -> Path:
+    """Get the base path for a workspace."""
+    return Path(Config.USER_DATA_PATH) / 'workspaces' / str(workspace_id)
+
+
+def get_workspace_tests_dir(workspace_id: int) -> Path:
+    """Get the saved tests directory for a workspace."""
+    return get_workspace_path(workspace_id) / 'saved_tests'
+
+
+def get_workspace_ai_steps_dir(workspace_id: int) -> Path:
+    """Get the AI steps directory for a workspace."""
+    return get_workspace_path(workspace_id) / 'ai_steps'
+
+
+def get_workspace_artifacts_dir(workspace_id: int) -> Path:
+    """Get the artifacts directory for a workspace."""
+    return get_workspace_path(workspace_id) / 'artifacts'
+
+
+# ========== END WORKSPACE HELPER FUNCTIONS ==========
 
 # Initialize code generation agent
 code_agent = CodeGenerationAgent(api_key=config.OPENAI_API_KEY)
@@ -1252,6 +1301,541 @@ def index():
     return render_template('index.html', is_cloud=is_cloud)
 
 
+# ========== WORKSPACE MANAGEMENT API ENDPOINTS ==========
+
+from flask_login import login_required, current_user
+from models import Workspace, WorkspaceMember, WorkspaceRole, WorkspaceType, User
+
+
+@app.route('/api/workspaces', methods=['GET'])
+@login_required
+def get_workspaces():
+    """Get all workspaces accessible to current user (owned + shared)."""
+    try:
+        db = get_db_session()
+
+        # Get owned workspaces
+        owned_workspaces = db.query(Workspace).filter(
+            Workspace.owner_id == current_user.id
+        ).all()
+
+        # Get shared workspaces (where user is a member)
+        shared_workspaces = db.query(Workspace).join(
+            WorkspaceMember
+        ).filter(
+            WorkspaceMember.user_id == current_user.id
+        ).all()
+
+        # Combine and deduplicate
+        all_workspaces = {w.id: w for w in owned_workspaces + shared_workspaces}.values()
+
+        return jsonify({
+            'workspaces': [w.to_dict(include_members=True) for w in all_workspaces]
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting workspaces: {e}")
+        return jsonify({'error': 'Failed to get workspaces'}), 500
+
+
+@app.route('/api/workspaces', methods=['POST'])
+@login_required
+def create_workspace():
+    """Create a new workspace."""
+    try:
+        data = request.get_json()
+
+        name = data.get('name', '').strip()
+        workspace_type = data.get('type', 'private')
+
+        if not name:
+            return jsonify({'error': 'Workspace name is required'}), 400
+
+        if workspace_type not in ['private', 'shared']:
+            return jsonify({'error': 'Invalid workspace type'}), 400
+
+        db = get_db_session()
+
+        # Create workspace
+        workspace = Workspace(
+            name=name,
+            type=WorkspaceType.PRIVATE if workspace_type == 'private' else WorkspaceType.SHARED,
+            owner_id=current_user.id
+        )
+        db.add(workspace)
+        db.flush()
+
+        # Create workspace directory structure
+        workspace_path = os.path.join(
+            Config.USER_DATA_PATH,
+            'workspaces',
+            str(workspace.id)
+        )
+        os.makedirs(os.path.join(workspace_path, 'saved_tests'), exist_ok=True)
+        os.makedirs(os.path.join(workspace_path, 'ai_steps'), exist_ok=True)
+        os.makedirs(os.path.join(workspace_path, 'artifacts'), exist_ok=True)
+
+        db.commit()
+
+        return jsonify({
+            'message': 'Workspace created successfully',
+            'workspace': workspace.to_dict()
+        }), 201
+
+    except Exception as e:
+        db.rollback()
+        print(f"Error creating workspace: {e}")
+        return jsonify({'error': 'Failed to create workspace'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>', methods=['GET'])
+@login_required
+def get_workspace(workspace_id):
+    """Get workspace details with members."""
+    try:
+        db = get_db_session()
+
+        workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+
+        if not workspace:
+            return jsonify({'error': 'Workspace not found'}), 404
+
+        # Check if user has access
+        if not workspace.has_access(current_user.id, 'read'):
+            return jsonify({'error': 'Access denied'}), 403
+
+        return jsonify({
+            'workspace': workspace.to_dict(include_members=True)
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting workspace: {e}")
+        return jsonify({'error': 'Failed to get workspace'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/members', methods=['POST'])
+@login_required
+def add_workspace_member(workspace_id):
+    """Invite a user to a workspace."""
+    try:
+        data = request.get_json()
+
+        username = data.get('username', '').strip()
+        role = data.get('role', 'viewer')
+
+        if not username:
+            return jsonify({'error': 'Username is required'}), 400
+
+        if role not in ['editor', 'viewer']:
+            return jsonify({'error': 'Invalid role (use editor or viewer)'}), 400
+
+        db = get_db_session()
+
+        # Get workspace
+        workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+
+        if not workspace:
+            return jsonify({'error': 'Workspace not found'}), 404
+
+        # Check if current user is owner
+        if workspace.owner_id != current_user.id:
+            return jsonify({'error': 'Only workspace owner can add members'}), 403
+
+        # Find user to invite
+        user = db.query(User).filter(User.username == username).first()
+
+        if not user:
+            return jsonify({'error': f'User {username} not found'}), 404
+
+        # Check if user is already a member
+        existing_member = db.query(WorkspaceMember).filter(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == user.id
+        ).first()
+
+        if existing_member:
+            return jsonify({'error': f'{username} is already a member'}), 409
+
+        # Don't add owner as member
+        if user.id == workspace.owner_id:
+            return jsonify({'error': 'Owner is already a member by default'}), 400
+
+        # Create membership
+        member = WorkspaceMember(
+            workspace_id=workspace_id,
+            user_id=user.id,
+            role=WorkspaceRole.EDITOR if role == 'editor' else WorkspaceRole.VIEWER
+        )
+        db.add(member)
+        db.commit()
+
+        return jsonify({
+            'message': f'{username} added to workspace',
+            'member': member.to_dict()
+        }), 201
+
+    except Exception as e:
+        db.rollback()
+        print(f"Error adding member: {e}")
+        return jsonify({'error': 'Failed to add member'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/members/<int:user_id>', methods=['DELETE'])
+@login_required
+def remove_workspace_member(workspace_id, user_id):
+    """Remove a user from a workspace."""
+    try:
+        db = get_db_session()
+
+        # Get workspace
+        workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+
+        if not workspace:
+            return jsonify({'error': 'Workspace not found'}), 404
+
+        # Check if current user is owner
+        if workspace.owner_id != current_user.id:
+            return jsonify({'error': 'Only workspace owner can remove members'}), 403
+
+        # Find membership
+        member = db.query(WorkspaceMember).filter(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == user_id
+        ).first()
+
+        if not member:
+            return jsonify({'error': 'User is not a member of this workspace'}), 404
+
+        db.delete(member)
+        db.commit()
+
+        return jsonify({'message': 'Member removed successfully'}), 200
+
+    except Exception as e:
+        db.rollback()
+        print(f"Error removing member: {e}")
+        return jsonify({'error': 'Failed to remove member'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/members/<int:user_id>/role', methods=['PUT'])
+@login_required
+def update_member_role(workspace_id, user_id):
+    """Update a member's role in a workspace."""
+    try:
+        data = request.get_json()
+        new_role = data.get('role', '').lower()
+
+        if new_role not in ['editor', 'viewer']:
+            return jsonify({'error': 'Invalid role (use editor or viewer)'}), 400
+
+        db = get_db_session()
+
+        # Get workspace
+        workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+
+        if not workspace:
+            return jsonify({'error': 'Workspace not found'}), 404
+
+        # Check if current user is owner
+        if workspace.owner_id != current_user.id:
+            return jsonify({'error': 'Only workspace owner can update member roles'}), 403
+
+        # Find membership
+        member = db.query(WorkspaceMember).filter(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == user_id
+        ).first()
+
+        if not member:
+            return jsonify({'error': 'User is not a member of this workspace'}), 404
+
+        # Update role
+        member.role = WorkspaceRole.EDITOR if new_role == 'editor' else WorkspaceRole.VIEWER
+        db.commit()
+
+        return jsonify({
+            'message': 'Member role updated successfully',
+            'member': member.to_dict()
+        }), 200
+
+    except Exception as e:
+        db.rollback()
+        print(f"Error updating member role: {e}")
+        return jsonify({'error': 'Failed to update member role'}), 500
+
+
+# ========== END WORKSPACE MANAGEMENT API ENDPOINTS ==========
+
+
+# ========== WORKSPACE-AWARE TEST MANAGEMENT API ENDPOINTS ==========
+
+@app.route('/api/workspaces/<int:workspace_id>/tests', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def get_workspace_tests(workspace_id):
+    """Get all tests in a workspace."""
+    try:
+        tests_dir = get_workspace_tests_dir(workspace_id)
+        tests_dir.mkdir(parents=True, exist_ok=True)
+
+        tests = []
+        for filepath in tests_dir.glob('*.json'):
+            try:
+                with open(filepath, 'r') as f:
+                    test_data = json.load(f)
+                    tests.append({
+                        'filename': filepath.name,
+                        'name': test_data.get('name'),
+                        'created': test_data.get('created'),
+                        'source': test_data.get('source', 'manual'),
+                        'last_run_status': test_data.get('last_run_status'),
+                        'artifacts': test_data.get('artifacts', []),
+                        'last_run_time': test_data.get('last_run_time')
+                    })
+            except Exception as e:
+                print(f"Error loading {filepath}: {e}")
+
+        # Sort by creation date, newest first
+        tests.sort(key=lambda x: x.get('created', ''), reverse=True)
+        return jsonify({'tests': tests}), 200
+
+    except Exception as e:
+        print(f"Error getting workspace tests: {e}")
+        return jsonify({'error': 'Failed to get tests'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/tests', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def create_workspace_test(workspace_id):
+    """Create a new test in a workspace."""
+    try:
+        data = request.get_json()
+
+        name = data.get('name', '').strip()
+        code = data.get('code', '')
+        source = data.get('source', 'manual')
+
+        if not name or not code:
+            return jsonify({'error': 'Name and code are required'}), 400
+
+        # Sanitize filename
+        filename = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        filename = filename.replace(' ', '_') + '.json'
+
+        # Create test data
+        test_data = {
+            'name': name,
+            'code': code,
+            'source': source,
+            'created': datetime.now().isoformat(),
+            'artifacts': []
+        }
+
+        # Save to workspace directory
+        tests_dir = get_workspace_tests_dir(workspace_id)
+        tests_dir.mkdir(parents=True, exist_ok=True)
+
+        filepath = tests_dir / filename
+
+        # Check if test already exists
+        if filepath.exists():
+            return jsonify({'error': 'Test with this name already exists'}), 409
+
+        with open(filepath, 'w') as f:
+            json.dump(test_data, f, indent=2)
+
+        # Create database record
+        db = get_db_session()
+        test = Test(
+            filename=filename,
+            name=name,
+            workspace_id=workspace_id,
+            source=TestSource.AI if source == 'ai' else TestSource.MANUAL,
+            created_by=current_user.id
+        )
+        db.add(test)
+        db.commit()
+
+        return jsonify({
+            'message': 'Test created successfully',
+            'filename': filename
+        }), 201
+
+    except Exception as e:
+        if db:
+            db.rollback()
+        print(f"Error creating test: {e}")
+        return jsonify({'error': 'Failed to create test'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def get_workspace_test(workspace_id, filename):
+    """Get a specific test from a workspace."""
+    try:
+        tests_dir = get_workspace_tests_dir(workspace_id)
+        filepath = tests_dir / filename
+
+        if not filepath.exists():
+            return jsonify({'error': 'Test not found'}), 404
+
+        with open(filepath, 'r') as f:
+            test_data = json.load(f)
+
+        return jsonify(test_data), 200
+
+    except Exception as e:
+        print(f"Error getting test: {e}")
+        return jsonify({'error': 'Failed to get test'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>', methods=['PUT'])
+@login_required
+@workspace_access_required(permission='write')
+def update_workspace_test(workspace_id, filename):
+    """Update a test in a workspace."""
+    try:
+        data = request.get_json()
+
+        tests_dir = get_workspace_tests_dir(workspace_id)
+        filepath = tests_dir / filename
+
+        if not filepath.exists():
+            return jsonify({'error': 'Test not found'}), 404
+
+        # Read existing data
+        with open(filepath, 'r') as f:
+            test_data = json.load(f)
+
+        # Update fields
+        if 'name' in data:
+            test_data['name'] = data['name']
+        if 'code' in data:
+            test_data['code'] = data['code']
+
+        test_data['updated'] = datetime.now().isoformat()
+
+        # Save updated data
+        with open(filepath, 'w') as f:
+            json.dump(test_data, f, indent=2)
+
+        # Update database record
+        db = get_db_session()
+        test = db.query(Test).filter(
+            Test.workspace_id == workspace_id,
+            Test.filename == filename
+        ).first()
+
+        if test:
+            if 'name' in data:
+                test.name = data['name']
+            db.commit()
+
+        return jsonify({'message': 'Test updated successfully'}), 200
+
+    except Exception as e:
+        if db:
+            db.rollback()
+        print(f"Error updating test: {e}")
+        return jsonify({'error': 'Failed to update test'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>', methods=['DELETE'])
+@login_required
+@workspace_access_required(permission='write')
+def delete_workspace_test(workspace_id, filename):
+    """Delete a test from a workspace."""
+    try:
+        tests_dir = get_workspace_tests_dir(workspace_id)
+        filepath = tests_dir / filename
+
+        if not filepath.exists():
+            return jsonify({'error': 'Test not found'}), 404
+
+        # Delete file
+        filepath.unlink()
+
+        # Delete database record
+        db = get_db_session()
+        test = db.query(Test).filter(
+            Test.workspace_id == workspace_id,
+            Test.filename == filename
+        ).first()
+
+        if test:
+            db.delete(test)
+            db.commit()
+
+        return jsonify({'message': 'Test deleted successfully'}), 200
+
+    except Exception as e:
+        if db:
+            db.rollback()
+        print(f"Error deleting test: {e}")
+        return jsonify({'error': 'Failed to delete test'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>/artifacts', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def get_workspace_test_artifacts(workspace_id, filename):
+    """Get list of artifacts for a test in a workspace."""
+    try:
+        tests_dir = get_workspace_tests_dir(workspace_id)
+        filepath = tests_dir / filename
+
+        if not filepath.exists():
+            return jsonify({'error': 'Test not found'}), 404
+
+        with open(filepath, 'r') as f:
+            test_data = json.load(f)
+
+        artifacts = test_data.get('artifacts', [])
+        return jsonify(artifacts), 200
+
+    except Exception as e:
+        print(f"Error getting test artifacts: {e}")
+        return jsonify({'error': 'Failed to load artifacts'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/ai-steps', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def get_workspace_ai_steps(workspace_id):
+    """Get all AI steps in a workspace."""
+    try:
+        ai_steps_dir = get_workspace_ai_steps_dir(workspace_id)
+        ai_steps_dir.mkdir(parents=True, exist_ok=True)
+
+        ai_steps = []
+        for filepath in ai_steps_dir.glob('*.json'):
+            try:
+                with open(filepath, 'r') as f:
+                    step_data = json.load(f)
+                    ai_steps.append({
+                        'filename': filepath.name,
+                        'name': step_data.get('name'),
+                        'created': step_data.get('created'),
+                        'last_run_status': step_data.get('last_run_status'),
+                        'last_run_time': step_data.get('last_run_time')
+                    })
+            except Exception as e:
+                print(f"Error loading {filepath}: {e}")
+
+        # Sort by creation date, newest first
+        ai_steps.sort(key=lambda x: x.get('created', ''), reverse=True)
+        return jsonify({'ai_steps': ai_steps}), 200
+
+    except Exception as e:
+        print(f"Error getting AI steps: {e}")
+        return jsonify({'error': 'Failed to get AI steps'}), 500
+
+
+# ========== END WORKSPACE-AWARE TEST MANAGEMENT API ENDPOINTS ==========
+
+
 @app.route('/api/example-tests')
 def example_tests():
     """Return example test templates."""
@@ -1930,7 +2514,12 @@ def handle_clear_chat():
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection."""
-    emit('log', {'type': 'info', 'message': 'Connected to AutoGen Web Tester'})
+    # Check if user is authenticated
+    if not current_user.is_authenticated:
+        emit('log', {'type': 'error', 'message': 'Authentication required'})
+        return False  # Reject connection
+
+    emit('log', {'type': 'info', 'message': f'Connected to AutoGen Web Tester (User: {current_user.username})'})
 
 
 if __name__ == '__main__':

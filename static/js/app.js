@@ -3,6 +3,44 @@
 // Initialize Socket.IO
 const socket = io();
 
+// Authentication state
+let currentUser = null;
+let currentWorkspaceId = null;
+
+// Authentication modal elements
+const loginModal = document.getElementById('login-modal');
+const registerModal = document.getElementById('register-modal');
+const loginForm = document.getElementById('login-form');
+const registerForm = document.getElementById('register-form');
+const closeLoginBtn = document.querySelector('.close-login');
+const closeRegisterBtn = document.querySelector('.close-register');
+const showRegisterBtn = document.getElementById('show-register-btn');
+const showLoginBtn = document.getElementById('show-login-btn');
+const loginError = document.getElementById('login-error');
+const registerError = document.getElementById('register-error');
+
+// Workspace elements
+const currentUsernameEl = document.getElementById('current-username');
+const logoutBtn = document.getElementById('logout-btn');
+const workspaceDropdown = document.getElementById('workspace-dropdown');
+const newWorkspaceBtn = document.getElementById('new-workspace-btn');
+const inviteMemberBtn = document.getElementById('invite-member-btn');
+const workspaceMembersContainer = document.getElementById('workspace-members-container');
+const workspaceMembersList = document.getElementById('workspace-members-list');
+
+const newWorkspaceModal = document.getElementById('new-workspace-modal');
+const newWorkspaceForm = document.getElementById('new-workspace-form');
+const closeNewWorkspaceBtns = document.querySelectorAll('.close-new-workspace');
+const newWorkspaceError = document.getElementById('new-workspace-error');
+
+const inviteMemberModal = document.getElementById('invite-member-modal');
+const inviteMemberForm = document.getElementById('invite-member-form');
+const closeInviteMemberBtns = document.querySelectorAll('.close-invite-member');
+const inviteMemberError = document.getElementById('invite-member-error');
+
+let userWorkspaces = [];
+let currentWorkspace = null;
+
 // DOM Elements
 const clearLogBtn = document.getElementById('clear-log');
 const browserScreenshot = document.getElementById('browser-screenshot');
@@ -2599,11 +2637,499 @@ function handleImageFile(file) {
     reader.readAsDataURL(file);
 }
 
+// ========== AUTHENTICATION FUNCTIONS ==========
+
+function showLoginModal() {
+    loginModal.style.display = 'block';
+    registerModal.style.display = 'none';
+    loginError.style.display = 'none';
+    loginForm.reset();
+}
+
+function showRegisterModal() {
+    registerModal.style.display = 'block';
+    loginModal.style.display = 'none';
+    registerError.style.display = 'none';
+    registerForm.reset();
+}
+
+function hideAuthModals() {
+    loginModal.style.display = 'none';
+    registerModal.style.display = 'none';
+}
+
+async function checkAuthentication() {
+    try {
+        const response = await fetch('/api/check-auth');
+        const data = await response.json();
+
+        if (data.authenticated) {
+            currentUser = data.user;
+            await loadUserWorkspaces();
+            return true;
+        } else {
+            showLoginModal();
+            return false;
+        }
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        showLoginModal();
+        return false;
+    }
+}
+
+async function loadUserWorkspaces() {
+    try {
+        const response = await fetch('/api/current-user');
+        if (!response.ok) {
+            if (response.status === 401) {
+                showLoginModal();
+                return;
+            }
+            throw new Error('Failed to load workspaces');
+        }
+
+        const data = await response.json();
+        currentUser = data.user;
+
+        // Try to restore previously selected workspace from localStorage
+        const savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+        let workspaceFound = false;
+
+        if (savedWorkspaceId && data.workspaces && data.workspaces.length > 0) {
+            // Check if saved workspace exists and user has access to it
+            const savedId = parseInt(savedWorkspaceId);
+            const hasAccess = data.workspaces.some(w => w.id === savedId);
+
+            if (hasAccess) {
+                currentWorkspaceId = savedId;
+                workspaceFound = true;
+                console.log('Restored workspace from localStorage:', savedId);
+            }
+        }
+
+        // Fall back to first workspace if no saved workspace or user doesn't have access
+        if (!workspaceFound && data.workspaces && data.workspaces.length > 0) {
+            currentWorkspaceId = data.workspaces[0].id;
+            console.log('Using default workspace:', currentWorkspaceId);
+        }
+
+        console.log('User authenticated:', currentUser.username);
+        console.log('Current workspace:', currentWorkspaceId);
+
+        // Load tests and AI steps for the current workspace
+        if (hasFileExplorer && currentWorkspaceId) {
+            loadFileExplorer();
+            loadAiSteps();
+        }
+    } catch (error) {
+        console.error('Failed to load workspaces:', error);
+    }
+}
+
+async function handleLogin(event) {
+    event.preventDefault();
+
+    const username = document.getElementById('login-username').value;
+    const password = document.getElementById('login-password').value;
+    const remember = document.getElementById('login-remember').checked;
+
+    try {
+        const response = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, remember })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            currentUser = data.user;
+            hideAuthModals();
+            addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
+
+            // Load workspaces (will restore saved workspace from localStorage)
+            await loadWorkspaces();
+
+            // Reload file lists for the current workspace
+            if (hasFileExplorer && currentWorkspaceId) {
+                loadFileExplorer();
+                loadAiSteps();
+            }
+        } else {
+            loginError.textContent = data.error || 'Login failed';
+            loginError.style.display = 'block';
+        }
+    } catch (error) {
+        console.error('Login error:', error);
+        loginError.textContent = 'Login failed. Please try again.';
+        loginError.style.display = 'block';
+    }
+}
+
+async function handleRegister(event) {
+    event.preventDefault();
+
+    const username = document.getElementById('register-username').value;
+    const email = document.getElementById('register-email').value;
+    const password = document.getElementById('register-password').value;
+    const passwordConfirm = document.getElementById('register-password-confirm').value;
+
+    // Client-side validation
+    if (password !== passwordConfirm) {
+        registerError.textContent = 'Passwords do not match';
+        registerError.style.display = 'block';
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, email, password })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            currentUser = data.user;
+            hideAuthModals();
+            addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
+
+            // Load workspaces (user's default workspace will be loaded)
+            await loadWorkspaces();
+
+            // Reload file lists for the current workspace
+            if (hasFileExplorer && currentWorkspaceId) {
+                loadFileExplorer();
+                loadAiSteps();
+            }
+        } else {
+            registerError.textContent = data.error || 'Registration failed';
+            registerError.style.display = 'block';
+        }
+    } catch (error) {
+        console.error('Registration error:', error);
+        registerError.textContent = 'Registration failed. Please try again.';
+        registerError.style.display = 'block';
+    }
+}
+
+// Event listeners for auth modals
+if (loginForm) loginForm.addEventListener('submit', handleLogin);
+if (registerForm) registerForm.addEventListener('submit', handleRegister);
+if (closeLoginBtn) closeLoginBtn.addEventListener('click', () => loginModal.style.display = 'none');
+if (closeRegisterBtn) closeRegisterBtn.addEventListener('click', () => registerModal.style.display = 'none');
+if (showRegisterBtn) showRegisterBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    showRegisterModal();
+});
+if (showLoginBtn) showLoginBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    showLoginModal();
+});
+
+// Close modals when clicking outside
+window.addEventListener('click', (event) => {
+    if (event.target === loginModal) {
+        loginModal.style.display = 'none';
+    }
+    if (event.target === registerModal) {
+        registerModal.style.display = 'none';
+    }
+});
+
+// ========== END AUTHENTICATION FUNCTIONS ==========
+
+// ========== WORKSPACE MANAGEMENT FUNCTIONS ==========
+
+async function loadWorkspaces() {
+    try {
+        const response = await fetch('/api/workspaces');
+        if (!response.ok) {
+            throw new Error('Failed to load workspaces');
+        }
+
+        const data = await response.json();
+        userWorkspaces = data.workspaces;
+
+        // Update dropdown
+        workspaceDropdown.innerHTML = '';
+        userWorkspaces.forEach(workspace => {
+            const option = document.createElement('option');
+            option.value = workspace.id;
+            option.textContent = `${workspace.name} ${workspace.type === 'shared' ? '(Shared)' : ''}`;
+            workspaceDropdown.appendChild(option);
+        });
+
+        // Set current workspace if not set
+        if (!currentWorkspaceId && userWorkspaces.length > 0) {
+            // Try to restore from localStorage first
+            const savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+            if (savedWorkspaceId) {
+                const savedId = parseInt(savedWorkspaceId);
+                const hasAccess = userWorkspaces.some(w => w.id === savedId);
+                if (hasAccess) {
+                    currentWorkspaceId = savedId;
+                } else {
+                    currentWorkspaceId = userWorkspaces[0].id;
+                }
+            } else {
+                currentWorkspaceId = userWorkspaces[0].id;
+            }
+        }
+
+        // Select current workspace
+        workspaceDropdown.value = currentWorkspaceId;
+
+        // Load workspace details
+        await loadWorkspaceDetails();
+
+    } catch (error) {
+        console.error('Failed to load workspaces:', error);
+    }
+}
+
+async function loadWorkspaceDetails() {
+    if (!currentWorkspaceId) return;
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspaceId}`);
+        if (!response.ok) {
+            throw new Error('Failed to load workspace details');
+        }
+
+        const data = await response.json();
+        currentWorkspace = data.workspace;
+
+        // Show/hide members section based on workspace type and ownership
+        if (currentWorkspace.type === 'shared' && currentWorkspace.owner_id === currentUser.id) {
+            workspaceMembersContainer.style.display = 'block';
+            displayWorkspaceMembers(currentWorkspace.members || []);
+        } else {
+            workspaceMembersContainer.style.display = 'none';
+        }
+
+    } catch (error) {
+        console.error('Failed to load workspace details:', error);
+    }
+}
+
+function displayWorkspaceMembers(members) {
+    workspaceMembersList.innerHTML = '';
+
+    if (members.length === 0) {
+        const emptyMsg = document.createElement('div');
+        emptyMsg.style.cssText = 'color: #858585; font-size: 12px; padding: 8px;';
+        emptyMsg.textContent = 'No members yet';
+        workspaceMembersList.appendChild(emptyMsg);
+        return;
+    }
+
+    members.forEach(member => {
+        const memberEl = document.createElement('div');
+        memberEl.className = 'workspace-member-item';
+        memberEl.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid #2d2d30;';
+
+        const infoDiv = document.createElement('div');
+
+        const nameDiv = document.createElement('div');
+        nameDiv.style.cssText = 'font-size: 13px; color: #cccccc;';
+        nameDiv.textContent = member.username;
+
+        const roleDiv = document.createElement('div');
+        roleDiv.style.cssText = 'font-size: 11px; color: #858585;';
+        roleDiv.textContent = member.role;
+
+        infoDiv.appendChild(nameDiv);
+        infoDiv.appendChild(roleDiv);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'btn-icon-small remove-member-btn';
+        removeBtn.textContent = '✕';
+        removeBtn.title = 'Remove';
+        removeBtn.dataset.userId = member.user_id;
+        removeBtn.addEventListener('click', async () => {
+            await removeMember(member.user_id);
+        });
+
+        memberEl.appendChild(infoDiv);
+        memberEl.appendChild(removeBtn);
+        workspaceMembersList.appendChild(memberEl);
+    });
+}
+
+async function switchWorkspace(workspaceId) {
+    currentWorkspaceId = parseInt(workspaceId);
+
+    // Save selected workspace to localStorage
+    localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
+
+    await loadWorkspaceDetails();
+
+    // Reload file lists for new workspace
+    if (hasFileExplorer) {
+        loadFileExplorer();
+        loadAiSteps();
+    }
+
+    addLogEntry('info', `Switched to workspace: ${currentWorkspace.name}`);
+}
+
+async function createWorkspace(event) {
+    event.preventDefault();
+
+    const name = document.getElementById('workspace-name').value.trim();
+    const type = document.getElementById('workspace-type').value;
+
+    try {
+        const response = await fetch('/api/workspaces', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, type })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            newWorkspaceModal.style.display = 'none';
+            newWorkspaceForm.reset();
+            addLogEntry('info', `✓ Created workspace: ${name}`);
+
+            // Reload workspaces
+            await loadWorkspaces();
+
+            // Switch to new workspace
+            await switchWorkspace(data.workspace.id);
+        } else {
+            newWorkspaceError.textContent = data.error || 'Failed to create workspace';
+            newWorkspaceError.style.display = 'block';
+        }
+    } catch (error) {
+        console.error('Failed to create workspace:', error);
+        newWorkspaceError.textContent = 'Failed to create workspace';
+        newWorkspaceError.style.display = 'block';
+    }
+}
+
+async function inviteMember(event) {
+    event.preventDefault();
+
+    const username = document.getElementById('invite-username').value.trim();
+    const role = document.getElementById('invite-role').value;
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspaceId}/members`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, role })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            inviteMemberModal.style.display = 'none';
+            inviteMemberForm.reset();
+            addLogEntry('info', `✓ Invited ${username} to workspace`);
+
+            // Reload workspace details
+            await loadWorkspaceDetails();
+        } else {
+            inviteMemberError.textContent = data.error || 'Failed to invite member';
+            inviteMemberError.style.display = 'block';
+        }
+    } catch (error) {
+        console.error('Failed to invite member:', error);
+        inviteMemberError.textContent = 'Failed to invite member';
+        inviteMemberError.style.display = 'block';
+    }
+}
+
+async function removeMember(userId) {
+    if (!confirm('Remove this member from the workspace?')) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspaceId}/members/${userId}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            addLogEntry('info', '✓ Member removed');
+            await loadWorkspaceDetails();
+        } else {
+            const data = await response.json();
+            alert(data.error || 'Failed to remove member');
+        }
+    } catch (error) {
+        console.error('Failed to remove member:', error);
+        alert('Failed to remove member');
+    }
+}
+
+async function handleLogout() {
+    try {
+        const response = await fetch('/api/logout', { method: 'POST' });
+
+        if (response.ok) {
+            currentUser = null;
+            currentWorkspaceId = null;
+            userWorkspaces = [];
+            showLoginModal();
+            addLogEntry('info', '👋 Logged out successfully');
+        }
+    } catch (error) {
+        console.error('Logout error:', error);
+    }
+}
+
+// Event listeners for workspace management
+if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
+if (workspaceDropdown) workspaceDropdown.addEventListener('change', (e) => switchWorkspace(e.target.value));
+if (newWorkspaceBtn) newWorkspaceBtn.addEventListener('click', () => {
+    newWorkspaceModal.style.display = 'block';
+    newWorkspaceError.style.display = 'none';
+});
+if (inviteMemberBtn) inviteMemberBtn.addEventListener('click', () => {
+    inviteMemberModal.style.display = 'block';
+    inviteMemberError.style.display = 'none';
+});
+
+if (newWorkspaceForm) newWorkspaceForm.addEventListener('submit', createWorkspace);
+if (inviteMemberForm) inviteMemberForm.addEventListener('submit', inviteMember);
+
+// Close modal buttons
+closeNewWorkspaceBtns.forEach(btn => {
+    btn.addEventListener('click', () => newWorkspaceModal.style.display = 'none');
+});
+closeInviteMemberBtns.forEach(btn => {
+    btn.addEventListener('click', () => inviteMemberModal.style.display = 'none');
+});
+
+// ========== END WORKSPACE MANAGEMENT FUNCTIONS ==========
+
 // Load default example on page load
 window.addEventListener('load', async () => {
+    // Check authentication first
+    const isAuthenticated = await checkAuthentication();
+
+    if (!isAuthenticated) {
+        // Don't proceed with loading if not authenticated
+        return;
+    }
+
     addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
     addLogEntry('info', '🤖 Create AI Steps in the file explorer to run natural language tests');
     addLogEntry('info', '💬 Use AI Chat to generate and modify Playwright code');
+
+    // Update username display
+    if (currentUsernameEl && currentUser) {
+        currentUsernameEl.textContent = currentUser.username;
+    }
+
+    // Load workspaces
+    await loadWorkspaces();
 
     // Initialize CodeMirror editor
     initializeCodeMirror();
