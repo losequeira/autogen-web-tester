@@ -937,7 +937,7 @@ def run_playwright_code(code: str):
             loop.close()
 
 
-def run_playwright_code_with_streaming(code: str, filename: str = None):
+def run_playwright_code_with_streaming(code: str, filename: str = None, workspace_id: int = None):
     """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
     global stop_requested
     stop_requested = False  # Reset stop flag at the start of execution
@@ -2330,6 +2330,42 @@ def get_test_artifacts(filename):
         return jsonify({'error': f'Failed to load artifacts: {str(e)}'}), 500
 
 
+@app.route('/api/format-code', methods=['POST'])
+def format_code():
+    """Format Python code using Black formatter."""
+    try:
+        import black
+        from black import Mode, TargetVersion
+
+        data = request.get_json()
+        code = data.get('code', '')
+
+        if not code:
+            return jsonify({'error': 'No code provided'}), 400
+
+        # Format the code using Black
+        try:
+            formatted_code = black.format_str(
+                code,
+                mode=Mode(
+                    target_versions={TargetVersion.PY310},
+                    line_length=88,
+                    string_normalization=True,
+                    is_pyi=False,
+                )
+            )
+            return jsonify({'formatted_code': formatted_code}), 200
+        except black.InvalidInput as e:
+            return jsonify({'error': f'Invalid Python syntax: {str(e)}'}), 400
+        except Exception as e:
+            return jsonify({'error': f'Formatting error: {str(e)}'}), 500
+
+    except ImportError:
+        return jsonify({'error': 'Black formatter not installed'}), 500
+    except Exception as e:
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
+
+
 @socketio.on('run_test')
 def handle_run_test(data):
     """Handle test execution request."""
@@ -2373,12 +2409,19 @@ def handle_run_playwright_code(data):
 def handle_run_saved_test(data):
     """Handle running a saved Playwright test (no AI needed)."""
     filename = data.get('filename')
+    workspace_id = data.get('workspaceId')
 
     if not filename:
         emit('log', {'type': 'error', 'message': 'No test specified'})
         return
 
-    filepath = SAVED_TESTS_DIR / filename
+    # Use workspace-scoped directory if workspace_id provided
+    if workspace_id:
+        filepath = get_workspace_tests_dir(workspace_id) / filename
+    else:
+        # Fallback to global directory
+        filepath = SAVED_TESTS_DIR / filename
+
     if not filepath.exists():
         emit('log', {'type': 'error', 'message': 'Test not found'})
         return
@@ -2392,7 +2435,7 @@ def handle_run_saved_test(data):
         emit('log', {'type': 'info', 'message': '🚀 Executing Playwright code with live browser preview...'})
 
         # Run the saved test with streaming in background thread
-        socketio.start_background_task(run_playwright_code_with_streaming, code, filename)
+        socketio.start_background_task(run_playwright_code_with_streaming, code, filename, workspace_id)
 
     except Exception as e:
         emit('log', {'type': 'error', 'message': f'Error running saved test: {str(e)}'})
@@ -2402,10 +2445,11 @@ def handle_run_saved_test(data):
 def handle_run_all_tests(data):
     """Handle running all saved tests in parallel."""
     filenames = data.get('filenames', [])
-    socketio.start_background_task(run_all_tests_parallel, filenames)
+    workspace_id = data.get('workspaceId')
+    socketio.start_background_task(run_all_tests_parallel, filenames, workspace_id)
 
 
-def run_all_tests_parallel(filenames):
+def run_all_tests_parallel(filenames, workspace_id=None):
     """Execute all tests in parallel and collect results."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time
@@ -2416,8 +2460,12 @@ def run_all_tests_parallel(filenames):
     def run_single_test(filename):
         """Execute a single test and return result."""
         try:
-            # Load test file
-            filepath = SAVED_TESTS_DIR / filename
+            # Load test file from workspace-scoped or global directory
+            if workspace_id:
+                filepath = get_workspace_tests_dir(workspace_id) / filename
+            else:
+                filepath = SAVED_TESTS_DIR / filename
+
             if not filepath.exists():
                 return {
                     'filename': filename,
@@ -2432,8 +2480,8 @@ def run_all_tests_parallel(filenames):
             name = test_data.get('name', filename)
             code = test_data.get('code', '')
 
-            # Execute test in headless mode
-            status, error_msg = run_playwright_code_headless(code, filename)
+            # Execute test in headless mode with workspace_id
+            status, error_msg = run_playwright_code_headless(code, filename, workspace_id)
 
             # Update test file with results
             test_data['last_run_status'] = status
@@ -2502,12 +2550,19 @@ def handle_run_ai_step(data):
     global current_ai_step
 
     filename = data.get('filename')
+    workspace_id = data.get('workspaceId')
 
     if not filename:
         emit('log', {'type': 'error', 'message': 'No AI step specified'})
         return
 
-    filepath = AI_STEPS_DIR / filename
+    # Use workspace-scoped directory if workspace_id provided
+    if workspace_id:
+        filepath = get_workspace_ai_steps_dir(workspace_id) / filename
+    else:
+        # Fallback to global directory
+        filepath = AI_STEPS_DIR / filename
+
     if not filepath.exists():
         emit('log', {'type': 'error', 'message': 'AI step not found'})
         return
@@ -2530,10 +2585,10 @@ def handle_run_ai_step(data):
             json.dump(step_data, f, indent=2)
 
         # Track current AI step for code generation prompt
-        current_ai_step = {'filename': filename, 'name': name}
+        current_ai_step = {'filename': filename, 'name': name, 'workspace_id': workspace_id}
 
-        # Run test using existing run_test_sync logic
-        socketio.start_background_task(run_test_sync, steps)
+        # Run test using existing run_test_sync logic with workspace_id
+        socketio.start_background_task(run_test_sync, steps, filename, workspace_id)
 
     except Exception as e:
         emit('log', {'type': 'error', 'message': f'Error running AI step: {str(e)}'})
