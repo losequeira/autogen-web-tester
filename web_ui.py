@@ -1872,47 +1872,20 @@ def get_workspace_test(workspace_id, filename):
 def update_workspace_test(workspace_id, filename):
     """Update a test in a workspace."""
     try:
-        data = request.get_json()
+        req_data = request.get_json()
+        fields = {}
+        if 'name' in req_data:
+            fields['name'] = req_data['name']
+        if 'code' in req_data:
+            fields['code'] = req_data['code']
+        if 'status' in req_data:
+            fields['last_run_status'] = req_data['status']
 
-        tests_dir = get_workspace_tests_dir(workspace_id)
-        filepath = tests_dir / filename
-
-        if not filepath.exists():
+        result = data_access.update_test(workspace_id, filename, **fields)
+        if not result:
             return jsonify({'error': 'Test not found'}), 404
-
-        # Read existing data
-        with open(filepath, 'r') as f:
-            test_data = json.load(f)
-
-        # Update fields
-        if 'name' in data:
-            test_data['name'] = data['name']
-        if 'code' in data:
-            test_data['code'] = data['code']
-
-        test_data['updated'] = datetime.now().isoformat()
-
-        # Save updated data
-        with open(filepath, 'w') as f:
-            json.dump(test_data, f, indent=2)
-
-        # Update database record
-        db = get_db_session()
-        test = db.query(Test).filter(
-            Test.workspace_id == workspace_id,
-            Test.filename == filename
-        ).first()
-
-        if test:
-            if 'name' in data:
-                test.name = data['name']
-            db.commit()
-
-        return jsonify({'message': 'Test updated successfully'}), 200
-
+        return jsonify(result), 200
     except Exception as e:
-        if db:
-            db.rollback()
         print(f"Error updating test: {e}")
         return jsonify({'error': 'Failed to update test'}), 500
 

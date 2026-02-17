@@ -164,6 +164,12 @@ socket.on('connect', () => {
     addLogEntry('info', 'Connected to server');
 });
 
+socket.on('connect_error', () => {
+    // Session likely invalidated after server restart - reload to re-authenticate
+    console.warn('Socket connection failed - session may be expired, reloading...');
+    window.location.reload();
+});
+
 socket.on('playwright_code', (data) => {
     // Display generated Playwright code with syntax highlighting
     setPlaywrightCode(data.code);
