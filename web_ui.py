@@ -217,11 +217,15 @@ class BrowserToolWithScreenshots(BrowserTool):
                 # Stream at ~40 FPS for very smooth video-like experience
                 await asyncio.sleep(0.025)  # 25ms = 40 frames per second
             except Exception as e:
-                if self.streaming:  # Only log if we're supposed to be streaming
-                    print(f"Stream error: {e}")
-                    # Don't break - page may have switched (popup close); retry after short delay
+                if not self.streaming:
+                    break
+                error_msg = str(e).lower()
+                # If a popup closed but original page is still alive, retry
+                if "target closed" in error_msg and self.original_page and self.page != self.original_page:
+                    self.page = self.original_page
                     await asyncio.sleep(0.1)
                     continue
+                print(f"Stream error: {e}")
                 break
 
     def stop_streaming(self):
