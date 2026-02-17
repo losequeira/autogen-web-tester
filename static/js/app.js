@@ -1774,6 +1774,14 @@ function runAiStep(filename, name) {
         return;
     }
 
+    // Warn if the AI step tab has unsaved changes
+    const aiTab = openTabs.find(t => t.id === filename);
+    if (aiTab && aiTab.isDirty) {
+        if (!confirm('You have unsaved changes to this AI step. Run will use the last saved version.\n\nContinue anyway?')) {
+            return;
+        }
+    }
+
     // Track the AI step tab so we can restore its content after test completes
     runningAiStepTabId = filename;
 
