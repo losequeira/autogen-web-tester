@@ -1777,6 +1777,29 @@ def delete_workspace_test(workspace_id, filename):
         return jsonify({'error': 'Failed to delete test'}), 500
 
 
+@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>/artifacts', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def get_workspace_test_artifacts(workspace_id, filename):
+    """Get list of artifacts for a test in a workspace."""
+    try:
+        tests_dir = get_workspace_tests_dir(workspace_id)
+        filepath = tests_dir / filename
+
+        if not filepath.exists():
+            return jsonify({'error': 'Test not found'}), 404
+
+        with open(filepath, 'r') as f:
+            test_data = json.load(f)
+
+        artifacts = test_data.get('artifacts', [])
+        return jsonify(artifacts), 200
+
+    except Exception as e:
+        print(f"Error getting test artifacts: {e}")
+        return jsonify({'error': 'Failed to load artifacts'}), 500
+
+
 @app.route('/api/workspaces/<int:workspace_id>/ai-steps', methods=['GET'])
 @login_required
 @workspace_access_required(permission='read')

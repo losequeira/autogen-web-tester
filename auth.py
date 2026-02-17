@@ -5,9 +5,9 @@ Provides Flask-Login integration, user registration, login, and logout endpoints
 """
 
 import re
+import hmac
 from flask import Blueprint, jsonify, request, session
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from werkzeug.security import safe_str_cmp
 from models import User, Workspace, WorkspaceType, get_db_session
 from functools import wraps
 

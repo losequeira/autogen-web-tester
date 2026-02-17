@@ -2692,13 +2692,36 @@ async function loadUserWorkspaces() {
         const data = await response.json();
         currentUser = data.user;
 
-        // Set default workspace (first workspace)
-        if (data.workspaces && data.workspaces.length > 0) {
+        // Try to restore previously selected workspace from localStorage
+        const savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+        let workspaceFound = false;
+
+        if (savedWorkspaceId && data.workspaces && data.workspaces.length > 0) {
+            // Check if saved workspace exists and user has access to it
+            const savedId = parseInt(savedWorkspaceId);
+            const hasAccess = data.workspaces.some(w => w.id === savedId);
+
+            if (hasAccess) {
+                currentWorkspaceId = savedId;
+                workspaceFound = true;
+                console.log('Restored workspace from localStorage:', savedId);
+            }
+        }
+
+        // Fall back to first workspace if no saved workspace or user doesn't have access
+        if (!workspaceFound && data.workspaces && data.workspaces.length > 0) {
             currentWorkspaceId = data.workspaces[0].id;
+            console.log('Using default workspace:', currentWorkspaceId);
         }
 
         console.log('User authenticated:', currentUser.username);
         console.log('Current workspace:', currentWorkspaceId);
+
+        // Load tests and AI steps for the current workspace
+        if (hasFileExplorer && currentWorkspaceId) {
+            loadFileExplorer();
+            loadAiSteps();
+        }
     } catch (error) {
         console.error('Failed to load workspaces:', error);
     }
@@ -2722,15 +2745,15 @@ async function handleLogin(event) {
 
         if (response.ok) {
             currentUser = data.user;
-            if (data.workspaces && data.workspaces.length > 0) {
-                currentWorkspaceId = data.workspaces[0].id;
-            }
             hideAuthModals();
             addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
 
-            // Reload file lists
-            if (hasFileExplorer) {
-                loadFiles();
+            // Load workspaces (will restore saved workspace from localStorage)
+            await loadWorkspaces();
+
+            // Reload file lists for the current workspace
+            if (hasFileExplorer && currentWorkspaceId) {
+                loadFileExplorer();
                 loadAiSteps();
             }
         } else {
@@ -2770,13 +2793,15 @@ async function handleRegister(event) {
 
         if (response.ok) {
             currentUser = data.user;
-            currentWorkspaceId = data.default_workspace_id;
             hideAuthModals();
             addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
 
-            // Reload file lists
-            if (hasFileExplorer) {
-                loadFiles();
+            // Load workspaces (user's default workspace will be loaded)
+            await loadWorkspaces();
+
+            // Reload file lists for the current workspace
+            if (hasFileExplorer && currentWorkspaceId) {
+                loadFileExplorer();
                 loadAiSteps();
             }
         } else {
@@ -2839,7 +2864,19 @@ async function loadWorkspaces() {
 
         // Set current workspace if not set
         if (!currentWorkspaceId && userWorkspaces.length > 0) {
-            currentWorkspaceId = userWorkspaces[0].id;
+            // Try to restore from localStorage first
+            const savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+            if (savedWorkspaceId) {
+                const savedId = parseInt(savedWorkspaceId);
+                const hasAccess = userWorkspaces.some(w => w.id === savedId);
+                if (hasAccess) {
+                    currentWorkspaceId = savedId;
+                } else {
+                    currentWorkspaceId = userWorkspaces[0].id;
+                }
+            } else {
+                currentWorkspaceId = userWorkspaces[0].id;
+            }
         }
 
         // Select current workspace
@@ -2924,11 +2961,15 @@ function displayWorkspaceMembers(members) {
 
 async function switchWorkspace(workspaceId) {
     currentWorkspaceId = parseInt(workspaceId);
+
+    // Save selected workspace to localStorage
+    localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
+
     await loadWorkspaceDetails();
 
     // Reload file lists for new workspace
     if (hasFileExplorer) {
-        loadFiles();
+        loadFileExplorer();
         loadAiSteps();
     }
 
