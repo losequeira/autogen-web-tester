@@ -47,12 +47,9 @@ class BrowserTool:
         if self.record_har and self.record_video_dir:
             context_options['record_har_path'] = f"{self.record_video_dir}/network.har"
 
-        # Create context with or without recording
-        if context_options:
-            self.context = await self.browser.new_context(**context_options)
-            self.page = await self.context.new_page()
-        else:
-            self.page = await self.browser.new_page()
+        # Always create an explicit context (needed for popup/multi-tab support)
+        self.context = await self.browser.new_context(**context_options)
+        self.page = await self.context.new_page()
 
         self.page.set_default_timeout(self.timeout)
         self.original_page = self.page
@@ -357,8 +354,8 @@ class BrowserTool:
             return "Error: Browser not initialized"
 
         try:
-            async with self.page.expect_popup() as popup_info:
-                await self.page.click(selector)
+            async with self.page.expect_popup(timeout=10000) as popup_info:
+                await self.page.click(selector, timeout=5000)
             popup = await popup_info.value
             await popup.wait_for_load_state("domcontentloaded")
             self.page = popup
@@ -380,15 +377,54 @@ class BrowserTool:
         if not self.page:
             return "Error: Browser not initialized"
 
+        # Try multiple click strategies with expect_popup
+        strategies = [
+            ("getByText", lambda: self.page.get_by_text(text).click(timeout=5000)),
+            ("getByRole button", lambda: self.page.get_by_role("button", name=text).click(timeout=5000)),
+            ("text selector", lambda: self.page.click(f"text={text}", timeout=5000)),
+            ("has-text button", lambda: self.page.click(f"button:has-text('{text}')", timeout=5000)),
+        ]
+
+        errors = []
+        for strategy_name, click_fn in strategies:
+            try:
+                async with self.page.expect_popup(timeout=10000) as popup_info:
+                    await click_fn()
+                popup = await popup_info.value
+                await popup.wait_for_load_state("domcontentloaded")
+                self.page = popup
+                return f"Clicked '{text}' (via {strategy_name}) and switched to popup: {popup.url}"
+            except Exception as e:
+                errors.append(f"{strategy_name}: {str(e)}")
+
+        # Fallback: use context-level page event listener for popups that
+        # open via JavaScript (e.g. OAuth redirects) rather than target=_blank
         try:
-            async with self.page.expect_popup() as popup_info:
-                await self.page.click(f"text={text}")
-            popup = await popup_info.value
+            import asyncio
+            popup_future = asyncio.get_event_loop().create_future()
+
+            def on_page(page):
+                if not popup_future.done():
+                    popup_future.set_result(page)
+
+            self.context.on("page", on_page)
+            # Click with first working strategy
+            for strategy_name, click_fn in strategies:
+                try:
+                    await click_fn()
+                    break
+                except Exception:
+                    continue
+
+            popup = await asyncio.wait_for(popup_future, timeout=10)
+            self.context.remove_listener("page", on_page)
             await popup.wait_for_load_state("domcontentloaded")
             self.page = popup
-            return f"Clicked '{text}' and switched to popup: {popup.url}"
+            return f"Clicked '{text}' (via context listener) and switched to popup: {popup.url}"
         except Exception as e:
-            return f"Error clicking '{text}' for popup: {str(e)}"
+            errors.append(f"context listener: {str(e)}")
+
+        return f"Error: Could not click '{text}' and get popup. Attempts: {'; '.join(errors)}"
 
     async def switch_to_original_page(self) -> str:
         """
