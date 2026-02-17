@@ -76,6 +76,7 @@ let currentImage = null; // Store current image as base64
 const toggleBrowserBtn = document.getElementById('toggle-browser');
 const closeBrowserSidebarBtn = document.getElementById('close-browser-sidebar');
 const browserSidebar = document.getElementById('browser-sidebar');
+const stopTestBtn = document.getElementById('stop-test-btn');
 
 // Output panel elements
 const outputPanel = document.getElementById('output-panel');
@@ -127,6 +128,7 @@ let isBatchRunning = false;
 let runningTestsSet = new Set();
 let batchRunStartTime = null;
 let batchRunResults = [];
+let isStopRequested = false;
 
 // Helper function to update browser status
 function updateBrowserStatus(status, text) {
@@ -138,6 +140,23 @@ function updateBrowserStatus(status, text) {
     // Add new status class
     browserStatus.classList.add(`status-${status.toLowerCase()}`);
     browserStatus.textContent = text || status.toUpperCase();
+}
+
+// Helper function to update stop button visibility
+function updateStopButtonVisibility() {
+    if (!stopTestBtn) return;
+
+    if (isTestRunning || isBatchRunning) {
+        stopTestBtn.style.display = 'flex';
+        stopTestBtn.disabled = false;
+        stopTestBtn.textContent = '⏹';
+        stopTestBtn.title = 'Stop Test';
+    } else {
+        stopTestBtn.style.display = 'none';
+        stopTestBtn.disabled = false;
+        stopTestBtn.textContent = '⏹';
+        stopTestBtn.title = 'Stop Test';
+    }
 }
 
 // Socket.IO Event Handlers
@@ -313,6 +332,8 @@ socket.on('agent_message', (data) => {
 
 socket.on('test_complete', (data) => {
     isTestRunning = false;
+    isStopRequested = false;
+    updateStopButtonVisibility();
 
     if (data.status === 'success') {
         updateBrowserStatus('passed', 'PASSED');
@@ -374,7 +395,9 @@ socket.on('batch_run_complete', (data) => {
 
     // Reset state
     isBatchRunning = false;
+    isStopRequested = false;
     runningTestsSet.clear();
+    updateStopButtonVisibility();
 
     // Remove batch classes
     document.querySelectorAll('.file-item').forEach(item => {
@@ -401,6 +424,8 @@ socket.on('batch_run_complete', (data) => {
 socket.on('ai_step_complete_with_code', (data) => {
     // AI step completed successfully - prompt user to save generated code
     isTestRunning = false;
+    isStopRequested = false;
+    updateStopButtonVisibility();
     updateBrowserStatus('passed', 'PASSED');
     addLogEntry('success', '✅ AI Step completed successfully!', '🎉 AI Step completed!');
 
@@ -431,7 +456,7 @@ socket.on('ai_step_complete_with_code', (data) => {
 
                 if (testName && testName.trim()) {
                     // Save the generated code as a new test
-                    fetch('/api/save-test', {
+                    fetch(`/api/workspaces/${currentWorkspaceId}/tests`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -528,6 +553,29 @@ clearLogBtn.addEventListener('click', () => {
     addLogEntry('info', 'Log cleared');
 });
 
+// Stop test button handler
+if (stopTestBtn) {
+    stopTestBtn.addEventListener('click', () => {
+        if (isStopRequested) {
+            return; // Prevent double-click
+        }
+
+        // Confirm stop action
+        if (!confirm('Are you sure you want to stop the running test?')) {
+            return;
+        }
+
+        isStopRequested = true;
+        stopTestBtn.disabled = true;
+        stopTestBtn.textContent = 'STOPPING...';
+        stopTestBtn.title = 'Stopping test...';
+
+        // Emit stop event to backend
+        socket.emit('stop_test');
+        addLogEntry('info', '⏹ Stop request sent to server');
+    });
+}
+
 // Save current test - used by Cmd+S keyboard shortcut and context menu
 function saveCurrentTest() {
     const code = getPlaywrightCode();
@@ -602,7 +650,7 @@ function saveCurrentTest() {
         const name = prompt('Save as:', defaultName);
         if (!name) return;
 
-        fetch('/api/save-test', {
+        fetch(`/api/workspaces/${currentWorkspaceId}/tests`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, code, source: 'ai' })
@@ -652,18 +700,25 @@ function runSavedTest(filename, name) {
     // Track the running test for status update
     currentRunningTestFilename = filename;
 
+    // Reload file explorer to show stop button
+    if (hasFileExplorer) {
+        loadFileExplorer();
+    }
+
     // Clear previous results
     humanLogContainer.innerHTML = '';
     technicalLogContainer.innerHTML = '';
 
     addLogEntry('info', `🚀 Running: ${name} (no AI tokens used!)`, `🚀 Running: ${name}`);
     isTestRunning = true;
+    isStopRequested = false;
 
     // Update browser header with test name and status
     if (browserTestName) {
         browserTestName.textContent = name;
     }
     updateBrowserStatus('running', 'RUNNING');
+    updateStopButtonVisibility();
 
     // Show loading state in browser preview
     if (browserLoading) {
@@ -689,7 +744,10 @@ function runSavedTest(filename, name) {
     // Automatically open output panel to show logs
     openOutputPanel();
 
-    socket.emit('run_saved_test', { filename });
+    socket.emit('run_saved_test', {
+        filename,
+        workspaceId: currentWorkspaceId
+    });
 }
 
 async function runAllTests() {
@@ -708,6 +766,7 @@ async function runAllTests() {
 
     // Initialize batch state
     isBatchRunning = true;
+    isStopRequested = false;
     batchRunStartTime = Date.now();
     batchRunResults = [];
     runningTestsSet.clear();
@@ -716,6 +775,9 @@ async function runAllTests() {
     humanLogContainer.innerHTML = '';
     technicalLogContainer.innerHTML = '';
     addLogEntry('info', `🚀 Running ${tests.length} tests in parallel...`);
+
+    // Show stop button
+    updateStopButtonVisibility();
 
     // Mark all file items as batch running
     document.querySelectorAll('.file-item').forEach(item => {
@@ -748,7 +810,8 @@ async function runAllTests() {
 
     // Emit batch run event
     socket.emit('run_all_tests', {
-        filenames: tests.map(t => t.filename)
+        filenames: tests.map(t => t.filename),
+        workspaceId: currentWorkspaceId
     });
 }
 
@@ -1168,9 +1231,15 @@ function loadFileExplorer() {
         return;
     }
 
-    fetch('/api/saved-tests')
+    if (!currentWorkspaceId) {
+        fileList.innerHTML = '<div style="padding: 20px; text-align: center; color: #858585; font-size: 12px;">Select a workspace</div>';
+        return;
+    }
+
+    fetch(`/api/workspaces/${currentWorkspaceId}/tests`)
         .then(res => res.json())
-        .then(tests => {
+        .then(data => {
+            const tests = data.tests || [];
             fileList.innerHTML = '';
 
             if (tests.length === 0) {
@@ -1193,10 +1262,22 @@ function loadFileExplorer() {
                     statusIcon = '<span class="test-status test-status-error" title="Last run: Failed">✗</span>';
                 }
 
-                // View recording button if artifacts exist
+                // View recording button if valid artifacts exist
                 let viewRecordingBtn = '';
                 if (test.artifacts && test.artifacts.length > 0) {
-                    viewRecordingBtn = `<button class="file-item-action" data-action="view-recording" title="View Recording (${test.artifacts.length})">📹</button>`;
+                    // Check if any artifacts have valid video paths
+                    const validArtifacts = test.artifacts.filter(a => a.video_path && a.video_path !== 'null');
+                    if (validArtifacts.length > 0) {
+                        viewRecordingBtn = `<button class="file-item-action" data-action="view-recording" title="View Recording (${validArtifacts.length})">📹</button>`;
+                    }
+                }
+
+                // Show stop button if this test is currently running, otherwise show run button
+                let runOrStopBtn = '';
+                if (currentRunningTestFilename === test.filename) {
+                    runOrStopBtn = `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: #ef4444;">⏹</button>`;
+                } else {
+                    runOrStopBtn = `<button class="file-item-action" data-action="run" title="Run Test">▶</button>`;
                 }
 
                 const testDisplayName = getDisplayName(test.name, 'test');
@@ -1206,7 +1287,7 @@ function loadFileExplorer() {
                     ${statusIcon}
                     <div class="file-item-actions">
                         ${viewRecordingBtn}
-                        <button class="file-item-action" data-action="run" title="Run Test">▶</button>
+                        ${runOrStopBtn}
                         <button class="file-item-action" data-action="delete" title="Delete">🗑</button>
                     </div>
                 `;
@@ -1219,6 +1300,22 @@ function loadFileExplorer() {
                     } else if (action === 'run') {
                         e.stopPropagation();
                         runSavedTest(test.filename, test.name);
+                    } else if (action === 'stop') {
+                        e.stopPropagation();
+                        if (isStopRequested) {
+                            return; // Prevent double-click
+                        }
+                        if (confirm('Are you sure you want to stop the running test?')) {
+                            isStopRequested = true;
+                            socket.emit('stop_test');
+                            addLogEntry('info', '⏹ Stop request sent to server');
+                            // Update button immediately
+                            if (stopTestBtn) {
+                                stopTestBtn.disabled = true;
+                                stopTestBtn.textContent = 'STOPPING...';
+                                stopTestBtn.title = 'Stopping test...';
+                            }
+                        }
                     } else if (action === 'view-recording') {
                         e.stopPropagation();
                         showVideoViewerModal(test.filename, test.name);
@@ -1238,10 +1335,10 @@ function loadFileExplorer() {
 }
 
 function openFileFromExplorer(filename, name) {
-    fetch(`/api/saved-tests/${filename}`)
+    fetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`)
         .then(res => res.json())
         .then(data => {
-            if (data.code) {
+            if (data && data.code) {
                 openTab(filename, name, data.code);
             }
         })
@@ -1253,7 +1350,7 @@ function openFileFromExplorer(filename, name) {
 function deleteFileFromExplorer(filename, name) {
     if (!confirm(`Delete "${name}"?`)) return;
 
-    fetch(`/api/saved-tests/${filename}`, { method: 'DELETE' })
+    fetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`, { method: 'DELETE' })
         .then(res => res.json())
         .then(data => {
             if (data.success) {
@@ -1551,6 +1648,14 @@ if (closeAllTabsBtn) {
     });
 }
 
+// Format Code Button
+const formatCodeBtn = document.getElementById('format-code-btn');
+if (formatCodeBtn) {
+    formatCodeBtn.addEventListener('click', () => {
+        formatCode();
+    });
+}
+
 // Track code changes to mark tabs as dirty (handled in CodeMirror change event)
 let lastSavedCode = '';
 
@@ -1575,9 +1680,15 @@ async function loadAiSteps() {
         return;
     }
 
+    if (!currentWorkspaceId) {
+        aiStepsList.innerHTML = '<div class="file-list-empty">Select a workspace</div>';
+        return;
+    }
+
     try {
-        const response = await fetch('/api/ai-steps');
-        const steps = await response.json();
+        const response = await fetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
+        const data = await response.json();
+        const steps = data.ai_steps || [];
 
         aiStepsList.innerHTML = '';
 
@@ -1679,7 +1790,10 @@ function runAiStep(filename, name) {
     openOutputPanel();
 
     // Emit run AI step event
-    socket.emit('run_ai_step', { filename });
+    socket.emit('run_ai_step', {
+        filename,
+        workspaceId: currentWorkspaceId
+    });
 
     addLogEntry('info', `🤖 Running AI steps: ${name}`);
 }
@@ -1795,16 +1909,27 @@ function showVideoViewerModal(filename, testName) {
 
     title.textContent = `📹 ${testName}`;
 
-    // Fetch artifacts for this test
-    fetch(`/api/saved-tests/${filename}/artifacts`)
+    // Fetch artifacts for this test using workspace-scoped endpoint
+    fetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}/artifacts`)
         .then(res => res.json())
         .then(artifacts => {
-            if (artifacts.length > 0) {
-                // Show the latest recording
-                const latestArtifact = artifacts[artifacts.length - 1];
+            // Filter out artifacts without valid video paths
+            const validArtifacts = artifacts.filter(a => a.video_path && a.video_path !== 'null');
+
+            if (validArtifacts.length > 0) {
+                // Show the latest recording with a valid video
+                const latestArtifact = validArtifacts[validArtifacts.length - 1];
 
                 videoSource.src = `/api/artifacts/${latestArtifact.video_path}`;
                 videoPlayer.load();
+
+                // Autoplay video when it's ready
+                videoPlayer.oncanplay = () => {
+                    videoPlayer.play().catch(err => {
+                        console.log('Autoplay prevented:', err);
+                        // Autoplay might be blocked by browser, user can click play
+                    });
+                };
 
                 // Show recording info
                 timestampElem.textContent = `Recorded: ${latestArtifact.timestamp.replace('_', ' at ').replace(/-/g, '/')}`;
@@ -1821,6 +1946,7 @@ function showVideoViewerModal(filename, testName) {
                 videoContainer.style.display = 'block';
                 noRecording.style.display = 'none';
             } else {
+                // No valid recordings available
                 videoContainer.style.display = 'none';
                 noRecording.style.display = 'block';
             }
@@ -2164,6 +2290,45 @@ function getPlaywrightCode() {
     return codeMirrorEditor ? codeMirrorEditor.getValue() : '';
 }
 
+// Format code using Black formatter
+async function formatCode() {
+    if (!codeMirrorEditor) return;
+
+    const code = codeMirrorEditor.getValue();
+    if (!code.trim()) return;
+
+    try {
+        const response = await fetch('/api/format-code', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ code })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.formatted_code) {
+            // Save cursor position
+            const cursor = codeMirrorEditor.getCursor();
+            const scrollInfo = codeMirrorEditor.getScrollInfo();
+
+            // Set formatted code
+            codeMirrorEditor.setValue(data.formatted_code);
+
+            // Restore cursor position (best effort)
+            codeMirrorEditor.setCursor(cursor);
+            codeMirrorEditor.scrollTo(scrollInfo.left, scrollInfo.top);
+
+            addLogEntry('info', '✨ Code formatted successfully');
+        } else {
+            addLogEntry('error', `Formatting failed: ${data.error || 'Unknown error'}`);
+        }
+    } catch (error) {
+        addLogEntry('error', `Formatting error: ${error.message}`);
+    }
+}
+
 // CodeMirror initialization and change tracking
 function initializeCodeMirror() {
     if (typeof CodeMirror !== 'undefined') {
@@ -2181,9 +2346,18 @@ function initializeCodeMirror() {
                 styleActiveLine: true,
                 matchBrackets: true,
                 autoCloseBrackets: true,
+                hintOptions: {
+                    completeSingle: false,  // Don't auto-complete if only one option
+                    alignWithWord: true,
+                    closeCharacters: /[\s()\[\]{};:>,]/,
+                    hint: CodeMirror.hint.anyword  // Use anyword-hint for context-aware completion
+                },
                 extraKeys: {
                     "Cmd-/": "toggleComment",
-                    "Ctrl-/": "toggleComment"
+                    "Ctrl-/": "toggleComment",
+                    "Shift-Alt-F": formatCode,  // Format keyboard shortcut
+                    "Shift-Ctrl-F": formatCode,  // Alternative shortcut
+                    "Ctrl-Space": "autocomplete"  // Trigger autocomplete
                 }
             });
 
@@ -2201,8 +2375,316 @@ function initializeCodeMirror() {
                     }
                 }
             });
+
+            // Format on paste
+            codeMirrorEditor.on('paste', function(cm, event) {
+                // Delay formatting slightly to let paste complete
+                setTimeout(() => {
+                    formatCode();
+                }, 100);
+            });
+
+            // Auto-trigger autocomplete as you type
+            codeMirrorEditor.on('inputRead', function(cm, change) {
+                // Don't trigger on deletion or paste
+                if (change.origin === '+delete' || change.origin === 'paste') {
+                    return;
+                }
+
+                // Trigger autocomplete after typing a letter or dot
+                const text = change.text[0];
+                if (text && (text.match(/[a-zA-Z_.]/) || text === '.')) {
+                    // Small delay to avoid triggering too frequently
+                    setTimeout(() => {
+                        if (!cm.state.completionActive) {
+                            CodeMirror.commands.autocomplete(cm, null, {completeSingle: false});
+                        }
+                    }, 150);
+                }
+            });
+
+            // Set up hover documentation
+            setupHoverDocumentation(codeMirrorEditor);
         }
     }
+}
+
+// Hover Documentation Database
+const functionDocs = {
+    // Python Built-ins
+    'print': {
+        signature: 'print(*objects, sep=" ", end="\\n", file=None, flush=False)',
+        description: 'Print objects to the text stream file, separated by sep and followed by end.',
+        params: [
+            { name: 'objects', desc: 'Values to print' },
+            { name: 'sep', desc: 'String inserted between values (default " ")' },
+            { name: 'end', desc: 'String appended after the last value (default "\\n")' }
+        ]
+    },
+    'len': {
+        signature: 'len(object)',
+        description: 'Return the length (the number of items) of an object.',
+        params: [
+            { name: 'object', desc: 'A sequence (string, bytes, tuple, list, or range) or collection (dict, set, or frozen set)' }
+        ]
+    },
+    'range': {
+        signature: 'range(start, stop, step=1)',
+        description: 'Return an immutable sequence of numbers from start to stop by step.',
+        params: [
+            { name: 'start', desc: 'Starting number (inclusive)' },
+            { name: 'stop', desc: 'Ending number (exclusive)' },
+            { name: 'step', desc: 'Increment between numbers (default 1)' }
+        ]
+    },
+    'str': {
+        signature: 'str(object="")',
+        description: 'Return a string version of object.',
+        params: [
+            { name: 'object', desc: 'Object to convert to string' }
+        ]
+    },
+    'int': {
+        signature: 'int(x, base=10)',
+        description: 'Convert a number or string to an integer.',
+        params: [
+            { name: 'x', desc: 'Number or string to convert' },
+            { name: 'base', desc: 'Number base for conversion (default 10)' }
+        ]
+    },
+    'sleep': {
+        signature: 'sleep(seconds)',
+        description: 'Suspend execution for the given number of seconds.',
+        params: [
+            { name: 'seconds', desc: 'Number of seconds to sleep (can be a float)' }
+        ]
+    },
+    // Playwright Page Methods
+    'goto': {
+        signature: 'page.goto(url, *, timeout=30000, wait_until="load")',
+        description: 'Navigate to the specified URL.',
+        params: [
+            { name: 'url', desc: 'URL to navigate to' },
+            { name: 'timeout', desc: 'Maximum navigation time in milliseconds (default 30000)' },
+            { name: 'wait_until', desc: 'When to consider navigation succeeded: "load", "domcontentloaded", "networkidle"' }
+        ]
+    },
+    'click': {
+        signature: 'page.click(selector, *, timeout=30000, button="left")',
+        description: 'Click an element matching the selector.',
+        params: [
+            { name: 'selector', desc: 'CSS selector or text selector to identify element' },
+            { name: 'timeout', desc: 'Maximum time to wait for element (default 30000ms)' },
+            { name: 'button', desc: 'Mouse button: "left", "right", or "middle"' }
+        ]
+    },
+    'fill': {
+        signature: 'page.fill(selector, value, *, timeout=30000)',
+        description: 'Fill an input field with text.',
+        params: [
+            { name: 'selector', desc: 'CSS selector to identify input element' },
+            { name: 'value', desc: 'Text value to fill' },
+            { name: 'timeout', desc: 'Maximum time to wait for element (default 30000ms)' }
+        ]
+    },
+    'type': {
+        signature: 'page.type(selector, text, *, delay=0)',
+        description: 'Type text into an input field character by character.',
+        params: [
+            { name: 'selector', desc: 'CSS selector to identify input element' },
+            { name: 'text', desc: 'Text to type' },
+            { name: 'delay', desc: 'Time to wait between key presses in milliseconds' }
+        ]
+    },
+    'press': {
+        signature: 'page.press(selector, key, *, delay=0)',
+        description: 'Press a key on an element.',
+        params: [
+            { name: 'selector', desc: 'CSS selector to identify element' },
+            { name: 'key', desc: 'Key name (e.g., "Enter", "Tab", "Escape")' },
+            { name: 'delay', desc: 'Time to wait between keydown and keyup in milliseconds' }
+        ]
+    },
+    'wait_for_selector': {
+        signature: 'page.wait_for_selector(selector, *, timeout=30000, state="visible")',
+        description: 'Wait for element matching selector to be in specified state.',
+        params: [
+            { name: 'selector', desc: 'CSS selector to wait for' },
+            { name: 'timeout', desc: 'Maximum time to wait in milliseconds (default 30000)' },
+            { name: 'state', desc: 'Element state: "attached", "detached", "visible", "hidden"' }
+        ]
+    },
+    'screenshot': {
+        signature: 'page.screenshot(*, path=None, full_page=False, type="png")',
+        description: 'Take a screenshot of the page.',
+        params: [
+            { name: 'path', desc: 'File path to save screenshot' },
+            { name: 'full_page', desc: 'Capture full scrollable page (default False)' },
+            { name: 'type', desc: 'Image format: "png" or "jpeg"' }
+        ]
+    },
+    'get_by_role': {
+        signature: 'page.get_by_role(role, *, name=None)',
+        description: 'Locate element by ARIA role.',
+        params: [
+            { name: 'role', desc: 'ARIA role (e.g., "button", "textbox", "link")' },
+            { name: 'name', desc: 'Accessible name to filter by' }
+        ]
+    },
+    'get_by_text': {
+        signature: 'page.get_by_text(text, *, exact=False)',
+        description: 'Locate element by text content.',
+        params: [
+            { name: 'text', desc: 'Text content to search for' },
+            { name: 'exact', desc: 'Require exact match (default False)' }
+        ]
+    },
+    'get_by_label': {
+        signature: 'page.get_by_label(text, *, exact=False)',
+        description: 'Locate form control by associated label text.',
+        params: [
+            { name: 'text', desc: 'Label text to search for' },
+            { name: 'exact', desc: 'Require exact match (default False)' }
+        ]
+    },
+    'get_by_placeholder': {
+        signature: 'page.get_by_placeholder(text, *, exact=False)',
+        description: 'Locate input by placeholder text.',
+        params: [
+            { name: 'text', desc: 'Placeholder text to search for' },
+            { name: 'exact', desc: 'Require exact match (default False)' }
+        ]
+    },
+    'expect': {
+        signature: 'expect(locator)',
+        description: 'Create an assertion for Playwright testing.',
+        params: [
+            { name: 'locator', desc: 'Element locator to assert on' }
+        ]
+    }
+};
+
+// Hover tooltip state
+let hoverTooltip = null;
+let hoverTimeout = null;
+let currentHoverToken = null;
+
+// Create and show hover tooltip
+function showHoverTooltip(cm, token, coords) {
+    // Remove existing tooltip
+    removeHoverTooltip();
+
+    const funcName = token.string;
+    const docs = functionDocs[funcName];
+
+    if (!docs) return;
+
+    // Create tooltip element
+    hoverTooltip = document.createElement('div');
+    hoverTooltip.className = 'cm-hover-tooltip';
+
+    // Build tooltip content
+    let html = `
+        <div class="cm-hover-tooltip-header">
+            <span class="cm-hover-tooltip-icon">📘</span>
+            <code class="cm-hover-tooltip-signature">${docs.signature}</code>
+        </div>
+        <div class="cm-hover-tooltip-body">
+            <div class="cm-hover-tooltip-description">${docs.description}</div>
+    `;
+
+    if (docs.params && docs.params.length > 0) {
+        html += `
+            <div class="cm-hover-tooltip-params">
+                <div class="cm-hover-tooltip-param-title">Parameters</div>
+        `;
+        docs.params.forEach(param => {
+            html += `
+                <div class="cm-hover-tooltip-param">
+                    <span class="cm-hover-tooltip-param-name">${param.name}</span>
+                    <span class="cm-hover-tooltip-param-desc">— ${param.desc}</span>
+                </div>
+            `;
+        });
+        html += `</div>`;
+    }
+
+    html += `</div>`;
+    hoverTooltip.innerHTML = html;
+
+    // Position and add tooltip
+    document.body.appendChild(hoverTooltip);
+
+    // Calculate position
+    const editorRect = cm.getWrapperElement().getBoundingClientRect();
+    const tooltipRect = hoverTooltip.getBoundingClientRect();
+
+    let left = editorRect.left + coords.left;
+    let top = editorRect.top + coords.bottom + 5; // 5px below cursor
+
+    // Keep tooltip within viewport
+    if (left + tooltipRect.width > window.innerWidth) {
+        left = window.innerWidth - tooltipRect.width - 10;
+    }
+    if (top + tooltipRect.height > window.innerHeight) {
+        top = editorRect.top + coords.top - tooltipRect.height - 5; // Show above if no space below
+    }
+
+    hoverTooltip.style.left = left + 'px';
+    hoverTooltip.style.top = top + 'px';
+}
+
+// Remove hover tooltip
+function removeHoverTooltip() {
+    if (hoverTooltip) {
+        hoverTooltip.remove();
+        hoverTooltip = null;
+    }
+    if (hoverTimeout) {
+        clearTimeout(hoverTimeout);
+        hoverTimeout = null;
+    }
+    currentHoverToken = null;
+}
+
+// Set up hover documentation for CodeMirror
+function setupHoverDocumentation(cm) {
+    cm.on('mouseover', (cm, event) => {
+        const pos = cm.coordsChar({ left: event.clientX, top: event.clientY });
+        const token = cm.getTokenAt(pos);
+
+        // Only show tooltip for variable/property tokens
+        if (!token || !token.string || token.type !== 'variable' && token.type !== 'property') {
+            removeHoverTooltip();
+            return;
+        }
+
+        // Check if we're hovering over the same token
+        if (currentHoverToken === token.string) {
+            return;
+        }
+
+        // Clear previous timeout
+        if (hoverTimeout) {
+            clearTimeout(hoverTimeout);
+        }
+
+        currentHoverToken = token.string;
+
+        // Set 3-second delay before showing tooltip
+        hoverTimeout = setTimeout(() => {
+            const coords = cm.cursorCoords(pos);
+            showHoverTooltip(cm, token, coords);
+        }, 3000);
+    });
+
+    cm.on('mouseout', () => {
+        removeHoverTooltip();
+    });
+
+    // Also remove tooltip when scrolling or typing
+    cm.on('scroll', removeHoverTooltip);
+    cm.on('change', removeHoverTooltip);
 }
 
 // Chat functionality

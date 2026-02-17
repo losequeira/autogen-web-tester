@@ -13,6 +13,14 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/comment/comment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js"></script>
+
+    <!-- Autocompletion addons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/python-hint.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/anyword-hint.min.js"></script>
 
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
@@ -30,6 +38,7 @@
                         </div>
                         <div class="browser-controls">
                             <span id="browser-status" class="status-badge status-idle">IDLE</span>
+                            <button id="stop-test-btn" class="btn-icon" style="display: none;" title="Stop Test">⏹</button>
                             <button id="close-browser-sidebar" class="btn-icon">✕</button>
                         </div>
                     </div>
@@ -130,6 +139,7 @@
                     <div id="editor-tabs" class="editor-tabs">
                         <div class="editor-tabs-container"></div>
                         <div class="editor-tabs-actions">
+                            <button id="format-code-btn" class="btn-icon-small" title="Format Code (Shift+Alt+F)">✨</button>
                             <button id="toggle-chat" class="btn btn-small">💬 Chat</button>
                             <button id="close-all-tabs" class="btn-icon-small" title="Close All">⊗</button>
                         </div>
@@ -390,7 +400,7 @@
                 </div>
                 <div class="modal-body">
                     <div id="video-viewer-container">
-                        <video id="video-viewer-player" controls style="width: 100%; max-height: 500px; border-radius: 8px; background: #000;">
+                        <video id="video-viewer-player" controls>
                             <source id="video-viewer-source" type="video/webm">
                             Your browser does not support video playback.
                         </video>

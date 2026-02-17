@@ -747,11 +747,23 @@ body {
 
 #video-viewer-container {
     padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 200px;
 }
 
 #video-viewer-player {
     border: 1px solid #3c3c3c;
-    max-height: 70vh;
+    border-radius: 8px;
+    background: #000;
+    max-width: 100%;
+    max-height: 75vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    display: block;
+    margin: 0 auto;
 }
 
 .video-viewer-info {
@@ -1499,6 +1511,32 @@ body {
 .btn-icon:hover {
     background: #2d2d2d;
     color: #cccccc;
+}
+
+#stop-test-btn {
+    background: transparent;
+    border: none;
+    color: #ef4444;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px 8px;
+    transition: all 0.2s;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#stop-test-btn:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+}
+
+#stop-test-btn:disabled {
+    color: #6b7280;
+    background: transparent;
+    cursor: not-allowed;
+    opacity: 0.5;
 }
 
 .chat-sidebar-body {
