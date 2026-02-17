@@ -219,6 +219,9 @@ class BrowserToolWithScreenshots(BrowserTool):
             except Exception as e:
                 if self.streaming:  # Only log if we're supposed to be streaming
                     print(f"Stream error: {e}")
+                    # Don't break - page may have switched (popup close); retry after short delay
+                    await asyncio.sleep(0.1)
+                    continue
                 break
 
     def stop_streaming(self):
@@ -242,6 +245,12 @@ class BrowserToolWithScreenshots(BrowserTool):
                 'timestamp': datetime.now().isoformat()
             })
         except Exception as e:
+            error_msg = str(e).lower()
+            if "target closed" in error_msg or "closed" in error_msg:
+                # Popup closed - fall back to original page
+                if self.original_page and self.page != self.original_page:
+                    self.page = self.original_page
+                    return
             print(f"Screenshot error: {e}")
 
     async def navigate(self, url: str) -> str:
@@ -278,6 +287,37 @@ class BrowserToolWithScreenshots(BrowserTool):
         await self._send_screenshot('click')
         return result
 
+    async def click_and_wait_for_popup(self, selector: str) -> str:
+        escaped_selector = selector.replace('"', '\\"')
+        self.playwright_code.append(f'async with original_page.expect_popup() as popup_info:')
+        self.playwright_code.append(f'    await original_page.click("{escaped_selector}")')
+        self.playwright_code.append(f'page = await popup_info.value')
+        result = await super().click_and_wait_for_popup(selector)
+        await self._send_screenshot('click_and_wait_for_popup')
+        return result
+
+    async def click_text_and_wait_for_popup(self, text: str) -> str:
+        escaped_text = text.replace('"', '\\"')
+        self.playwright_code.append(f'async with original_page.expect_popup() as popup_info:')
+        self.playwright_code.append(f'    await original_page.click("text={escaped_text}")')
+        self.playwright_code.append(f'page = await popup_info.value')
+        result = await super().click_text_and_wait_for_popup(text)
+        await self._send_screenshot('click_text_and_wait_for_popup')
+        return result
+
+    async def switch_to_original_page(self) -> str:
+        self.playwright_code.append(f'page = original_page')
+        result = await super().switch_to_original_page()
+        await self._send_screenshot('switch_to_original_page')
+        return result
+
+    async def close_current_page(self) -> str:
+        self.playwright_code.append(f'await page.close()')
+        self.playwright_code.append(f'page = original_page')
+        result = await super().close_current_page()
+        await self._send_screenshot('close_current_page')
+        return result
+
 
 def generate_playwright_code(actions):
     """Generate complete Playwright test code from actions."""
@@ -286,6 +326,12 @@ def generate_playwright_code(actions):
     # Check if any action contains an email pattern like test+<random>@example.com
     has_random_email = any(
         re.search(r'test\+[a-z0-9]+@example\.com', action)
+        for action in actions
+    )
+
+    # Check if any action uses popup handling
+    has_popup = any(
+        'original_page' in action or 'popup_info' in action
         for action in actions
     )
 
@@ -307,8 +353,12 @@ def generate_playwright_code(actions):
         "    async with async_playwright() as p:",
         "        browser = await p.chromium.launch(headless=False)",
         "        page = await browser.new_page()",
-        ""
     ])
+
+    if has_popup:
+        code_lines.append("        original_page = page")
+
+    code_lines.append("")
 
     # Add random email generator if needed
     if has_random_email:
@@ -329,6 +379,9 @@ def generate_playwright_code(actions):
                 action
             )
             code_lines.append(f"        {modified_action}")
+        elif action.startswith('    '):
+            # Indented popup sub-action (e.g. inside async with block)
+            code_lines.append(f"        {action}")
         else:
             code_lines.append(f"        {action}")
 
@@ -623,6 +676,26 @@ async def run_test_async(task: str, test_filename: str = None, workspace_id: int
                 description="Get the raw HTML of the page."
             )
 
+            click_popup_tool = FunctionTool(
+                browser.click_and_wait_for_popup,
+                description="Click a CSS selector that opens a popup/new tab (e.g. OAuth), then switch to it. All subsequent actions will target the popup."
+            )
+
+            click_text_popup_tool = FunctionTool(
+                browser.click_text_and_wait_for_popup,
+                description="Click an element by visible text that opens a popup/new tab (e.g. 'Sign in with Google'), then switch to it. All subsequent actions will target the popup."
+            )
+
+            switch_to_original_tool = FunctionTool(
+                browser.switch_to_original_page,
+                description="Switch back to the original/main page after finishing with a popup. Call this after OAuth or popup flow is complete."
+            )
+
+            close_popup_tool = FunctionTool(
+                browser.close_current_page,
+                description="Close the current popup page and switch back to the original page. Use if popup did not auto-close."
+            )
+
             # Create model client
             socketio.emit('log', {'type': 'info', 'message': 'Initializing AI model...'})
 
@@ -744,8 +817,24 @@ TOOL USAGE RULES (CRITICAL - ALWAYS FOLLOW):
    - After providing the status, STOP - do not continue or ask for more instructions
    - Your final message should be the test status report
 
+9. **Popup/OAuth Flows (e.g. Google Sign-In):**
+   - When a button opens a popup or new tab (like "Sign in with Google"), use click_text_and_wait_for_popup(text) instead of click_text
+   - This switches ALL subsequent tool calls to target the popup window automatically
+   - Complete the OAuth flow in the popup (fill email, click Next, fill password, click Next)
+   - After the popup closes or OAuth completes, call switch_to_original_page() to go back to the main page
+   - If the popup did not auto-close, call close_current_page() first, then switch_to_original_page() is automatic
+   - Example Google OAuth flow:
+     1. click_text_and_wait_for_popup("Sign in with Google")
+     2. fill_form('input[type="email"]', 'user@gmail.com')
+     3. click_text("Next")
+     4. fill_form('input[type="password"]', 'password123')
+     5. click_text("Next")
+     6. switch_to_original_page()
+     7. Verify dashboard/authenticated state
+
 Available tools:
 - navigate, click_text, click, fill_form, find_inputs, get_page_content, get_current_url, get_text, screenshot, get_html
+- click_and_wait_for_popup, click_text_and_wait_for_popup, switch_to_original_page, close_current_page
 
 These rules apply to ALL tasks. Users will give you natural language instructions - translate them using these rules."""
 
@@ -763,7 +852,11 @@ These rules apply to ALL tasks. Users will give you natural language instruction
                     get_url_tool,
                     get_text_tool,
                     screenshot_tool,
-                    get_html_tool
+                    get_html_tool,
+                    click_popup_tool,
+                    click_text_popup_tool,
+                    switch_to_original_tool,
+                    close_popup_tool
                 ],
                 system_message=system_message
             )

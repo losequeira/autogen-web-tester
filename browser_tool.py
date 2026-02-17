@@ -31,6 +31,7 @@ class BrowserTool:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self.original_page: Optional[Page] = None
 
     async def __aenter__(self):
         """Initialize Playwright and browser on context entry."""
@@ -54,13 +55,24 @@ class BrowserTool:
             self.page = await self.browser.new_page()
 
         self.page.set_default_timeout(self.timeout)
+        self.original_page = self.page
         return self
 
     async def __aexit__(self, *args):
         """Cleanup resources on context exit."""
-        # Close page first
-        if self.page:
-            await self.page.close()
+        # Close popup page if it differs from original
+        if self.page and self.page != self.original_page:
+            try:
+                await self.page.close()
+            except Exception:
+                pass  # Popup may already be closed
+
+        # Close original page
+        if self.original_page:
+            try:
+                await self.original_page.close()
+            except Exception:
+                pass
 
         # Close context to save video recording
         if self.context:
@@ -330,3 +342,89 @@ class BrowserTool:
             return result
         except Exception as e:
             return f"Error finding inputs: {str(e)}"
+
+    async def click_and_wait_for_popup(self, selector: str) -> str:
+        """
+        Click an element by CSS selector that opens a popup/new tab, then switch to it.
+
+        Args:
+            selector: CSS selector for the element that opens a popup
+
+        Returns:
+            Confirmation message
+        """
+        if not self.page:
+            return "Error: Browser not initialized"
+
+        try:
+            async with self.page.expect_popup() as popup_info:
+                await self.page.click(selector)
+            popup = await popup_info.value
+            await popup.wait_for_load_state("domcontentloaded")
+            self.page = popup
+            return f"Clicked '{selector}' and switched to popup: {popup.url}"
+        except Exception as e:
+            return f"Error clicking '{selector}' for popup: {str(e)}"
+
+    async def click_text_and_wait_for_popup(self, text: str) -> str:
+        """
+        Click an element by visible text that opens a popup/new tab, then switch to it.
+        Use this for buttons like "Sign in with Google" that open OAuth popups.
+
+        Args:
+            text: The visible text of the element that opens a popup
+
+        Returns:
+            Confirmation message
+        """
+        if not self.page:
+            return "Error: Browser not initialized"
+
+        try:
+            async with self.page.expect_popup() as popup_info:
+                await self.page.click(f"text={text}")
+            popup = await popup_info.value
+            await popup.wait_for_load_state("domcontentloaded")
+            self.page = popup
+            return f"Clicked '{text}' and switched to popup: {popup.url}"
+        except Exception as e:
+            return f"Error clicking '{text}' for popup: {str(e)}"
+
+    async def switch_to_original_page(self) -> str:
+        """
+        Switch back to the original/main page after interacting with a popup.
+
+        Returns:
+            Confirmation message
+        """
+        if not self.original_page:
+            return "Error: No original page to switch to"
+
+        self.page = self.original_page
+        try:
+            await self.page.wait_for_load_state("domcontentloaded")
+        except Exception:
+            pass
+        return f"Switched back to original page: {self.page.url}"
+
+    async def close_current_page(self) -> str:
+        """
+        Close the current popup page and switch back to the original page.
+        Use this if a popup did not auto-close after completing an action.
+
+        Returns:
+            Confirmation message
+        """
+        if not self.page:
+            return "Error: Browser not initialized"
+
+        if self.page == self.original_page:
+            return "Error: Cannot close the original page. Use this only for popups."
+
+        try:
+            await self.page.close()
+        except Exception:
+            pass  # Popup may already be closed
+
+        self.page = self.original_page
+        return f"Closed popup and switched back to original page: {self.page.url}"
