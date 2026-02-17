@@ -2409,23 +2409,16 @@ def serve_artifact(filepath):
 
 
 @app.route('/api/saved-tests/<filename>/artifacts')
+@login_required
 def get_test_artifacts(filename):
     """Get list of artifacts for a saved test."""
-    filepath = SAVED_TESTS_DIR / filename
-    if not filepath.exists():
-        # Try AI steps directory
-        filepath = AI_STEPS_DIR / filename
-        if not filepath.exists():
-            return jsonify({'error': 'Test not found'}), 404
-
-    try:
-        with open(filepath, 'r') as f:
-            test_data = json.load(f)
-
-        artifacts = test_data.get('artifacts', [])
-        return jsonify(artifacts)
-    except Exception as e:
-        return jsonify({'error': f'Failed to load artifacts: {str(e)}'}), 500
+    ws_id = _get_workspace_id()
+    if not ws_id:
+        return jsonify({'error': 'Test not found'}), 404
+    artifacts = data_access.get_test_artifacts(ws_id, filename)
+    if artifacts is None:
+        return jsonify({'error': 'Test not found'}), 404
+    return jsonify(artifacts)
 
 
 @app.route('/api/format-code', methods=['POST'])
@@ -2658,7 +2651,7 @@ def handle_run_ai_step(data):
 
     try:
         if step_id:
-            step_data = data_access.get_ai_step_by_id(step_id)
+            step_data = data_access.get_ai_step_by_id(step_id, workspace_id=workspace_id)
             if step_data:
                 workspace_id = step_data['workspace_id']
                 filename = step_data['filename']

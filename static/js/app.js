@@ -352,7 +352,7 @@ socket.on('test_complete', (data) => {
         const aiTab = openTabs.find(t => t.id === runningAiStepTabId);
         if (aiTab && activeTabId === runningAiStepTabId) {
             // Reload fresh from DB to make sure we have the latest
-            fetch(`/api/ai-steps/${runningAiStepTabId}/markdown`)
+            fetch(`/api/ai-steps/${runningAiStepTabId}/markdown?workspace_id=${currentWorkspaceId}`)
                 .then(res => res.json())
                 .then(aiData => {
                     if (aiData.markdown) {
@@ -368,7 +368,7 @@ socket.on('test_complete', (data) => {
 
     // Update saved test status if this was a saved test run
     if (currentRunningTestFilename) {
-        fetch(`/api/saved-tests/${currentRunningTestFilename}/status`, {
+        fetch(`/api/saved-tests/${currentRunningTestFilename}/status?workspace_id=${currentWorkspaceId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: data.status })
@@ -450,7 +450,7 @@ socket.on('ai_step_complete_with_code', (data) => {
 
     // Reload the AI step content to restore it (it may have been cleared during execution)
     const aiStepFilename = data.ai_step_filename;
-    fetch(`/api/ai-steps/${aiStepFilename}/markdown`)
+    fetch(`/api/ai-steps/${aiStepFilename}/markdown?workspace_id=${currentWorkspaceId}`)
         .then(res => res.json())
         .then(aiStepData => {
             // Find and restore the AI step tab if it's open
@@ -612,7 +612,7 @@ function saveCurrentTest() {
 
         // Handle AI Step saves
         if (tab.fileType === 'ai-step') {
-            fetch(`/api/ai-steps/${activeTabId}/markdown`, {
+            fetch(`/api/ai-steps/${activeTabId}/markdown?workspace_id=${currentWorkspaceId}`, {
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ markdown: code })
@@ -635,7 +635,7 @@ function saveCurrentTest() {
             return;
         }
 
-        fetch(`/api/saved-tests/${activeTabId}`, {
+        fetch(`/api/saved-tests/${activeTabId}?workspace_id=${currentWorkspaceId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -775,7 +775,7 @@ async function runAllTests() {
         return;
     }
 
-    const response = await fetch('/api/saved-tests');
+    const response = await fetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
     const tests = await response.json();
 
     if (tests.length === 0) {
@@ -985,7 +985,7 @@ async function restoreTabsState() {
                     }
                     // Handle AI step restoration
                     else if (tabInfo.fileType === 'ai-step') {
-                        const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown`);
+                        const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown?workspace_id=${currentWorkspaceId}`);
                         if (response.ok) {
                             const data = await response.json();
                             const existingTab = openTabs.find(t => t.id === tabInfo.id);
@@ -1002,7 +1002,7 @@ async function restoreTabsState() {
                     }
                     // Handle regular test file restoration
                     else {
-                        const response = await fetch(`/api/saved-tests/${tabInfo.id}`);
+                        const response = await fetch(`/api/saved-tests/${tabInfo.id}?workspace_id=${currentWorkspaceId}`);
                         if (response.ok) {
                             const data = await response.json();
 
@@ -1144,13 +1144,18 @@ function hideWelcomePage() {
 
 async function fetchTestStatistics() {
     try {
-        // Fetch saved tests
-        const testsResponse = await fetch('/api/saved-tests');
+        if (!currentWorkspaceId) {
+            return { totalTests: 0, passedTests: 0, failedTests: 0, aiSteps: 0 };
+        }
+
+        // Fetch saved tests for current workspace
+        const testsResponse = await fetch(`/api/workspaces/${currentWorkspaceId}/tests`);
         const tests = await testsResponse.json();
 
-        // Fetch AI steps
-        const aiStepsResponse = await fetch('/api/ai-steps');
-        const aiSteps = await aiStepsResponse.json();
+        // Fetch AI steps for current workspace
+        const aiStepsResponse = await fetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
+        const aiStepsData = await aiStepsResponse.json();
+        const aiSteps = aiStepsData.ai_steps || [];
 
         // Calculate statistics
         const totalTests = tests.length;
@@ -1545,12 +1550,14 @@ function hideDashboardContent() {
 
 async function loadDashboardStats() {
     try {
-        // Fetch saved tests
-        const testsResponse = await fetch('/api/saved-tests');
+        if (!currentWorkspaceId) return;
+
+        // Fetch saved tests for current workspace
+        const testsResponse = await fetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
         const tests = await testsResponse.json();
 
-        // Fetch AI steps
-        const aiStepsResponse = await fetch('/api/ai-steps');
+        // Fetch AI steps for current workspace
+        const aiStepsResponse = await fetch(`/api/ai-steps?workspace_id=${currentWorkspaceId}`);
         const aiSteps = await aiStepsResponse.json();
 
         // Calculate statistics
@@ -1834,7 +1841,7 @@ function runAiStep(stepId, filename, name) {
 }
 
 function openAiStepInEditor(filename, name) {
-    fetch(`/api/ai-steps/${filename}/markdown`)
+    fetch(`/api/ai-steps/${filename}/markdown?workspace_id=${currentWorkspaceId}`)
         .then(res => res.json())
         .then(data => {
             if (data.markdown) {
@@ -1893,7 +1900,7 @@ function showTestResultsModal(total, passed, failed, duration) {
     // Load video if available from the last completed test
     const lastTest = batchRunResults[batchRunResults.length - 1];
     if (lastTest && lastTest.filename) {
-        fetch(`/api/saved-tests/${lastTest.filename}/artifacts`)
+        fetch(`/api/saved-tests/${lastTest.filename}/artifacts?workspace_id=${currentWorkspaceId}`)
             .then(res => res.json())
             .then(artifacts => {
                 if (artifacts.length > 0) {
@@ -2033,7 +2040,7 @@ async function deleteAiStep(filename, name) {
     if (!confirm(`Delete AI step "${name}"?`)) return;
 
     try {
-        const response = await fetch(`/api/ai-steps/${filename}`, {
+        const response = await fetch(`/api/ai-steps/${filename}?workspace_id=${currentWorkspaceId}`, {
             method: 'DELETE'
         });
 
