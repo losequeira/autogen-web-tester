@@ -1738,7 +1738,7 @@ async function loadAiSteps() {
 
             runBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                runAiStep(step.filename, step.name);
+                runAiStep(step.id, step.filename, step.name);
             });
 
             editBtn.addEventListener('click', (e) => {
@@ -1768,7 +1768,7 @@ async function loadAiSteps() {
 
 let runningAiStepTabId = null;  // Track which AI step tab is running
 
-function runAiStep(filename, name) {
+function runAiStep(stepId, filename, name) {
     if (isTestRunning) {
         alert('A test is already running');
         return;
@@ -1823,8 +1823,9 @@ function runAiStep(filename, name) {
     }
     openOutputPanel();
 
-    // Emit run AI step event
+    // Emit run AI step event - use database ID for unambiguous lookup
     socket.emit('run_ai_step', {
+        id: stepId,
         filename,
         workspaceId: currentWorkspaceId
     });

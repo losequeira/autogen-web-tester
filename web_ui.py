@@ -2644,32 +2644,33 @@ def run_all_tests_parallel(filenames, workspace_id=None):
 
 @socketio.on('run_ai_step')
 def handle_run_ai_step(data):
-    """Handle running an AI step test from file."""
+    """Handle running an AI step test by database ID."""
     global current_ai_step
 
+    step_id = data.get('id')
+    # Fallback to filename+workspace for backwards compatibility
     filename = data.get('filename')
     workspace_id = data.get('workspaceId')
 
-    if not filename:
+    if not step_id and not filename:
         emit('log', {'type': 'error', 'message': 'No AI step specified'})
         return
 
-    # Use workspace-scoped directory if workspace_id provided
-    if workspace_id:
-        filepath = get_workspace_ai_steps_dir(workspace_id) / filename
-    else:
-        # Fallback to global directory
-        filepath = AI_STEPS_DIR / filename
-
-    if not filepath.exists():
-        emit('log', {'type': 'error', 'message': 'AI step not found'})
-        return
-
     try:
-        with open(filepath, 'r') as f:
-            step_data = json.load(f)
-            steps = step_data.get('steps')
-            name = step_data.get('name')
+        if step_id:
+            step_data = data_access.get_ai_step_by_id(step_id)
+            if step_data:
+                workspace_id = step_data['workspace_id']
+                filename = step_data['filename']
+        else:
+            step_data = data_access.get_ai_step(workspace_id, filename) if workspace_id else None
+
+        if not step_data:
+            emit('log', {'type': 'error', 'message': 'AI step not found'})
+            return
+
+        steps = step_data.get('steps')
+        name = step_data.get('name')
 
         if not steps:
             emit('log', {'type': 'error', 'message': 'No steps found in AI step test'})
