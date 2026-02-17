@@ -127,19 +127,29 @@ def cleanup_old_artifacts(test_name: str, keep_last_n: int = 10):
             print(f"Warning: Could not remove old artifacts: {e}")
 
 
-def update_test_artifacts(filename: str, artifact_dir: Path, test_status: str = 'unknown'):
+def update_test_artifacts(filename: str, artifact_dir: Path, test_status: str = 'unknown', workspace_id: int = None):
     """Update test JSON metadata with artifact information."""
     if not filename:
         return
 
-    # Determine which directory to use (saved_tests or ai_steps)
-    if filename.endswith('.json'):
-        # Could be either saved test or AI step
-        test_file = SAVED_TESTS_DIR / filename
-        if not test_file.exists():
-            test_file = AI_STEPS_DIR / filename
+    # Determine which directory to use (workspace-scoped or global fallback)
+    if workspace_id:
+        # Use workspace-scoped directories
+        if filename.endswith('.json'):
+            # Could be either saved test or AI step
+            test_file = get_workspace_tests_dir(workspace_id) / filename
+            if not test_file.exists():
+                test_file = get_workspace_ai_steps_dir(workspace_id) / filename
+        else:
+            test_file = get_workspace_ai_steps_dir(workspace_id) / filename
     else:
-        test_file = AI_STEPS_DIR / filename
+        # Fallback to global directories (for backward compatibility)
+        if filename.endswith('.json'):
+            test_file = SAVED_TESTS_DIR / filename
+            if not test_file.exists():
+                test_file = AI_STEPS_DIR / filename
+        else:
+            test_file = AI_STEPS_DIR / filename
 
     if not test_file.exists():
         print(f"Warning: Test file not found for artifact update: {filename}")
@@ -509,7 +519,7 @@ def run_codegen_process(recording_id: str, url: str, output_file: str, test_name
             pass
 
 
-async def run_test_async(task: str):
+async def run_test_async(task: str, test_filename: str = None, workspace_id: int = None):
     """Run the test with live updates."""
     global active_browser, stop_requested, current_ai_step
 
@@ -519,14 +529,30 @@ async def run_test_async(task: str):
     # Create artifacts directory if this is an AI step test with filename
     artifact_dir = None
     video_dir = None
-    test_filename = None  # Save filename before current_ai_step gets reset
+    saved_test_filename = test_filename  # Save filename before current_ai_step gets reset
+    saved_workspace_id = workspace_id
     test_status = None  # Track test status for artifact metadata
-    if current_ai_step and current_ai_step.get('filename'):
+
+    # Get filename and workspace_id from current_ai_step if not provided
+    if current_ai_step:
+        if not saved_test_filename:
+            saved_test_filename = current_ai_step.get('filename')
+        if not saved_workspace_id:
+            saved_workspace_id = current_ai_step.get('workspace_id')
+
+    if saved_test_filename:
         from pathlib import Path
-        test_filename = current_ai_step['filename']  # Save for artifact update later
-        test_name = Path(test_filename).stem
+        test_name = Path(saved_test_filename).stem
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        artifact_dir = Path(__file__).parent / "test_artifacts" / test_name / timestamp
+
+        # Use workspace-scoped directory if workspace_id provided
+        if saved_workspace_id:
+            workspace_path = get_workspace_path(saved_workspace_id)
+            artifact_dir = workspace_path / "test_artifacts" / test_name / timestamp
+        else:
+            # Fallback to global directory
+            artifact_dir = Path(__file__).parent / "test_artifacts" / test_name / timestamp
+
         artifact_dir.mkdir(parents=True, exist_ok=True)
         video_dir = str(artifact_dir)
         socketio.emit('log', {'type': 'info', 'message': f'📹 Video recording enabled to: {video_dir}'})
@@ -843,23 +869,24 @@ These rules apply to ALL tasks. Users will give you natural language instruction
         active_browser = None
 
         # Update test artifacts if video recording was enabled
-        if artifact_dir and test_filename:
+        if artifact_dir and saved_test_filename:
             # Give the browser time to finalize the video
             import time
             time.sleep(1)
             update_test_artifacts(
-                test_filename,
+                saved_test_filename,
                 artifact_dir,
-                test_status or 'unknown'
+                test_status or 'unknown',
+                workspace_id=saved_workspace_id
             )
 
 
-def run_test_sync(task: str):
+def run_test_sync(task: str, test_filename: str = None, workspace_id: int = None):
     """Wrapper to run async test in sync context."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(run_test_async(task))
+        loop.run_until_complete(run_test_async(task, test_filename, workspace_id))
     finally:
         # Properly shutdown the event loop to avoid crashes
         try:
@@ -912,6 +939,9 @@ def run_playwright_code(code: str):
 
 def run_playwright_code_with_streaming(code: str, filename: str = None):
     """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
+    global stop_requested
+    stop_requested = False  # Reset stop flag at the start of execution
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -920,12 +950,20 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
     video_dir = None
     test_status = None  # Track test status for artifact metadata
     if filename:
-        print(f"🎬 Filename provided: {filename}")
+        print(f"🎬 Filename provided: {filename}, workspace_id: {workspace_id}")
         from pathlib import Path
         from datetime import datetime
         test_name = Path(filename).stem
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        artifact_dir = Path(__file__).parent / "test_artifacts" / test_name / timestamp
+
+        # Use workspace-scoped directory if workspace_id provided
+        if workspace_id:
+            workspace_path = get_workspace_path(workspace_id)
+            artifact_dir = workspace_path / "test_artifacts" / test_name / timestamp
+        else:
+            # Fallback to global directory
+            artifact_dir = Path(__file__).parent / "test_artifacts" / test_name / timestamp
+
         artifact_dir.mkdir(parents=True, exist_ok=True)
         video_dir = str(artifact_dir)
         print(f"📹 Video directory created: {video_dir}")
@@ -971,9 +1009,14 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def _start_streaming(self):
                 """Start continuous screenshot streaming."""
+                global stop_requested
                 self._streaming = True
                 while self._streaming:
                     try:
+                        # Check if stop was requested
+                        if stop_requested:
+                            print("⏹ Stop requested - cancelling streaming")
+                            raise asyncio.CancelledError("Test stopped by user")
                         await send_screenshot(self._page, 'stream')
                         await asyncio.sleep(0.1)  # 10 FPS
                     except asyncio.CancelledError:
@@ -989,6 +1032,10 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def goto(self, url, **kwargs):
                 """Navigate and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling goto action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 print(f"🌐 PageWrapper.goto() called for URL: {url}")
                 result = await self._page.goto(url, **kwargs)
                 await send_screenshot(self._page, 'navigate')
@@ -1000,6 +1047,10 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def click(self, selector, **kwargs):
                 """Click and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling click action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 print(f"👆 PageWrapper.click() called for selector: {selector}")
                 result = await self._page.click(selector, **kwargs)
                 await send_screenshot(self._page, 'click')
@@ -1007,6 +1058,10 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def fill(self, selector, value, **kwargs):
                 """Fill and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling fill action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 print(f"✍️ PageWrapper.fill() called for selector: {selector}")
                 result = await self._page.fill(selector, value, **kwargs)
                 await send_screenshot(self._page, 'fill')
@@ -1014,12 +1069,20 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
 
             async def type(self, selector, text, **kwargs):
                 """Type and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling type action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 result = await self._page.type(selector, text, **kwargs)
                 await send_screenshot(self._page, 'type')
                 return result
 
             async def press(self, selector, key, **kwargs):
                 """Press key and capture screenshot."""
+                global stop_requested
+                if stop_requested:
+                    print("⏹ Stop requested - cancelling press action")
+                    raise asyncio.CancelledError("Test stopped by user")
                 result = await self._page.press(selector, key, **kwargs)
                 await send_screenshot(self._page, 'press')
                 return result
@@ -1070,7 +1133,15 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
                     return PageWrapper(page)
 
             async def new_context(self, **kwargs):
-                """Create new context with wrapper."""
+                """Create new context with wrapper and video recording if enabled."""
+                # Add video recording parameters if video_dir is set
+                if video_dir and 'record_video_dir' not in kwargs:
+                    print(f"📹 Adding video recording to user-created context: {video_dir}")
+                    kwargs['record_video_dir'] = video_dir
+                    kwargs['record_video_size'] = {"width": 1280, "height": 720}
+                    # Also add HAR recording if not present
+                    if 'record_har_path' not in kwargs:
+                        kwargs['record_har_path'] = f"{video_dir}/network.har"
                 context = await self._browser.new_context(**kwargs)
                 wrapped = ContextWrapper(context)
                 self._contexts.append(wrapped)
@@ -1210,6 +1281,11 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
             socketio.emit('log', {'type': 'success', 'message': '✅ Code execution completed successfully!'})
             socketio.emit('test_complete', {'status': 'success'})
 
+        except asyncio.CancelledError:
+            # Test was stopped by user
+            test_status = 'stopped'
+            socketio.emit('log', {'type': 'info', 'message': '⏹ Test stopped by user'})
+            socketio.emit('test_complete', {'status': 'stopped'})
         except Exception as e:
             import traceback
             error_msg = f'Error executing code: {str(e)}'
@@ -1245,11 +1321,12 @@ def run_playwright_code_with_streaming(code: str, filename: str = None):
                 update_test_artifacts(
                     filename,
                     artifact_dir,
-                    test_status or 'unknown'
+                    test_status or 'unknown',
+                    workspace_id=workspace_id
                 )
 
 
-def run_playwright_code_headless(code: str, filename: str):
+def run_playwright_code_headless(code: str, filename: str, workspace_id: int = None):
     """Execute Playwright code in headless mode WITHOUT screenshot streaming.
 
     Returns:
@@ -2389,6 +2466,15 @@ def run_all_tests_parallel(filenames):
         future_to_filename = {executor.submit(run_single_test, fn): fn for fn in filenames}
 
         for future in as_completed(future_to_filename):
+            # Check if stop was requested
+            global stop_requested
+            if stop_requested:
+                socketio.emit('log', {'type': 'info', 'message': '⏹ Batch run stopped by user'})
+                # Cancel remaining futures
+                for f in future_to_filename:
+                    f.cancel()
+                break
+
             result = future.result()
             results.append(result)
 
