@@ -34,6 +34,11 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body>
+    <!-- Loading overlay (removed by JS after app initializes) -->
+    <div id="loading-overlay">
+        <div class="loading-spinner"></div>
+    </div>
+
     <!-- Main VS Code-style layout (hidden until authenticated) -->
     <div class="vscode-layout auth-hidden">
         <div class="code-editor-container">
