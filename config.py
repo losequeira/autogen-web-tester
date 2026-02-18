@@ -70,6 +70,3 @@ class Config:
     RATELIMIT_ENABLED = os.getenv("RATELIMIT_ENABLED", "false").lower() == "true"
     RATELIMIT_STORAGE_URL = os.getenv("RATELIMIT_STORAGE_URL", "memory://")
 
-    # SQLAlchemy Configuration
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
-    SQLALCHEMY_ECHO = os.getenv("SQLALCHEMY_ECHO", "false").lower() == "true"
