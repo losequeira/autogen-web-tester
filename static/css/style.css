@@ -1777,7 +1777,7 @@ body {
 }
 
 /* Code Editor Wrapper with Grid Layout */
-/* CodeMirror 5 Editor Styles */
+/* CodeMirror 5 Editor Styles — themed via Catppuccin variables */
 #codemirror-editor {
     height: 100%;
     width: 100%;
@@ -1788,6 +1788,8 @@ body {
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     font-size: 14px;
     line-height: 1.6;
+    background: var(--ctp-base);
+    color: var(--ctp-text);
 }
 
 #codemirror-editor .CodeMirror-gutters {
@@ -1798,6 +1800,82 @@ body {
 #codemirror-editor .CodeMirror-linenumber {
     color: var(--ctp-overlay1);
     padding-right: 12px;
+}
+
+#codemirror-editor .CodeMirror-cursor {
+    border-left-color: var(--ctp-text);
+}
+
+#codemirror-editor .CodeMirror-selected {
+    background: var(--ctp-surface1);
+}
+
+#codemirror-editor .CodeMirror-focused .CodeMirror-selected {
+    background: var(--ctp-surface2);
+}
+
+#codemirror-editor .CodeMirror-activeline-background {
+    background: var(--ctp-surface0);
+}
+
+#codemirror-editor .CodeMirror-matchingbracket {
+    color: var(--ctp-green) !important;
+    background: var(--ctp-surface1);
+    font-weight: bold;
+}
+
+/* Syntax highlighting — Catppuccin token colors */
+#codemirror-editor .cm-keyword { color: var(--ctp-mauve); }
+#codemirror-editor .cm-def { color: var(--ctp-blue); }
+#codemirror-editor .cm-variable { color: var(--ctp-text); }
+#codemirror-editor .cm-variable-2 { color: var(--ctp-flamingo); }
+#codemirror-editor .cm-variable-3 { color: var(--ctp-teal); }
+#codemirror-editor .cm-property { color: var(--ctp-blue); }
+#codemirror-editor .cm-operator { color: var(--ctp-sky); }
+#codemirror-editor .cm-number { color: var(--ctp-peach); }
+#codemirror-editor .cm-string { color: var(--ctp-green); }
+#codemirror-editor .cm-string-2 { color: var(--ctp-green); }
+#codemirror-editor .cm-comment { color: var(--ctp-overlay1); font-style: italic; }
+#codemirror-editor .cm-builtin { color: var(--ctp-red); }
+#codemirror-editor .cm-atom { color: var(--ctp-peach); }
+#codemirror-editor .cm-meta { color: var(--ctp-mauve); }
+#codemirror-editor .cm-tag { color: var(--ctp-blue); }
+#codemirror-editor .cm-attribute { color: var(--ctp-yellow); }
+#codemirror-editor .cm-qualifier { color: var(--ctp-blue); }
+#codemirror-editor .cm-type { color: var(--ctp-yellow); }
+
+/* Autocomplete dropdown */
+.CodeMirror-hints {
+    background: var(--ctp-surface0) !important;
+    border: 1px solid var(--ctp-surface1) !important;
+    color: var(--ctp-text) !important;
+}
+
+.CodeMirror-hint {
+    color: var(--ctp-text) !important;
+}
+
+.CodeMirror-hint-active {
+    background: var(--ctp-surface2) !important;
+    color: var(--ctp-text) !important;
+}
+
+/* Scrollbar theming for CodeMirror */
+#codemirror-editor .CodeMirror-vscrollbar::-webkit-scrollbar,
+#codemirror-editor .CodeMirror-hscrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+#codemirror-editor .CodeMirror-vscrollbar::-webkit-scrollbar-thumb,
+#codemirror-editor .CodeMirror-hscrollbar::-webkit-scrollbar-thumb {
+    background: var(--ctp-surface1);
+    border-radius: 4px;
+}
+
+#codemirror-editor .CodeMirror-vscrollbar::-webkit-scrollbar-track,
+#codemirror-editor .CodeMirror-hscrollbar::-webkit-scrollbar-track {
+    background: var(--ctp-mantle);
 }
 
 /* Make editor take full height */
