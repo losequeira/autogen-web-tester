@@ -874,13 +874,15 @@ These rules apply to ALL tasks. Users will give you natural language instruction
         if artifact_dir and saved_test_filename:
             # Give the browser time to finalize the video
             import time
-            time.sleep(1)
+            time.sleep(2)
             update_test_artifacts(
                 saved_test_filename,
                 artifact_dir,
                 test_status or 'unknown',
                 workspace_id=saved_workspace_id
             )
+            # Tell frontend to refresh now that artifacts are saved
+            socketio.emit('artifacts_updated', {'filename': saved_test_filename})
 
 
 def run_test_sync(task: str, test_filename: str = None, workspace_id: int = None):
@@ -1319,10 +1321,11 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 pass
 
     # Update test artifacts AFTER loop cleanup (separate block so it always runs)
+    print(f"📼 === ARTIFACT SAVE BLOCK REACHED === artifact_dir={artifact_dir}, filename={filename}, workspace_id={workspace_id}")
     if artifact_dir and filename:
         try:
             import time
-            time.sleep(1)
+            time.sleep(2)  # Give browser time to finalize the video file
             print(f"📼 Saving artifacts: filename={filename}, workspace_id={workspace_id}, status={test_status}, dir={artifact_dir}")
             video_files = list(artifact_dir.glob("*.webm"))
             print(f"📼 Found video files: {video_files}")
@@ -1332,6 +1335,8 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 test_status or 'unknown',
                 workspace_id=workspace_id
             )
+            # Tell frontend to refresh now that artifacts are saved
+            socketio.emit('artifacts_updated', {'filename': filename})
         except Exception as e:
             import traceback
             print(f"📼 Error saving artifacts: {e}")

@@ -431,6 +431,14 @@ socket.on('test_complete', (data) => {
     }
 });
 
+socket.on('artifacts_updated', (data) => {
+    console.log('Artifacts updated for:', data.filename);
+    // Refresh file explorer to show video icon
+    if (hasFileExplorer) {
+        loadFileExplorer();
+    }
+});
+
 socket.on('batch_test_progress', (data) => {
     const { filename, name, status } = data;
     runningTestsSet.delete(filename);
