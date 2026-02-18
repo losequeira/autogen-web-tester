@@ -89,14 +89,18 @@ TEMP_RECORDINGS_DIR.mkdir(exist_ok=True)
 
 def update_test_artifacts(filename: str, artifact_dir: Path, test_status: str = 'unknown', workspace_id: int = None):
     """Update test artifact metadata in the database."""
+    print(f"📼 update_test_artifacts called: filename={filename}, workspace_id={workspace_id}, status={test_status}")
     if not filename or not workspace_id:
-        print(f"Warning: Cannot update artifacts without filename and workspace_id")
+        print(f"Warning: Cannot update artifacts without filename and workspace_id (filename={filename}, workspace_id={workspace_id})")
         return
 
     try:
         db.add_test_artifact(workspace_id, filename, artifact_dir, test_status)
+        print(f"📼 Artifact saved successfully")
     except Exception as e:
+        import traceback
         print(f"Warning: Could not update test metadata: {e}")
+        traceback.print_exc()
 
 
 class BrowserToolWithScreenshots(BrowserTool):
@@ -1316,12 +1320,17 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 # Give the browser time to finalize the video
                 import time
                 time.sleep(1)
+                print(f"📼 Saving artifacts: filename={filename}, workspace_id={workspace_id}, status={test_status}, dir={artifact_dir}")
+                video_files = list(artifact_dir.glob("*.webm"))
+                print(f"📼 Found video files: {video_files}")
                 update_test_artifacts(
                     filename,
                     artifact_dir,
                     test_status or 'unknown',
                     workspace_id=workspace_id
                 )
+            else:
+                print(f"⚠️ Skipping artifact update: artifact_dir={artifact_dir}, filename={filename}")
 
 
 def run_playwright_code_headless(code: str, filename: str, workspace_id: int = None):
