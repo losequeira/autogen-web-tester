@@ -1,7 +1,61 @@
 // AutoGen Web Tester - Frontend JavaScript
 
-// Initialize Socket.IO
-const socket = io();
+// ========== JWT TOKEN MANAGEMENT ==========
+let authToken = localStorage.getItem('access_token') || null;
+let refreshToken = localStorage.getItem('refresh_token') || null;
+
+function storeTokens(access, refresh) {
+    authToken = access;
+    refreshToken = refresh;
+    if (access) localStorage.setItem('access_token', access);
+    else localStorage.removeItem('access_token');
+    if (refresh) localStorage.setItem('refresh_token', refresh);
+    else localStorage.removeItem('refresh_token');
+}
+
+function clearTokens() {
+    authToken = null;
+    refreshToken = null;
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+}
+
+async function authFetch(url, options = {}) {
+    if (!options.headers) options.headers = {};
+    if (authToken) {
+        options.headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    let response = await fetch(url, options);
+    if (response.status === 401 && refreshToken) {
+        // Attempt token refresh
+        const refreshResp = await fetch('/api/refresh-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh_token: refreshToken })
+        });
+        if (refreshResp.ok) {
+            const data = await refreshResp.json();
+            storeTokens(data.access_token, data.refresh_token);
+            options.headers['Authorization'] = `Bearer ${data.access_token}`;
+            response = await fetch(url, options);
+        } else {
+            clearTokens();
+            showLoginModal();
+        }
+    }
+    return response;
+}
+// ========== END JWT TOKEN MANAGEMENT ==========
+
+function dismissLoadingOverlay() {
+    const overlay = document.getElementById('loading-overlay');
+    if (!overlay) return;
+    overlay.classList.add('fade-out');
+    overlay.addEventListener('transitionend', () => overlay.remove());
+}
+
+// Initialize Socket.IO with auth token (passed as query param for Flask-SocketIO compat)
+const socket = io({ query: { token: authToken || '' } });
 
 // Authentication state
 let currentUser = null;
@@ -25,7 +79,7 @@ function _flushPreferences() {
 
     if (Object.keys(updates).length === 0) return;
 
-    fetch('/api/preferences', {
+    authFetch('/api/preferences', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ preferences: updates })
@@ -34,7 +88,7 @@ function _flushPreferences() {
 
 async function loadPreferencesFromDb() {
     try {
-        const response = await fetch('/api/preferences');
+        const response = await authFetch('/api/preferences');
         if (!response.ok) return null;
         const data = await response.json();
         return data.preferences || {};
@@ -45,17 +99,14 @@ async function loadPreferencesFromDb() {
 }
 // ========== END USER PREFERENCES SYNC ==========
 
-// Authentication modal elements
-const loginModal = document.getElementById('login-modal');
-const registerModal = document.getElementById('register-modal');
+// Authentication page elements
+const authPage = document.getElementById('auth-page');
 const loginForm = document.getElementById('login-form');
 const registerForm = document.getElementById('register-form');
-const closeLoginBtn = document.querySelector('.close-login');
-const closeRegisterBtn = document.querySelector('.close-register');
-const showRegisterBtn = document.getElementById('show-register-btn');
-const showLoginBtn = document.getElementById('show-login-btn');
 const loginError = document.getElementById('login-error');
 const registerError = document.getElementById('register-error');
+const authTabs = document.querySelectorAll('.auth-tab');
+const authTabsContainer = document.querySelector('.auth-tabs');
 
 // Workspace elements
 const currentUsernameEl = document.getElementById('current-username');
@@ -399,7 +450,7 @@ socket.on('test_complete', (data) => {
         const aiTab = openTabs.find(t => t.id === runningAiStepTabId);
         if (aiTab && activeTabId === runningAiStepTabId) {
             // Reload fresh from DB to make sure we have the latest
-            fetch(`/api/ai-steps/${runningAiStepTabId}/markdown?workspace_id=${currentWorkspaceId}`)
+            authFetch(`/api/ai-steps/${runningAiStepTabId}/markdown?workspace_id=${currentWorkspaceId}`)
                 .then(res => res.json())
                 .then(aiData => {
                     if (aiData.markdown) {
@@ -415,7 +466,7 @@ socket.on('test_complete', (data) => {
 
     // Update saved test status if this was a saved test run
     if (currentRunningTestFilename) {
-        fetch(`/api/saved-tests/${currentRunningTestFilename}/status?workspace_id=${currentWorkspaceId}`, {
+        authFetch(`/api/saved-tests/${currentRunningTestFilename}/status?workspace_id=${currentWorkspaceId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: data.status })
@@ -505,7 +556,7 @@ socket.on('ai_step_complete_with_code', (data) => {
 
     // Reload the AI step content to restore it (it may have been cleared during execution)
     const aiStepFilename = data.ai_step_filename;
-    fetch(`/api/ai-steps/${aiStepFilename}/markdown?workspace_id=${currentWorkspaceId}`)
+    authFetch(`/api/ai-steps/${aiStepFilename}/markdown?workspace_id=${currentWorkspaceId}`)
         .then(res => res.json())
         .then(aiStepData => {
             // Find and restore the AI step tab if it's open
@@ -530,7 +581,7 @@ socket.on('ai_step_complete_with_code', (data) => {
 
                 if (testName && testName.trim()) {
                     // Save the generated code as a new test
-                    fetch(`/api/workspaces/${currentWorkspaceId}/tests`, {
+                    authFetch(`/api/workspaces/${currentWorkspaceId}/tests`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -574,7 +625,7 @@ socket.on('codegen_status', (data) => {
     if (data.status === 'recording') {
         browserStatus.textContent = 'Recording';
         browserStatus.classList.add('recording');
-        browserStatus.style.background = '#8b5cf6';
+        browserStatus.style.background = 'var(--ctp-mauve)';
         addLogEntry('info', data.message, '🎥 Recording in progress...');
     }
 });
@@ -583,7 +634,7 @@ socket.on('codegen_complete', (data) => {
     currentRecordingId = null;
     browserStatus.textContent = 'Recording Complete';
     browserStatus.classList.remove('recording');
-    browserStatus.style.background = '#10b981';
+    browserStatus.style.background = 'var(--ctp-green)';
 
     // Display generated code
     setPlaywrightCode(data.code);
@@ -607,7 +658,7 @@ socket.on('codegen_error', (data) => {
     currentRecordingId = null;
     browserStatus.textContent = 'Recording Error';
     browserStatus.classList.remove('recording');
-    browserStatus.style.background = '#ef4444';
+    browserStatus.style.background = 'var(--ctp-red)';
 
     addLogEntry('error', `❌ Recording failed: ${data.message}`, '❌ Recording failed');
 
@@ -667,7 +718,7 @@ function saveCurrentTest() {
 
         // Handle AI Step saves
         if (tab.fileType === 'ai-step') {
-            fetch(`/api/ai-steps/${activeTabId}/markdown?workspace_id=${currentWorkspaceId}`, {
+            authFetch(`/api/ai-steps/${activeTabId}/markdown?workspace_id=${currentWorkspaceId}`, {
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ markdown: code })
@@ -690,7 +741,7 @@ function saveCurrentTest() {
             return;
         }
 
-        fetch(`/api/saved-tests/${activeTabId}?workspace_id=${currentWorkspaceId}`, {
+        authFetch(`/api/saved-tests/${activeTabId}?workspace_id=${currentWorkspaceId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -724,7 +775,7 @@ function saveCurrentTest() {
         const name = prompt('Save as:', defaultName);
         if (!name) return;
 
-        fetch(`/api/workspaces/${currentWorkspaceId}/tests`, {
+        authFetch('/api/save-test', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, code, source: 'ai' })
@@ -830,7 +881,7 @@ async function runAllTests() {
         return;
     }
 
-    const response = await fetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
+    const response = await authFetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
     const tests = await response.json();
 
     if (tests.length === 0) {
@@ -1052,7 +1103,7 @@ async function restoreTabsState() {
                     }
                     // Handle AI step restoration
                     else if (tabInfo.fileType === 'ai-step') {
-                        const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown?workspace_id=${currentWorkspaceId}`);
+                        const response = await authFetch(`/api/ai-steps/${tabInfo.id}/markdown?workspace_id=${currentWorkspaceId}`);
                         if (response.ok) {
                             const data = await response.json();
                             const existingTab = openTabs.find(t => t.id === tabInfo.id);
@@ -1069,7 +1120,7 @@ async function restoreTabsState() {
                     }
                     // Handle regular test file restoration
                     else {
-                        const response = await fetch(`/api/saved-tests/${tabInfo.id}?workspace_id=${currentWorkspaceId}`);
+                        const response = await authFetch(`/api/saved-tests/${tabInfo.id}?workspace_id=${currentWorkspaceId}`);
                         if (response.ok) {
                             const data = await response.json();
 
@@ -1216,11 +1267,11 @@ async function fetchTestStatistics() {
         }
 
         // Fetch saved tests for current workspace
-        const testsResponse = await fetch(`/api/workspaces/${currentWorkspaceId}/tests`);
+        const testsResponse = await authFetch(`/api/workspaces/${currentWorkspaceId}/tests`);
         const tests = await testsResponse.json();
 
         // Fetch AI steps for current workspace
-        const aiStepsResponse = await fetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
+        const aiStepsResponse = await authFetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
         const aiStepsData = await aiStepsResponse.json();
         const aiSteps = aiStepsData.ai_steps || [];
 
@@ -1323,18 +1374,18 @@ function loadFileExplorer() {
     }
 
     if (!currentWorkspaceId) {
-        fileList.innerHTML = '<div style="padding: 20px; text-align: center; color: #858585; font-size: 12px;">Select a workspace</div>';
+        fileList.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--ctp-overlay1); font-size: 12px;">Select a workspace</div>';
         return;
     }
 
-    fetch(`/api/workspaces/${currentWorkspaceId}/tests`)
+    authFetch(`/api/workspaces/${currentWorkspaceId}/tests`)
         .then(res => res.json())
         .then(data => {
             const tests = data.tests || [];
             fileList.innerHTML = '';
 
             if (tests.length === 0) {
-                fileList.innerHTML = '<div style="padding: 20px; text-align: center; color: #858585; font-size: 12px;">No saved tests</div>';
+                fileList.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--ctp-overlay1); font-size: 12px;">No saved tests</div>';
                 return;
             }
 
@@ -1366,7 +1417,7 @@ function loadFileExplorer() {
                 // Show stop button if this test is currently running, otherwise show run button
                 let runOrStopBtn = '';
                 if (currentRunningTestFilename === test.filename) {
-                    runOrStopBtn = `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: #ef4444;">⏹</button>`;
+                    runOrStopBtn = `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: var(--ctp-red);">⏹</button>`;
                 } else {
                     runOrStopBtn = `<button class="file-item-action" data-action="run" title="Run Test">▶</button>`;
                 }
@@ -1426,7 +1477,7 @@ function loadFileExplorer() {
 }
 
 function openFileFromExplorer(filename, name) {
-    fetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`)
+    authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`)
         .then(res => res.json())
         .then(data => {
             if (data && data.code) {
@@ -1441,7 +1492,7 @@ function openFileFromExplorer(filename, name) {
 function deleteFileFromExplorer(filename, name) {
     if (!confirm(`Delete "${name}"?`)) return;
 
-    fetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`, { method: 'DELETE' })
+    authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`, { method: 'DELETE' })
         .then(res => res.json())
         .then(data => {
             if (data.success) {
@@ -1502,11 +1553,11 @@ if (hasFileExplorer && explorerResizer) {
 
 // New Test Button
 if (newTestBtn) {
-    newTestBtn.addEventListener('click', () => {
-    const name = prompt('Enter test name:');
-    if (!name) return;
+    newTestBtn.addEventListener('click', async () => {
+        const name = prompt('Enter test name:');
+        if (!name) return;
 
-    const code = `from playwright.async_api import async_playwright
+        const code = `from playwright.async_api import async_playwright
 import asyncio
 
 async def run():
@@ -1520,14 +1571,25 @@ async def run():
 
 asyncio.run(run())`;
 
-    // Create a temporary filename
-    const tempId = 'new_' + Date.now();
-    openTab(tempId, name, code);
-
-        // Mark as dirty since it's not saved yet
-        const tab = openTabs.find(t => t.id === tempId);
-        if (tab) tab.isDirty = true;
-        renderTabs();
+        // Save to DB immediately
+        try {
+            const response = await authFetch('/api/save-test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, code, source: 'manual' })
+            });
+            const data = await response.json();
+            if (data.success && data.filename) {
+                openTab(data.filename, name, code);
+                lastSavedCode = code;
+                loadFileExplorer();
+                addLogEntry('success', `Created test: ${name}`);
+            } else {
+                alert('Error creating test: ' + (data.error || 'Unknown error'));
+            }
+        } catch (err) {
+            alert('Failed to create test: ' + err);
+        }
     });
 }
 
@@ -1620,11 +1682,11 @@ async function loadDashboardStats() {
         if (!currentWorkspaceId) return;
 
         // Fetch saved tests for current workspace
-        const testsResponse = await fetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
+        const testsResponse = await authFetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
         const tests = await testsResponse.json();
 
         // Fetch AI steps for current workspace
-        const aiStepsResponse = await fetch(`/api/ai-steps?workspace_id=${currentWorkspaceId}`);
+        const aiStepsResponse = await authFetch(`/api/ai-steps?workspace_id=${currentWorkspaceId}`);
         const aiSteps = await aiStepsResponse.json();
 
         // Calculate statistics
@@ -1770,7 +1832,7 @@ async function loadAiSteps() {
     }
 
     try {
-        const response = await fetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
+        const response = await authFetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
         const data = await response.json();
         const steps = data.ai_steps || [];
 
@@ -1899,7 +1961,7 @@ function runAiStep(stepId, filename, name) {
 }
 
 function openAiStepInEditor(filename, name) {
-    fetch(`/api/ai-steps/${filename}/markdown?workspace_id=${currentWorkspaceId}`)
+    authFetch(`/api/ai-steps/${filename}/markdown?workspace_id=${currentWorkspaceId}`)
         .then(res => res.json())
         .then(data => {
             if (data.markdown) {
@@ -1958,7 +2020,7 @@ function showTestResultsModal(total, passed, failed, duration) {
     // Load video if available from the last completed test
     const lastTest = batchRunResults[batchRunResults.length - 1];
     if (lastTest && lastTest.filename) {
-        fetch(`/api/saved-tests/${lastTest.filename}/artifacts?workspace_id=${currentWorkspaceId}`)
+        authFetch(`/api/saved-tests/${lastTest.filename}/artifacts?workspace_id=${currentWorkspaceId}`)
             .then(res => res.json())
             .then(artifacts => {
                 if (artifacts.length > 0) {
@@ -1974,91 +2036,98 @@ function showTestResultsModal(total, passed, failed, duration) {
     modal.style.display = 'block';
 }
 
-function showVideoInModal(videoPath) {
+async function showVideoInModal(videoPath) {
     const videoContainer = document.getElementById('test-video-container');
     const videoSource = document.getElementById('test-video-source');
     const videoPlayer = document.getElementById('test-video-player');
     const noVideoMessage = document.getElementById('no-video-message');
     const downloadBtn = document.getElementById('download-video-btn');
 
-    videoSource.src = `/api/artifacts/${videoPath}`;
-    videoPlayer.load();
+    // Fetch signed URL from server
+    try {
+        const resp = await authFetch(`/api/artifacts/${videoPath}`);
+        if (!resp.ok) {
+            console.error('Failed to get signed URL');
+            return;
+        }
+        const data = await resp.json();
+        const signedUrl = data.url;
 
-    videoContainer.style.display = 'block';
-    noVideoMessage.style.display = 'none';
+        videoPlayer.src = signedUrl;
 
-    // Setup download button
-    downloadBtn.onclick = () => {
-        const a = document.createElement('a');
-        a.href = `/api/artifacts/${videoPath}`;
-        a.download = videoPath.split('/').pop();
-        a.click();
-    };
+        videoContainer.style.display = 'block';
+        noVideoMessage.style.display = 'none';
+
+        downloadBtn.onclick = () => {
+            const a = document.createElement('a');
+            a.href = signedUrl;
+            a.download = videoPath.split('/').pop();
+            a.click();
+        };
+    } catch (err) {
+        console.error('Failed to load video:', err);
+    }
 }
 
-function showVideoViewerModal(filename, testName) {
+async function showVideoViewerModal(filename, testName) {
     const modal = document.getElementById('video-viewer-modal');
     const title = document.getElementById('video-viewer-title');
+    const loading = document.getElementById('video-viewer-loading');
     const videoContainer = document.getElementById('video-viewer-container');
     const noRecording = document.getElementById('video-viewer-no-recording');
-    const videoSource = document.getElementById('video-viewer-source');
     const videoPlayer = document.getElementById('video-viewer-player');
     const timestampElem = document.getElementById('video-viewer-timestamp');
     const sizeElem = document.getElementById('video-viewer-size');
     const downloadBtn = document.getElementById('video-viewer-download-btn');
 
+    // Show modal immediately with loading state
     title.textContent = `📹 ${testName}`;
+    loading.style.display = '';
+    videoContainer.style.display = 'none';
+    noRecording.style.display = 'none';
+    videoPlayer.removeAttribute('src');
+    modal.style.display = 'block';
 
-    // Fetch artifacts for this test using workspace-scoped endpoint
-    fetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}/artifacts`)
-        .then(res => res.json())
-        .then(artifacts => {
-            // Filter out artifacts without valid video paths
-            const validArtifacts = artifacts.filter(a => a.video_path && a.video_path !== 'null');
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}/artifacts`);
+        const artifacts = await res.json();
+        const validArtifacts = artifacts.filter(a => a.video_url);
 
-            if (validArtifacts.length > 0) {
-                // Show the latest recording with a valid video
-                const latestArtifact = validArtifacts[validArtifacts.length - 1];
-
-                videoSource.src = `/api/artifacts/${latestArtifact.video_path}`;
-                videoPlayer.load();
-
-                // Autoplay video when it's ready
-                videoPlayer.oncanplay = () => {
-                    videoPlayer.play().catch(err => {
-                        console.log('Autoplay prevented:', err);
-                        // Autoplay might be blocked by browser, user can click play
-                    });
-                };
-
-                // Show recording info
-                timestampElem.textContent = `Recorded: ${latestArtifact.timestamp.replace('_', ' at ').replace(/-/g, '/')}`;
-                sizeElem.textContent = `Size: ${latestArtifact.video_size_mb} MB | Status: ${latestArtifact.status}`;
-
-                // Setup download button
-                downloadBtn.onclick = () => {
-                    const a = document.createElement('a');
-                    a.href = `/api/artifacts/${latestArtifact.video_path}`;
-                    a.download = latestArtifact.video_path.split('/').pop();
-                    a.click();
-                };
-
-                videoContainer.style.display = 'block';
-                noRecording.style.display = 'none';
-            } else {
-                // No valid recordings available
-                videoContainer.style.display = 'none';
-                noRecording.style.display = 'block';
-            }
-
-            modal.style.display = 'block';
-        })
-        .catch(err => {
-            console.error('Error loading artifacts:', err);
-            videoContainer.style.display = 'none';
+        if (validArtifacts.length === 0) {
+            loading.style.display = 'none';
             noRecording.style.display = 'block';
-            modal.style.display = 'block';
-        });
+            return;
+        }
+
+        const latestArtifact = validArtifacts[0];
+        const signedUrl = latestArtifact.video_url;
+
+        // Set video source and wait for it to be playable
+        videoPlayer.src = signedUrl;
+        videoPlayer.oncanplay = () => {
+            loading.style.display = 'none';
+            videoContainer.style.display = 'block';
+            videoPlayer.play().catch(() => {});
+        };
+        videoPlayer.onerror = () => {
+            loading.style.display = 'none';
+            noRecording.style.display = 'block';
+        };
+
+        // Show info and download button immediately (don't wait for video decode)
+        timestampElem.textContent = `Recorded: ${latestArtifact.timestamp.replace('_', ' at ').replace(/-/g, '/')}`;
+        sizeElem.textContent = `Size: ${latestArtifact.video_size_mb} MB | Status: ${latestArtifact.status}`;
+        downloadBtn.onclick = () => {
+            const a = document.createElement('a');
+            a.href = signedUrl;
+            a.download = latestArtifact.video_path.split('/').pop();
+            a.click();
+        };
+    } catch (err) {
+        console.error('Error loading artifacts:', err);
+        loading.style.display = 'none';
+        noRecording.style.display = 'block';
+    }
 }
 
 async function saveAiStep() {
@@ -2076,7 +2145,7 @@ async function saveAiStep() {
         : '/api/ai-steps';
 
     try {
-        const response = await fetch(url, {
+        const response = await authFetch(url, {
             method,
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({name, steps})
@@ -2098,7 +2167,7 @@ async function deleteAiStep(filename, name) {
     if (!confirm(`Delete AI step "${name}"?`)) return;
 
     try {
-        const response = await fetch(`/api/ai-steps/${filename}?workspace_id=${currentWorkspaceId}`, {
+        const response = await authFetch(`/api/ai-steps/${filename}?workspace_id=${currentWorkspaceId}`, {
             method: 'DELETE'
         });
 
@@ -2398,7 +2467,7 @@ async function formatCode() {
     if (!code.trim()) return;
 
     try {
-        const response = await fetch('/api/format-code', {
+        const response = await authFetch('/api/format-code', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -2850,14 +2919,14 @@ function appendChatMessage(type, content, isCode = false) {
 
         // Add code header
         const codeHeader = document.createElement('div');
-        codeHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #2d2d2d; border-bottom: 1px solid #1e1e1e;';
-        codeHeader.innerHTML = '<span style="font-size: 11px; color: #858585; text-transform: uppercase; letter-spacing: 0.5px;">Python</span>';
+        codeHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--ctp-surface0); border-bottom: 1px solid var(--ctp-base);';
+        codeHeader.innerHTML = '<span style="font-size: 11px; color: var(--ctp-overlay1); text-transform: uppercase; letter-spacing: 0.5px;">Python</span>';
 
         // Add copy button
         const copyBtn = document.createElement('button');
         copyBtn.innerHTML = '📋';
-        copyBtn.style.cssText = 'background: transparent; border: none; color: #858585; cursor: pointer; padding: 2px 6px; border-radius: 3px; font-size: 12px;';
-        copyBtn.onmouseover = () => copyBtn.style.background = '#3c3c3c';
+        copyBtn.style.cssText = 'background: transparent; border: none; color: var(--ctp-overlay1); cursor: pointer; padding: 2px 6px; border-radius: 3px; font-size: 12px;';
+        copyBtn.onmouseover = () => copyBtn.style.background = 'var(--ctp-surface1)';
         copyBtn.onmouseout = () => copyBtn.style.background = 'transparent';
         copyBtn.onclick = () => {
             navigator.clipboard.writeText(content);
@@ -3027,7 +3096,7 @@ function highlightCodeDiff() {
     if (!pendingCodeSuggestion.currentCode) {
         const contentType = pendingCodeSuggestion.contentType || 'code';
         const emptyMessage = contentType === 'steps' ? 'No existing steps in editor' : 'No existing code in editor';
-        currentHtml = `<div style="color: #858585; font-style: italic;">${emptyMessage}</div>`;
+        currentHtml = `<div style="color: var(--ctp-overlay1); font-style: italic;">${emptyMessage}</div>`;
     }
 
     codePreviewCurrent.innerHTML = currentHtml;
@@ -3222,31 +3291,39 @@ function handleImageFile(file) {
 // ========== AUTHENTICATION FUNCTIONS ==========
 
 function showLoginModal() {
-    loginModal.style.display = 'block';
-    registerModal.style.display = 'none';
-    loginError.style.display = 'none';
-    loginForm.reset();
+    authPage.classList.remove('hidden');
+    document.querySelector('.vscode-layout').classList.add('auth-hidden');
+    switchAuthTab('login');
 }
 
 function showRegisterModal() {
-    registerModal.style.display = 'block';
-    loginModal.style.display = 'none';
-    registerError.style.display = 'none';
-    registerForm.reset();
+    authPage.classList.remove('hidden');
+    document.querySelector('.vscode-layout').classList.add('auth-hidden');
+    switchAuthTab('register');
 }
 
 function hideAuthModals() {
-    loginModal.style.display = 'none';
-    registerModal.style.display = 'none';
+    authPage.classList.add('hidden');
+    document.querySelector('.vscode-layout').classList.remove('auth-hidden');
+}
+
+function switchAuthTab(tab) {
+    authTabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    authTabsContainer.dataset.active = tab;
+    loginForm.classList.toggle('active', tab === 'login');
+    registerForm.classList.toggle('active', tab === 'register');
+    loginError.style.display = 'none';
+    registerError.style.display = 'none';
 }
 
 async function checkAuthentication() {
     try {
-        const response = await fetch('/api/check-auth');
+        const response = await authFetch('/api/check-auth');
         const data = await response.json();
 
         if (data.authenticated) {
             currentUser = data.user;
+            hideAuthModals();
             await loadUserWorkspaces();
             return true;
         } else {
@@ -3262,7 +3339,7 @@ async function checkAuthentication() {
 
 async function loadUserWorkspaces() {
     try {
-        const response = await fetch('/api/current-user');
+        const response = await authFetch('/api/current-user');
         if (!response.ok) {
             if (response.status === 401) {
                 showLoginModal();
@@ -3344,9 +3421,17 @@ async function handleLogin(event) {
         const data = await response.json();
 
         if (response.ok) {
+            // Store JWT tokens
+            storeTokens(data.access_token, data.refresh_token);
+
             currentUser = data.user;
             hideAuthModals();
             addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
+
+            // Reconnect socket with the new authenticated token
+            socket.io.opts.query = { token: authToken };
+            socket.disconnect();
+            socket.connect();
 
             // Update username display
             if (currentUsernameEl) {
@@ -3405,9 +3490,17 @@ async function handleRegister(event) {
         const data = await response.json();
 
         if (response.ok) {
+            // Store JWT tokens
+            storeTokens(data.access_token, data.refresh_token);
+
             currentUser = data.user;
             hideAuthModals();
             addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
+
+            // Connect socket with the new authenticated token
+            socket.io.opts.query = { token: authToken };
+            socket.disconnect();
+            socket.connect();
 
             // Update username display
             if (currentUsernameEl) {
@@ -3441,28 +3534,11 @@ async function handleRegister(event) {
     }
 }
 
-// Event listeners for auth modals
+// Event listeners for auth page
 if (loginForm) loginForm.addEventListener('submit', handleLogin);
 if (registerForm) registerForm.addEventListener('submit', handleRegister);
-if (closeLoginBtn) closeLoginBtn.addEventListener('click', () => loginModal.style.display = 'none');
-if (closeRegisterBtn) closeRegisterBtn.addEventListener('click', () => registerModal.style.display = 'none');
-if (showRegisterBtn) showRegisterBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    showRegisterModal();
-});
-if (showLoginBtn) showLoginBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    showLoginModal();
-});
-
-// Close modals when clicking outside
-window.addEventListener('click', (event) => {
-    if (event.target === loginModal) {
-        loginModal.style.display = 'none';
-    }
-    if (event.target === registerModal) {
-        registerModal.style.display = 'none';
-    }
+authTabs.forEach(tab => {
+    tab.addEventListener('click', () => switchAuthTab(tab.dataset.tab));
 });
 
 // ========== END AUTHENTICATION FUNCTIONS ==========
@@ -3471,7 +3547,7 @@ window.addEventListener('click', (event) => {
 
 async function loadWorkspaces() {
     try {
-        const response = await fetch('/api/workspaces');
+        const response = await authFetch('/api/workspaces');
         if (!response.ok) {
             throw new Error('Failed to load workspaces');
         }
@@ -3479,8 +3555,14 @@ async function loadWorkspaces() {
         const data = await response.json();
         userWorkspaces = data.workspaces;
 
-        // Update dropdown
-        workspaceDropdown.innerHTML = '';
+        // Show first-workspace modal if user has none
+        if (!userWorkspaces || userWorkspaces.length === 0) {
+            showFirstWorkspaceModal();
+            return;
+        }
+
+        // Update dropdown - safe since option values come from server data
+        while (workspaceDropdown.firstChild) workspaceDropdown.removeChild(workspaceDropdown.firstChild);
         userWorkspaces.forEach(workspace => {
             const option = document.createElement('option');
             option.value = workspace.id;
@@ -3519,6 +3601,7 @@ async function loadWorkspaces() {
             }
             // Persist the selection so it survives page reloads and re-login
             localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
+            savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
         }
 
         // Select current workspace
@@ -3536,7 +3619,7 @@ async function loadWorkspaceDetails() {
     if (!currentWorkspaceId) return;
 
     try {
-        const response = await fetch(`/api/workspaces/${currentWorkspaceId}`);
+        const response = await authFetch(`/api/workspaces/${currentWorkspaceId}`);
         if (!response.ok) {
             throw new Error('Failed to load workspace details');
         }
@@ -3562,7 +3645,7 @@ function displayWorkspaceMembers(members) {
 
     if (members.length === 0) {
         const emptyMsg = document.createElement('div');
-        emptyMsg.style.cssText = 'color: #858585; font-size: 12px; padding: 8px;';
+        emptyMsg.style.cssText = 'color: var(--ctp-overlay1); font-size: 12px; padding: 8px;';
         emptyMsg.textContent = 'No members yet';
         workspaceMembersList.appendChild(emptyMsg);
         return;
@@ -3571,16 +3654,16 @@ function displayWorkspaceMembers(members) {
     members.forEach(member => {
         const memberEl = document.createElement('div');
         memberEl.className = 'workspace-member-item';
-        memberEl.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid #2d2d30;';
+        memberEl.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--ctp-surface0);';
 
         const infoDiv = document.createElement('div');
 
         const nameDiv = document.createElement('div');
-        nameDiv.style.cssText = 'font-size: 13px; color: #cccccc;';
+        nameDiv.style.cssText = 'font-size: 13px; color: var(--ctp-text);';
         nameDiv.textContent = member.username;
 
         const roleDiv = document.createElement('div');
-        roleDiv.style.cssText = 'font-size: 11px; color: #858585;';
+        roleDiv.style.cssText = 'font-size: 11px; color: var(--ctp-overlay1);';
         roleDiv.textContent = member.role;
 
         infoDiv.appendChild(nameDiv);
@@ -3604,8 +3687,9 @@ function displayWorkspaceMembers(members) {
 async function switchWorkspace(workspaceId) {
     currentWorkspaceId = parseInt(workspaceId);
 
-    // Save selected workspace to localStorage
+    // Save selected workspace to localStorage and DB
     localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
+    savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
 
     await loadWorkspaceDetails();
 
@@ -3618,6 +3702,21 @@ async function switchWorkspace(workspaceId) {
     addLogEntry('info', `Switched to workspace: ${currentWorkspace.name}`);
 }
 
+let _isFirstWorkspaceFlow = false;
+
+function showFirstWorkspaceModal() {
+    _isFirstWorkspaceFlow = true;
+    // Pre-fill with a sensible default
+    document.getElementById('workspace-name').value = `${currentUser.username}'s Workspace`;
+    // Update modal header for first-time flow
+    const header = newWorkspaceModal.querySelector('.modal-header h2');
+    if (header) header.textContent = 'Welcome! Create your first workspace';
+    // Hide cancel/close buttons so user must create one
+    closeNewWorkspaceBtns.forEach(btn => btn.style.display = 'none');
+    newWorkspaceError.style.display = 'none';
+    newWorkspaceModal.style.display = 'block';
+}
+
 async function createWorkspace(event) {
     event.preventDefault();
 
@@ -3625,7 +3724,7 @@ async function createWorkspace(event) {
     const type = document.getElementById('workspace-type').value;
 
     try {
-        const response = await fetch('/api/workspaces', {
+        const response = await authFetch('/api/workspaces', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, type })
@@ -3636,7 +3735,16 @@ async function createWorkspace(event) {
         if (response.ok) {
             newWorkspaceModal.style.display = 'none';
             newWorkspaceForm.reset();
-            addLogEntry('info', `✓ Created workspace: ${name}`);
+
+            // Restore cancel/close buttons and header for future use
+            if (_isFirstWorkspaceFlow) {
+                _isFirstWorkspaceFlow = false;
+                closeNewWorkspaceBtns.forEach(btn => btn.style.display = '');
+                const header = newWorkspaceModal.querySelector('.modal-header h2');
+                if (header) header.textContent = 'Create New Workspace';
+            }
+
+            addLogEntry('info', `Created workspace: ${name}`);
 
             // Reload workspaces
             await loadWorkspaces();
@@ -3661,7 +3769,7 @@ async function inviteMember(event) {
     const role = document.getElementById('invite-role').value;
 
     try {
-        const response = await fetch(`/api/workspaces/${currentWorkspaceId}/members`, {
+        const response = await authFetch(`/api/workspaces/${currentWorkspaceId}/members`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, role })
@@ -3693,7 +3801,7 @@ async function removeMember(userId) {
     }
 
     try {
-        const response = await fetch(`/api/workspaces/${currentWorkspaceId}/members/${userId}`, {
+        const response = await authFetch(`/api/workspaces/${currentWorkspaceId}/members/${userId}`, {
             method: 'DELETE'
         });
 
@@ -3712,18 +3820,17 @@ async function removeMember(userId) {
 
 async function handleLogout() {
     try {
-        const response = await fetch('/api/logout', { method: 'POST' });
-
-        if (response.ok) {
-            currentUser = null;
-            currentWorkspaceId = null;
-            userWorkspaces = [];
-            showLoginModal();
-            addLogEntry('info', '👋 Logged out successfully');
-        }
+        await authFetch('/api/logout', { method: 'POST' });
     } catch (error) {
         console.error('Logout error:', error);
     }
+    // Always clear tokens and state regardless of server response
+    clearTokens();
+    currentUser = null;
+    currentWorkspaceId = null;
+    userWorkspaces = [];
+    showLoginModal();
+    addLogEntry('info', '👋 Logged out successfully');
 }
 
 // Event listeners for workspace management
@@ -3751,15 +3858,55 @@ closeInviteMemberBtns.forEach(btn => {
 
 // ========== END WORKSPACE MANAGEMENT FUNCTIONS ==========
 
+// ========== THEME MANAGEMENT ==========
+const VALID_THEMES = ['mocha', 'macchiato', 'frappe', 'latte'];
+
+function applyTheme(themeName) {
+    if (!VALID_THEMES.includes(themeName)) themeName = 'mocha';
+    document.documentElement.setAttribute('data-theme', themeName);
+    document.querySelectorAll('.theme-option').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.theme === themeName);
+    });
+}
+
+function initThemePicker() {
+    const savedTheme = localStorage.getItem('theme') || 'mocha';
+    applyTheme(savedTheme);
+
+    document.querySelectorAll('.theme-option').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const theme = btn.dataset.theme;
+            applyTheme(theme);
+            localStorage.setItem('theme', theme);
+            savePreferenceToDb('theme', theme);
+        });
+    });
+}
+
+async function restoreThemeFromDb() {
+    const dbPrefs = await loadPreferencesFromDb();
+    if (dbPrefs && dbPrefs.theme && VALID_THEMES.includes(dbPrefs.theme)) {
+        applyTheme(dbPrefs.theme);
+        localStorage.setItem('theme', dbPrefs.theme);
+    }
+}
+// ========== END THEME MANAGEMENT ==========
+
 // Load default example on page load
 window.addEventListener('load', async () => {
+    // Initialize theme picker (apply saved theme from localStorage immediately)
+    initThemePicker();
+
     // Check authentication first
     const isAuthenticated = await checkAuthentication();
 
     if (!isAuthenticated) {
-        // Don't proceed with loading if not authenticated
+        dismissLoadingOverlay();
         return;
     }
+
+    // Restore theme from DB (may override localStorage if DB has a different value)
+    restoreThemeFromDb();
 
     addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
     addLogEntry('info', '🤖 Create AI Steps in the file explorer to run natural language tests');
@@ -3783,4 +3930,6 @@ window.addEventListener('load', async () => {
     if (openTabs.length === 0) {
         openDashboardTab();
     }
+
+    dismissLoadingOverlay();
 });

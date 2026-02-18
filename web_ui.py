@@ -5,7 +5,7 @@ Provides a browser interface to write and run tests, watch browser automation li
 
 import asyncio
 import base64
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from datetime import datetime
 import json
@@ -28,8 +28,16 @@ import config
 from config import Config
 
 # Import multi-user modules
+<<<<<<< ours
+import db
+from auth import init_auth, login_required, get_current_user
+||||||| ancestor
+from models import init_db, get_db_session, close_db_session, Test, TestSource, Workspace
+from auth import init_auth
+=======
 import db
 from auth import init_auth
+>>>>>>> theirs
 from decorators import workspace_access_required, workspace_owner_required
 
 app = Flask(__name__)
@@ -39,34 +47,13 @@ app.config.from_object(Config)
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-# Initialize database
-print("Initializing database...")
-os.makedirs(Config.USER_DATA_PATH, exist_ok=True)
-os.makedirs(os.path.join(Config.USER_DATA_PATH, 'workspaces'), exist_ok=True)
-init_db(Config.DATABASE_URL)
-
 # Initialize authentication
 print("Initializing authentication...")
 init_auth(app)
 
-# Cleanup database connections on app shutdown
-@app.teardown_appcontext
-def shutdown_session(exception=None):
-    close_db_session()
-
 
 # ========== WORKSPACE HELPER FUNCTIONS ==========
-
-def get_workspace_path(workspace_id: int) -> Path:
-    """Get the base path for a workspace."""
-    return Path(Config.USER_DATA_PATH) / 'workspaces' / str(workspace_id)
-
-
-def get_workspace_artifacts_dir(workspace_id: int) -> Path:
-    """Get the artifacts directory for a workspace."""
-    return get_workspace_path(workspace_id) / 'artifacts'
-
-
+# (Workspace paths removed — artifacts now stored in Supabase Storage)
 # ========== END WORKSPACE HELPER FUNCTIONS ==========
 
 # Initialize code generation agent
@@ -503,20 +490,13 @@ async def run_test_async(task: str, test_filename: str = None, workspace_id: int
 
     if saved_test_filename:
         from pathlib import Path
-        test_name = Path(saved_test_filename).stem
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        # Use workspace-scoped directory if workspace_id provided
-        if saved_workspace_id:
-            workspace_path = get_workspace_path(saved_workspace_id)
-            artifact_dir = workspace_path / "test_artifacts" / test_name / timestamp
-        else:
-            # Fallback to global directory
-            artifact_dir = Path(__file__).parent / "test_artifacts" / test_name / timestamp
-
+        # Use a temp directory for Playwright recording (uploaded to Supabase Storage later)
+        artifact_dir = Path(tempfile.mkdtemp(prefix='awt_')) / timestamp
         artifact_dir.mkdir(parents=True, exist_ok=True)
         video_dir = str(artifact_dir)
-        socketio.emit('log', {'type': 'info', 'message': f'📹 Video recording enabled to: {video_dir}'})
+        socketio.emit('log', {'type': 'info', 'message': f'📹 Video recording enabled'})
 
     try:
         # Initialize browser with screenshots and optional video recording
@@ -957,27 +937,23 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         print(f"🎬 Filename provided: {filename}, workspace_id: {workspace_id}")
         from pathlib import Path
         from datetime import datetime
-        test_name = Path(filename).stem
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        # Use workspace-scoped directory if workspace_id provided
-        if workspace_id:
-            workspace_path = get_workspace_path(workspace_id)
-            artifact_dir = workspace_path / "test_artifacts" / test_name / timestamp
-        else:
-            # Fallback to global directory
-            artifact_dir = Path(__file__).parent / "test_artifacts" / test_name / timestamp
-
+        # Use a temp directory for Playwright recording (uploaded to Supabase Storage later)
+        artifact_dir = Path(tempfile.mkdtemp(prefix='awt_')) / timestamp
         artifact_dir.mkdir(parents=True, exist_ok=True)
         video_dir = str(artifact_dir)
         print(f"📹 Video directory created: {video_dir}")
-        socketio.emit('log', {'type': 'info', 'message': f'📹 Video recording enabled to: {video_dir}'})
+        socketio.emit('log', {'type': 'info', 'message': f'📹 Video recording enabled'})
     else:
         print("⚠️  No filename provided - video recording disabled")
 
     async def execute_with_auto_streaming():
         """Execute code with automatic screenshot streaming after each action."""
         from playwright.async_api import async_playwright
+
+        # Track all created browser wrappers for cleanup
+        _all_browsers = []
 
         # Screenshot helper that will be available in user's code
         async def send_screenshot(page, action_name='action'):
@@ -1125,6 +1101,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 self._browser = browser
                 self._default_context = default_context
                 self._contexts = []
+                self._closed = False
 
             async def new_page(self):
                 """Create new page with screenshot wrapper."""
@@ -1153,6 +1130,9 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
 
             async def close(self):
                 """Close all contexts and browser."""
+                if self._closed:
+                    return
+                self._closed = True
                 print("🔴 BrowserWrapper.close() called - saving videos...")
                 # Close all contexts first (to save videos)
                 for ctx in self._contexts:
@@ -1221,7 +1201,9 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                     raw_context = await browser.new_context(**context_options)
                     default_context = ContextWrapper(raw_context)
 
-                return BrowserWrapper(browser, default_context)
+                wrapped_browser = BrowserWrapper(browser, default_context)
+                _all_browsers.append(wrapped_browser)
+                return wrapped_browser
 
             def __getattr__(self, name):
                 return getattr(self._launcher, name)
@@ -1238,6 +1220,12 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
 
             async def __aexit__(self, *args):
                 print("🎭 async_playwright_wrapper.__aexit__() called")
+                # Ensure all browser contexts are closed first (finalizes video files)
+                for bw in _all_browsers:
+                    try:
+                        await bw.close()
+                    except Exception as e:
+                        print(f"  ⚠️ Error closing browser in __aexit__: {e}")
                 return await self._playwright_context.__aexit__(*args)
 
         try:
@@ -1402,36 +1390,14 @@ def index():
 
 # ========== WORKSPACE MANAGEMENT API ENDPOINTS ==========
 
-from flask_login import login_required, current_user
-from models import Workspace, WorkspaceMember, WorkspaceRole, WorkspaceType, User
-
-
 @app.route('/api/workspaces', methods=['GET'])
 @login_required
 def get_workspaces():
     """Get all workspaces accessible to current user (owned + shared)."""
     try:
-        db = get_db_session()
-
-        # Get owned workspaces
-        owned_workspaces = db.query(Workspace).filter(
-            Workspace.owner_id == current_user.id
-        ).all()
-
-        # Get shared workspaces (where user is a member)
-        shared_workspaces = db.query(Workspace).join(
-            WorkspaceMember
-        ).filter(
-            WorkspaceMember.user_id == current_user.id
-        ).all()
-
-        # Combine and deduplicate
-        all_workspaces = {w.id: w for w in owned_workspaces + shared_workspaces}.values()
-
-        return jsonify({
-            'workspaces': [w.to_dict(include_members=True) for w in all_workspaces]
-        }), 200
-
+        user = get_current_user()
+        workspaces = db.get_workspaces_for_user(user['id'])
+        return jsonify({'workspaces': workspaces}), 200
     except Exception as e:
         print(f"Error getting workspaces: {e}")
         return jsonify({'error': 'Failed to get workspaces'}), 500
@@ -1696,11 +1662,25 @@ def delete_workspace_test(workspace_id, filename):
 @login_required
 @workspace_access_required(permission='read')
 def get_workspace_test_artifacts(workspace_id, filename):
-    """Get list of artifacts for a test in a workspace."""
+    """Get list of artifacts for a test in a workspace, with signed video URLs."""
+    from storage import get_signed_url
     try:
         artifacts = db.get_test_artifacts(workspace_id, filename)
         if artifacts is None:
             return jsonify({'error': 'Test not found'}), 404
+<<<<<<< ours
+        # Inline signed URLs so the client doesn't need a second round trip
+        for a in artifacts:
+            if a.get('video_path'):
+                a['video_url'] = get_signed_url(a['video_path'])
+||||||| ancestor
+
+        with open(filepath, 'r') as f:
+            test_data = json.load(f)
+
+        artifacts = test_data.get('artifacts', [])
+=======
+>>>>>>> theirs
         return jsonify(artifacts), 200
     except Exception as e:
         print(f"Error getting test artifacts: {e}")
@@ -1813,12 +1793,12 @@ def save_test():
     if not name or not code:
         return jsonify({'error': 'Name and code required'}), 400
 
-    ws_id = data_access.get_default_workspace_id(current_user.id)
+    ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'No workspace found'}), 400
 
     try:
-        result = data_access.create_test(ws_id, name, code, source, current_user.id)
+        result = db.create_test(ws_id, name, code, source, get_current_user()['id'])
         return jsonify({'success': True, 'filename': result['filename']})
     except ValueError as e:
         return jsonify({'error': str(e)}), 409
@@ -1838,6 +1818,20 @@ def get_saved_tests():
     return jsonify(tests)
 
 
+<<<<<<< ours
+@app.route('/api/recent-recordings')
+@login_required
+def get_recent_recordings():
+    """Get recent video recordings for the current workspace."""
+    ws_id = _get_workspace_id()
+    if not ws_id:
+        return jsonify([])
+    recordings = db.get_recent_recordings(ws_id)
+    return jsonify(recordings)
+
+
+||||||| ancestor
+=======
 @app.route('/api/recent-recordings')
 @login_required
 def get_recent_recordings():
@@ -1849,6 +1843,7 @@ def get_recent_recordings():
     return jsonify(recordings)
 
 
+>>>>>>> theirs
 @app.route('/api/saved-tests/<filename>', methods=['GET'])
 @login_required
 def get_saved_test(filename):
@@ -1867,7 +1862,7 @@ def get_saved_test(filename):
 def update_saved_test(filename):
     """Update a saved test."""
     data = request.json
-    ws_id = data_access.get_default_workspace_id(current_user.id)
+    ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'Test not found'}), 404
 
@@ -1945,12 +1940,12 @@ def save_ai_step():
     if not name or not steps:
         return jsonify({'error': 'Name and steps required'}), 400
 
-    ws_id = data_access.get_default_workspace_id(current_user.id)
+    ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'No workspace found'}), 400
 
     try:
-        result = data_access.create_ai_step(ws_id, name, steps, current_user.id)
+        result = db.create_ai_step(ws_id, name, steps, get_current_user()['id'])
         return jsonify(result)
     except ValueError as e:
         return jsonify({'error': str(e)}), 409
@@ -1977,7 +1972,7 @@ def get_ai_step(filename):
 def update_ai_step(filename):
     """Update an existing AI step test."""
     data = request.json
-    ws_id = data_access.get_default_workspace_id(current_user.id)
+    ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'AI step not found'}), 404
 
@@ -2038,25 +2033,18 @@ def update_ai_step_markdown(filename):
 
 
 @app.route('/api/artifacts/<path:filepath>')
+@login_required
 def serve_artifact(filepath):
-    """Serve test artifact files (videos, HAR, traces)."""
-    artifact_path = Path(__file__).parent / filepath
+    """Return a signed URL for a test artifact in Supabase Storage."""
+    from storage import get_signed_url
 
-    # Security: Ensure path is within allowed directories
-    try:
-        artifact_path = artifact_path.resolve()
-        base_path = (Path(__file__).parent / "test_artifacts").resolve()
-        user_data_path = (Path(__file__).parent / Config.USER_DATA_PATH).resolve()
-        if not (str(artifact_path).startswith(str(base_path)) or
-                str(artifact_path).startswith(str(user_data_path))):
-            return jsonify({'error': 'Invalid path'}), 403
-    except Exception:
-        return jsonify({'error': 'Invalid path'}), 400
-
-    if not artifact_path.exists():
+    print(f"[serve_artifact] filepath={filepath}")
+    signed_url = get_signed_url(filepath)
+    print(f"[serve_artifact] signed_url={'OK' if signed_url else 'None'}")
+    if not signed_url:
         return jsonify({'error': 'Artifact not found'}), 404
 
-    return send_file(artifact_path)
+    return jsonify({'url': signed_url}), 200
 
 
 @app.route('/api/saved-tests/<filename>/artifacts')
@@ -2152,6 +2140,8 @@ def handle_run_saved_test(data):
     """Handle running a saved Playwright test (no AI needed)."""
     filename = data.get('filename')
     workspace_id = data.get('workspaceId')
+    if workspace_id is not None:
+        workspace_id = int(workspace_id)
 
     if not filename:
         emit('log', {'type': 'error', 'message': 'No test specified'})
@@ -2375,11 +2365,39 @@ def handle_clear_chat():
 def handle_connect():
     """Handle client connection."""
     # Check if user is authenticated
-    if not current_user.is_authenticated:
+    # Validate JWT from socket auth params
+    # Flask-SocketIO passes the client's `auth` dict via request.args (query) or request headers
+    token = request.args.get('token')
+    if not token:
+        # Also check Authorization header (some clients send it there)
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+
+    if not token:
         emit('log', {'type': 'error', 'message': 'Authentication required'})
         return False  # Reject connection
 
-    emit('log', {'type': 'info', 'message': f'Connected to AutoGen Web Tester (User: {current_user.username})'})
+    # Validate token and get user
+    try:
+        from supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        auth_response = sb.auth.get_user(token)
+        supabase_user = auth_response.user
+        if not supabase_user:
+            emit('log', {'type': 'error', 'message': 'Authentication required'})
+            return False
+
+        user = db.get_user_by_id(supabase_user.id)
+        if not user:
+            emit('log', {'type': 'error', 'message': 'Authentication required'})
+            return False
+
+        emit('log', {'type': 'info', 'message': f'Connected to AutoGen Web Tester (User: {user["username"]})'})
+    except Exception as e:
+        print(f"Socket auth error: {e}")
+        emit('log', {'type': 'error', 'message': 'Authentication required'})
+        return False
 
 
 if __name__ == '__main__':

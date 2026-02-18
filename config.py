@@ -36,35 +36,23 @@ MAX_ARTIFACT_SIZE_MB = int(os.getenv("MAX_ARTIFACT_SIZE_MB", "500"))  # Fail if 
 
 # Multi-User Configuration
 class Config:
-    """Flask application configuration for multi-user support."""
+    """Flask application configuration."""
 
-    # Database
-    DATABASE_URL = os.getenv(
-        "DATABASE_URL",
-        "sqlite:///user_data/autogen_tester.db"
-    )
+    # Supabase
+    SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+    SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+    SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "test-artifacts")
 
-    # User data storage path (for workspaces, tests, artifacts)
-    USER_DATA_PATH = os.getenv("USER_DATA_PATH", "user_data")
-
-    # Flask Secret Key (for sessions, CSRF protection)
+    # Flask Secret Key (for CSRF protection)
     SECRET_KEY = os.getenv("SECRET_KEY")
     if not SECRET_KEY:
-        # Generate random key if not set (WARNING: sessions will reset on restart)
         SECRET_KEY = secrets.token_hex(32)
         print("WARNING: SECRET_KEY not set in .env - using temporary random key")
-        print("Sessions will be invalidated on server restart!")
-        print(f"Add to .env: SECRET_KEY={SECRET_KEY}")
-
-    # Session Configuration
-    SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
-    SESSION_COOKIE_HTTPONLY = True  # Prevent XSS
-    SESSION_COOKIE_SAMESITE = 'Lax'  # CSRF protection
-    PERMANENT_SESSION_LIFETIME = int(os.getenv("PERMANENT_SESSION_LIFETIME", "604800"))  # 7 days
 
     # CSRF Protection
     WTF_CSRF_ENABLED = True
-    WTF_CSRF_TIME_LIMIT = None  # No time limit for CSRF tokens
+    WTF_CSRF_TIME_LIMIT = None
 
     # Rate Limiting (optional, for production)
     RATELIMIT_ENABLED = os.getenv("RATELIMIT_ENABLED", "false").lower() == "true"
