@@ -1639,61 +1639,52 @@ async function loadDashboardStats() {
         document.getElementById('dashboard-failed').textContent = failedTests;
         document.getElementById('dashboard-ai-steps').textContent = totalAiSteps;
 
-        // Load recordings gallery
-        await loadRecordingsGallery(tests, aiSteps);
+        // Load recordings gallery from DB
+        await loadRecordingsGallery();
     } catch (error) {
         console.error('Error loading dashboard stats:', error);
     }
 }
 
-async function loadRecordingsGallery(tests, aiSteps) {
+async function loadRecordingsGallery() {
     const recordingsGallery = document.getElementById('recordings-gallery');
     const noRecordingsMessage = document.getElementById('no-recordings-message');
 
     if (!recordingsGallery) return;
 
-    // Combine tests and AI steps that have video artifacts
-    const allItems = [...tests, ...aiSteps];
-    const itemsWithVideos = allItems.filter(item =>
-        item.artifacts && item.artifacts.length > 0
-    );
+    try {
+        const response = await fetch(`/api/recent-recordings?workspace_id=${currentWorkspaceId}`);
+        const recordings = await response.json();
 
-    // Sort by most recent first
-    itemsWithVideos.sort((a, b) => {
-        const aTime = a.artifacts[a.artifacts.length - 1].timestamp;
-        const bTime = b.artifacts[b.artifacts.length - 1].timestamp;
-        return bTime.localeCompare(aTime);
-    });
+        recordingsGallery.innerHTML = '';
 
-    // Clear gallery
-    recordingsGallery.innerHTML = '';
+        if (recordings.length === 0) {
+            noRecordingsMessage.style.display = 'block';
+            recordingsGallery.style.display = 'none';
+            return;
+        }
 
-    if (itemsWithVideos.length === 0) {
-        noRecordingsMessage.style.display = 'block';
-        recordingsGallery.style.display = 'none';
-        return;
+        noRecordingsMessage.style.display = 'none';
+        recordingsGallery.style.display = 'grid';
+
+        recordings.forEach(recording => {
+            const card = createRecordingCard(recording);
+            recordingsGallery.appendChild(card);
+        });
+    } catch (error) {
+        console.error('Error loading recordings:', error);
     }
-
-    noRecordingsMessage.style.display = 'none';
-    recordingsGallery.style.display = 'grid';
-
-    // Create cards for each recording
-    itemsWithVideos.forEach(item => {
-        const latestArtifact = item.artifacts[item.artifacts.length - 1];
-        const card = createRecordingCard(item, latestArtifact);
-        recordingsGallery.appendChild(card);
-    });
 }
 
-function createRecordingCard(item, artifact) {
+function createRecordingCard(recording) {
     const card = document.createElement('div');
     card.className = 'recording-card';
 
-    const statusClass = artifact.status === 'success' || artifact.status === 'passed' ? 'passed' : 'failed';
-    const statusText = artifact.status === 'success' || artifact.status === 'passed' ? 'Passed' : 'Failed';
+    const statusClass = recording.status === 'success' || recording.status === 'passed' ? 'passed' : 'failed';
+    const statusText = recording.status === 'success' || recording.status === 'passed' ? 'PASSED' : 'FAILED';
 
     // Format timestamp
-    const timestamp = artifact.timestamp.replace(/_/g, ' ').replace(/-/g, ':');
+    const timestamp = recording.timestamp.replace(/_/g, ' ').replace(/-/g, ':');
 
     card.innerHTML = `
         <div class="recording-thumbnail">
@@ -1703,7 +1694,7 @@ function createRecordingCard(item, artifact) {
             </div>
         </div>
         <div class="recording-info">
-            <div class="recording-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+            <div class="recording-name" title="${escapeHtml(recording.test_name)}">${escapeHtml(recording.test_name)}</div>
             <div class="recording-meta">
                 <span class="recording-status ${statusClass}">${statusText}</span>
                 <span class="recording-timestamp">${timestamp}</span>
@@ -1713,7 +1704,7 @@ function createRecordingCard(item, artifact) {
 
     // Click handler to open video viewer modal
     card.addEventListener('click', () => {
-        showVideoViewerModal(item.filename, item.name);
+        showVideoViewerModal(recording.test_filename, recording.test_name);
     });
 
     return card;

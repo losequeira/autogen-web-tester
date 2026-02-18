@@ -337,6 +337,37 @@ def delete_ai_step(workspace_id: int, filename: str) -> bool:
     return True
 
 
+# ========== RECORDINGS ==========
+
+def get_recent_recordings(workspace_id: int, limit: int = 20) -> list[dict]:
+    """Get recent test artifacts with video recordings for a workspace."""
+    db = get_db_session()
+    artifacts = (
+        db.query(TestArtifact)
+        .join(Test, TestArtifact.test_id == Test.id)
+        .filter(
+            Test.workspace_id == workspace_id,
+            TestArtifact.video_path.isnot(None),
+            TestArtifact.video_path != 'null',
+            TestArtifact.video_path != '',
+        )
+        .order_by(TestArtifact.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [{
+        'test_filename': a.test.filename,
+        'test_name': a.test.name,
+        'timestamp': a.timestamp,
+        'video_path': a.video_path,
+        'video_size_mb': a.video_size_mb,
+        'har_path': a.har_path,
+        'status': a.status,
+        'created_at': a.created_at.isoformat() if a.created_at else None,
+    } for a in artifacts]
+
+
 # ========== HELPERS ==========
 
 def get_default_workspace_id(user_id: int) -> int | None:

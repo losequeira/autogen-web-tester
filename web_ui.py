@@ -1828,18 +1828,29 @@ def save_test():
 @login_required
 def get_saved_tests():
     """Get list of saved tests."""
-    ws_id = data_access.get_default_workspace_id(current_user.id)
+    ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify([])
     tests = db.get_tests(ws_id)
     return jsonify(tests)
 
 
+@app.route('/api/recent-recordings')
+@login_required
+def get_recent_recordings():
+    """Get recent video recordings for the current workspace."""
+    ws_id = _get_workspace_id()
+    if not ws_id:
+        return jsonify([])
+    recordings = data_access.get_recent_recordings(ws_id)
+    return jsonify(recordings)
+
+
 @app.route('/api/saved-tests/<filename>', methods=['GET'])
 @login_required
 def get_saved_test(filename):
     """Get a specific saved test."""
-    ws_id = data_access.get_default_workspace_id(current_user.id)
+    ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'Test not found'}), 404
     test_data = db.get_test(ws_id, filename)
