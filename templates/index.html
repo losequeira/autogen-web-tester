@@ -25,8 +25,8 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body>
-    <!-- Main VS Code-style layout -->
-    <div class="vscode-layout">
+    <!-- Main VS Code-style layout (hidden until authenticated) -->
+    <div class="vscode-layout auth-hidden">
         <div class="code-editor-container">
                 <!-- Live Browser Sidebar (Left) -->
                 <div id="browser-sidebar" class="browser-sidebar">
@@ -423,77 +423,87 @@
             </div>
         </div>
 
-    <!-- Login Modal -->
-    <div id="login-modal" class="modal" style="display: none;">
-        <div class="modal-content" style="max-width: 400px;">
-            <div class="modal-header">
-                <h2>🔐 Login</h2>
-                <span class="close-login">&times;</span>
-            </div>
-            <div class="modal-body">
-                <form id="login-form">
-                    <div class="form-group">
+    <!-- Full-page Auth Screen -->
+    <div id="auth-page">
+        <div class="auth-bg-grid"></div>
+        <div class="auth-container">
+            <div class="auth-card">
+                <div class="auth-brand">
+                    <div class="auth-logo">
+                        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                            <rect x="2" y="2" width="28" height="28" rx="6" stroke="#10b981" stroke-width="2"/>
+                            <path d="M10 16L14 20L22 12" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                    <h1 class="auth-title">AutoGen Web Tester</h1>
+                    <p class="auth-subtitle">AI-powered browser testing platform</p>
+                </div>
+
+                <!-- Tab toggle -->
+                <div class="auth-tabs">
+                    <button class="auth-tab active" data-tab="login">Sign In</button>
+                    <button class="auth-tab" data-tab="register">Create Account</button>
+                    <div class="auth-tab-indicator"></div>
+                </div>
+
+                <!-- Login form -->
+                <form id="login-form" class="auth-form active">
+                    <div class="auth-field">
                         <label for="login-username">Username</label>
                         <input type="text" id="login-username" name="username" required
-                               autocomplete="username" placeholder="Enter your username">
+                               autocomplete="username" placeholder="Enter your username" spellcheck="false">
                     </div>
-                    <div class="form-group">
+                    <div class="auth-field">
                         <label for="login-password">Password</label>
                         <input type="password" id="login-password" name="password" required
                                autocomplete="current-password" placeholder="Enter your password">
                     </div>
-                    <div class="form-group" style="display: flex; align-items: center;">
-                        <input type="checkbox" id="login-remember" name="remember" style="width: auto; margin-right: 8px;">
-                        <label for="login-remember" style="margin: 0;">Remember me</label>
+                    <div class="auth-field-row">
+                        <label class="auth-checkbox">
+                            <input type="checkbox" id="login-remember" name="remember">
+                            <span class="auth-checkmark"></span>
+                            Remember me
+                        </label>
                     </div>
-                    <div id="login-error" class="error-message" style="display: none;"></div>
-                    <div class="button-group">
-                        <button type="submit" class="btn btn-primary" id="login-submit-btn">Login</button>
-                        <button type="button" class="btn btn-secondary" id="show-register-btn">Create Account</button>
-                    </div>
+                    <div id="login-error" class="auth-error" style="display: none;"></div>
+                    <button type="submit" class="auth-submit" id="login-submit-btn">
+                        <span class="auth-submit-text">Sign In</span>
+                        <span class="auth-submit-spinner" style="display:none;"></span>
+                    </button>
                 </form>
-            </div>
-        </div>
-    </div>
 
-    <!-- Register Modal -->
-    <div id="register-modal" class="modal" style="display: none;">
-        <div class="modal-content" style="max-width: 400px;">
-            <div class="modal-header">
-                <h2>📝 Create Account</h2>
-                <span class="close-register">&times;</span>
-            </div>
-            <div class="modal-body">
-                <form id="register-form">
-                    <div class="form-group">
+                <!-- Register form -->
+                <form id="register-form" class="auth-form">
+                    <div class="auth-field">
                         <label for="register-username">Username</label>
                         <input type="text" id="register-username" name="username" required
-                               autocomplete="username" placeholder="3-20 characters (letters, numbers, _, -)">
-                        <small style="color: #858585; font-size: 11px;">Letters, numbers, underscores, and hyphens only</small>
+                               autocomplete="username" placeholder="Choose a username" spellcheck="false">
+                        <span class="auth-hint">3-20 chars: letters, numbers, _ , -</span>
                     </div>
-                    <div class="form-group">
+                    <div class="auth-field">
                         <label for="register-email">Email</label>
                         <input type="email" id="register-email" name="email" required
-                               autocomplete="email" placeholder="your@email.com">
+                               autocomplete="email" placeholder="you@example.com">
                     </div>
-                    <div class="form-group">
+                    <div class="auth-field">
                         <label for="register-password">Password</label>
                         <input type="password" id="register-password" name="password" required
-                               autocomplete="new-password" placeholder="Min 8 chars, include upper, lower, number">
-                        <small style="color: #858585; font-size: 11px;">At least 8 characters with uppercase, lowercase, and number</small>
+                               autocomplete="new-password" placeholder="Create a password">
+                        <span class="auth-hint">Min 8 chars with uppercase, lowercase, and number</span>
                     </div>
-                    <div class="form-group">
+                    <div class="auth-field">
                         <label for="register-password-confirm">Confirm Password</label>
                         <input type="password" id="register-password-confirm" name="password_confirm" required
                                autocomplete="new-password" placeholder="Re-enter your password">
                     </div>
-                    <div id="register-error" class="error-message" style="display: none;"></div>
-                    <div class="button-group">
-                        <button type="submit" class="btn btn-primary" id="register-submit-btn">Create Account</button>
-                        <button type="button" class="btn btn-secondary" id="show-login-btn">Back to Login</button>
-                    </div>
+                    <div id="register-error" class="auth-error" style="display: none;"></div>
+                    <button type="submit" class="auth-submit" id="register-submit-btn">
+                        <span class="auth-submit-text">Create Account</span>
+                        <span class="auth-submit-spinner" style="display:none;"></span>
+                    </button>
                 </form>
             </div>
+            <p class="auth-footer">Powered by AutoGen &amp; Playwright</p>
         </div>
     </div>
 
