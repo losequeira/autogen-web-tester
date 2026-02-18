@@ -47,9 +47,13 @@ class BrowserTool:
         if self.record_har and self.record_video_dir:
             context_options['record_har_path'] = f"{self.record_video_dir}/network.har"
 
-        # Always create an explicit context (needed for popup/multi-tab support)
-        self.context = await self.browser.new_context(**context_options)
-        self.page = await self.context.new_page()
+        # Create context with or without recording
+        if context_options:
+            self.context = await self.browser.new_context(**context_options)
+            self.page = await self.context.new_page()
+        else:
+            self.page = await self.browser.new_page()
+            self.context = self.page.context
 
         self.page.set_default_timeout(self.timeout)
         self.original_page = self.page
