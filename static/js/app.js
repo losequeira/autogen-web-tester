@@ -1653,7 +1653,7 @@ async function loadRecordingsGallery() {
     if (!recordingsGallery) return;
 
     try {
-        const response = await fetch(`/api/recent-recordings?workspace_id=${currentWorkspaceId}`);
+        const response = await authFetch(`/api/recent-recordings?workspace_id=${currentWorkspaceId}`);
         const recordings = await response.json();
 
         recordingsGallery.innerHTML = '';

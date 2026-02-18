@@ -1327,7 +1327,10 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
             import time
             time.sleep(2)  # Give browser time to finalize the video file
             print(f"📼 Saving artifacts: filename={filename}, workspace_id={workspace_id}, status={test_status}, dir={artifact_dir}")
-            video_files = list(artifact_dir.glob("*.webm"))
+            # List all files in artifact dir for debugging
+            all_files = list(artifact_dir.iterdir()) if artifact_dir.exists() else []
+            print(f"📼 All files in artifact dir: {all_files}")
+            video_files = list(artifact_dir.glob("*.webm")) + list(artifact_dir.glob("*.mp4"))
             print(f"📼 Found video files: {video_files}")
             update_test_artifacts(
                 filename,
