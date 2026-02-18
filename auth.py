@@ -1,91 +1,137 @@
 """
 Authentication module for AutoGen Web Tester.
 
-Provides Flask-Login integration, user registration, login, and logout endpoints.
+Uses Supabase Auth with JWT tokens. The Flask server validates tokens
+via the Supabase client and loads local User records into flask.g.
 """
 
 import re
-import hmac
-from flask import Blueprint, jsonify, request, session
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from models import User, UserPreference, Workspace, WorkspaceType, get_db_session
+import time
 from functools import wraps
+from flask import Blueprint, jsonify, request, g
+import db
+from supabase_client import get_supabase_client
+
+# In-memory cache: token -> (user_dict, expiry_timestamp)
+_user_cache: dict[str, tuple[dict, float]] = {}
+_CACHE_TTL = 300  # 5 minutes
 
 # Create Blueprint
 auth_bp = Blueprint('auth', __name__, url_prefix='/api')
 
-# Initialize Flask-Login
-login_manager = LoginManager()
-
 
 def init_auth(app):
     """Initialize authentication with Flask app."""
-    login_manager.init_app(app)
-    login_manager.session_protection = 'strong'
-    login_manager.login_view = None  # API doesn't redirect, just returns 401
-
-    # Register blueprint
     app.register_blueprint(auth_bp)
 
 
-@login_manager.user_loader
-def load_user(user_id):
-    """Load user from database by ID for Flask-Login."""
-    db = get_db_session()
-    return db.query(User).filter(User.id == int(user_id)).first()
+# ========== JWT helpers ==========
+
+def login_required(f):
+    """Decorator that validates the Supabase JWT and loads the local User into g."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        user = get_current_user()
+        if user is None:
+            return jsonify({'error': 'Authentication required'}), 401
+        return f(*args, **kwargs)
+    return decorated
 
 
-@login_manager.unauthorized_handler
-def unauthorized():
-    """Handle unauthorized access for API endpoints."""
-    return jsonify({'error': 'Authentication required'}), 401
+def get_current_user():
+    """Return the currently authenticated user dict (or None).
 
+    Reads the Authorization header, validates the token with Supabase,
+    and caches the result in-memory to avoid repeated remote calls.
+    """
+    if hasattr(g, '_current_user'):
+        return g._current_user
+
+    token = _extract_bearer_token()
+    if not token:
+        g._current_user = None
+        return None
+
+    # Check in-memory cache first
+    now = time.time()
+    cached = _user_cache.get(token)
+    if cached:
+        user, expiry = cached
+        if now < expiry:
+            g._current_user = user
+            return user
+        else:
+            del _user_cache[token]
+
+    try:
+        sb = get_supabase_client()
+        auth_response = sb.auth.get_user(token)
+        supabase_user = auth_response.user
+        if not supabase_user:
+            g._current_user = None
+            return None
+
+        user = db.get_user_by_id(supabase_user.id)
+        if not user:
+            g._current_user = None
+            return None
+
+        # Cache the result
+        _user_cache[token] = (user, now + _CACHE_TTL)
+        # Evict stale entries periodically
+        if len(_user_cache) > 100:
+            stale = [k for k, (_, exp) in _user_cache.items() if now >= exp]
+            for k in stale:
+                del _user_cache[k]
+
+        g._current_user = user
+        return user
+    except Exception as e:
+        print(f"JWT validation error: {e}")
+        g._current_user = None
+        return None
+
+
+def _extract_bearer_token() -> str | None:
+    """Extract JWT from the Authorization header."""
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        return auth_header[7:]
+    return None
+
+
+# ========== Validation helpers ==========
 
 def validate_email(email: str) -> bool:
-    """Validate email format."""
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
 
 def validate_username(username: str) -> bool:
-    """Validate username format (alphanumeric, underscore, hyphen, 3-20 chars)."""
     pattern = r'^[a-zA-Z0-9_-]{3,20}$'
     return re.match(pattern, username) is not None
 
 
 def validate_password(password: str) -> tuple[bool, str]:
-    """
-    Validate password strength.
-
-    Returns (is_valid, error_message)
-    """
     if len(password) < 8:
         return False, "Password must be at least 8 characters long"
-
     if not re.search(r'[A-Z]', password):
         return False, "Password must contain at least one uppercase letter"
-
     if not re.search(r'[a-z]', password):
         return False, "Password must contain at least one lowercase letter"
-
     if not re.search(r'[0-9]', password):
         return False, "Password must contain at least one number"
-
     return True, ""
 
 
+# ========== Endpoints ==========
+
 @auth_bp.route('/register', methods=['POST'])
 def register():
-    """
-    Register a new user account.
-
-    Expected JSON: {username, email, password}
-    Creates user + default private workspace.
-    """
+    """Register a new user via Supabase Auth, create local User + default Workspace."""
     try:
         data = request.get_json()
 
-        # Validate required fields
         username = data.get('username', '').strip()
         email = data.get('email', '').strip()
         password = data.get('password', '')
@@ -93,162 +139,141 @@ def register():
         if not all([username, email, password]):
             return jsonify({'error': 'Username, email, and password are required'}), 400
 
-        # Validate username format
         if not validate_username(username):
             return jsonify({
                 'error': 'Username must be 3-20 characters and contain only letters, numbers, underscores, and hyphens'
             }), 400
 
-        # Validate email format
         if not validate_email(email):
             return jsonify({'error': 'Invalid email format'}), 400
 
-        # Validate password strength
         is_valid, error_msg = validate_password(password)
         if not is_valid:
             return jsonify({'error': error_msg}), 400
 
-        db = get_db_session()
-
-        # Check if username already exists
-        if db.query(User).filter(User.username == username).first():
+        # Check uniqueness
+        if db.get_user_by_username(username):
             return jsonify({'error': 'Username already exists'}), 409
-
-        # Check if email already exists
-        if db.query(User).filter(User.email == email).first():
+        if db.get_user_by_email(email):
             return jsonify({'error': 'Email already registered'}), 409
 
-        # Create new user
-        user = User(
-            username=username,
-            email=email,
-            is_active=True
-        )
-        user.set_password(password)
+        # Create user in Supabase Auth
+        sb = get_supabase_client()
+        auth_response = sb.auth.sign_up({
+            'email': email,
+            'password': password,
+            'options': {
+                'data': {'username': username}
+            }
+        })
 
-        db.add(user)
-        db.flush()  # Get user.id before creating workspace
+        supabase_user = auth_response.user
+        if not supabase_user:
+            return jsonify({'error': 'Registration failed'}), 500
 
-        # Create default private workspace for user
-        default_workspace = Workspace(
-            name=f"{username}'s Workspace",
-            type=WorkspaceType.PRIVATE,
-            owner_id=user.id
-        )
-        db.add(default_workspace)
+        # Create local user record
+        user = db.create_user(id=supabase_user.id, username=username, email=email)
 
-        db.commit()
+        # Create default private workspace
+        try:
+            workspace = db.create_workspace(
+                name=f"{username}'s Workspace",
+                ws_type='private',
+                owner_id=user['id'],
+            )
+        except Exception as ws_err:
+            # If workspace creation fails, clean up the user to avoid orphans
+            print(f"Warning: workspace creation failed, cleaning up user: {ws_err}")
+            try:
+                get_supabase_client().table('users').delete().eq('id', user['id']).execute()
+            except Exception:
+                pass
+            return jsonify({'error': 'Registration failed'}), 500
 
-        # Auto-login after registration
-        login_user(user, remember=True)
-
+        # Return JWT tokens
+        session = auth_response.session
         return jsonify({
             'message': 'Registration successful',
-            'user': user.to_dict(),
-            'default_workspace_id': default_workspace.id
+            'user': user,
+            'default_workspace_id': workspace['id'],
+            'access_token': session.access_token if session else None,
+            'refresh_token': session.refresh_token if session else None,
         }), 201
 
     except Exception as e:
-        db.rollback()
         print(f"Registration error: {e}")
         return jsonify({'error': 'Registration failed'}), 500
 
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    """
-    Authenticate user and create session.
-
-    Expected JSON: {username, password, remember}
-    """
+    """Authenticate user via Supabase Auth and return JWT tokens."""
     try:
         data = request.get_json()
 
         username = data.get('username', '').strip()
         password = data.get('password', '')
-        remember = data.get('remember', False)
 
         if not username or not password:
             return jsonify({'error': 'Username and password are required'}), 400
 
-        db = get_db_session()
-
-        # Find user by username
-        user = db.query(User).filter(User.username == username).first()
-
+        # Look up email by username (Supabase Auth uses email for sign-in)
+        user = db.get_user_by_username(username)
         if not user:
             return jsonify({'error': 'Invalid username or password'}), 401
-
-        if not user.is_active:
+        if not user.get('is_active'):
             return jsonify({'error': 'Account is disabled'}), 403
 
-        # Verify password
-        if not user.check_password(password):
+        email = user['email']
+
+        # Sign in with Supabase Auth
+        sb = get_supabase_client()
+        auth_response = sb.auth.sign_in_with_password({
+            'email': email,
+            'password': password
+        })
+
+        session = auth_response.session
+        if not session:
             return jsonify({'error': 'Invalid username or password'}), 401
 
-        # Create session
-        login_user(user, remember=remember)
-
-        # Get user's workspaces (owned + shared)
-        owned_workspaces = db.query(Workspace).filter(
-            Workspace.owner_id == user.id
-        ).all()
-
-        shared_workspaces = db.query(Workspace).join(
-            Workspace.members
-        ).filter(
-            Workspace.members.any(user_id=user.id)
-        ).all()
-
-        all_workspaces = owned_workspaces + shared_workspaces
+        # Get workspaces
+        workspaces = db.get_workspaces_for_user(user['id'])
 
         return jsonify({
             'message': 'Login successful',
-            'user': user.to_dict(),
-            'workspaces': [w.to_dict() for w in all_workspaces]
+            'user': user,
+            'workspaces': workspaces,
+            'access_token': session.access_token,
+            'refresh_token': session.refresh_token,
         }), 200
 
     except Exception as e:
         print(f"Login error: {e}")
-        return jsonify({'error': 'Login failed'}), 500
+        return jsonify({'error': 'Invalid username or password'}), 401
 
 
 @auth_bp.route('/logout', methods=['POST'])
 @login_required
 def logout():
-    """Log out current user and destroy session."""
-    try:
-        logout_user()
-        session.clear()
-        return jsonify({'message': 'Logout successful'}), 200
-    except Exception as e:
-        print(f"Logout error: {e}")
-        return jsonify({'error': 'Logout failed'}), 500
+    """Logout — evict the current token from the server cache."""
+    token = _extract_bearer_token()
+    if token:
+        _user_cache.pop(token, None)
+    return jsonify({'message': 'Logout successful'}), 200
 
 
 @auth_bp.route('/current-user', methods=['GET'])
 @login_required
-def get_current_user():
+def current_user_endpoint():
     """Get current authenticated user info."""
     try:
-        db = get_db_session()
-
-        # Get user's workspaces
-        owned_workspaces = db.query(Workspace).filter(
-            Workspace.owner_id == current_user.id
-        ).all()
-
-        shared_workspaces = db.query(Workspace).join(
-            Workspace.members
-        ).filter(
-            Workspace.members.any(user_id=current_user.id)
-        ).all()
-
-        all_workspaces = owned_workspaces + shared_workspaces
+        user = get_current_user()
+        workspaces = db.get_workspaces_for_user(user['id'])
 
         return jsonify({
-            'user': current_user.to_dict(),
-            'workspaces': [w.to_dict() for w in all_workspaces]
+            'user': user,
+            'workspaces': workspaces
         }), 200
 
     except Exception as e:
@@ -259,16 +284,41 @@ def get_current_user():
 @auth_bp.route('/check-auth', methods=['GET'])
 def check_auth():
     """Check if user is authenticated (doesn't require login)."""
-    if current_user.is_authenticated:
+    user = get_current_user()
+    if user:
         return jsonify({
             'authenticated': True,
-            'user': current_user.to_dict()
+            'user': user
         }), 200
     else:
         return jsonify({'authenticated': False}), 200
 
 
-ALLOWED_PREFERENCE_KEYS = {'selectedWorkspaceId', 'editorTabsState'}
+@auth_bp.route('/refresh-token', methods=['POST'])
+def refresh_token():
+    """Refresh an expired access token using the refresh token."""
+    try:
+        data = request.get_json()
+        refresh = data.get('refresh_token', '')
+        if not refresh:
+            return jsonify({'error': 'Refresh token required'}), 400
+
+        sb = get_supabase_client()
+        auth_response = sb.auth.refresh_session(refresh)
+        session = auth_response.session
+        if not session:
+            return jsonify({'error': 'Token refresh failed'}), 401
+
+        return jsonify({
+            'access_token': session.access_token,
+            'refresh_token': session.refresh_token,
+        }), 200
+    except Exception as e:
+        print(f"Token refresh error: {e}")
+        return jsonify({'error': 'Token refresh failed'}), 401
+
+
+ALLOWED_PREFERENCE_KEYS = {'selectedWorkspaceId', 'editorTabsState', 'theme'}
 
 
 @auth_bp.route('/preferences', methods=['GET'])
@@ -276,16 +326,9 @@ ALLOWED_PREFERENCE_KEYS = {'selectedWorkspaceId', 'editorTabsState'}
 def get_preferences():
     """Get all user preferences."""
     try:
-        db = get_db_session()
-        prefs = db.query(UserPreference).filter(
-            UserPreference.user_id == current_user.id
-        ).all()
-
-        result = {}
-        for pref in prefs:
-            result[pref.key] = pref.value
-
-        return jsonify({'preferences': result}), 200
+        user = get_current_user()
+        prefs = db.get_preferences(user['id'])
+        return jsonify({'preferences': prefs}), 200
     except Exception as e:
         print(f"Get preferences error: {e}")
         return jsonify({'error': 'Failed to get preferences'}), 500
@@ -294,45 +337,22 @@ def get_preferences():
 @auth_bp.route('/preferences', methods=['PUT'])
 @login_required
 def update_preferences():
-    """
-    Update one or more user preferences.
-
-    Expected JSON: {preferences: {key: value, ...}}
-    """
+    """Update one or more user preferences."""
     try:
+        user = get_current_user()
         data = request.get_json()
         preferences = data.get('preferences', {})
 
         if not preferences:
             return jsonify({'error': 'No preferences provided'}), 400
 
-        # Validate keys
         invalid_keys = set(preferences.keys()) - ALLOWED_PREFERENCE_KEYS
         if invalid_keys:
             return jsonify({'error': f'Invalid preference keys: {", ".join(invalid_keys)}'}), 400
 
-        db = get_db_session()
-
-        for key, value in preferences.items():
-            pref = db.query(UserPreference).filter(
-                UserPreference.user_id == current_user.id,
-                UserPreference.key == key
-            ).first()
-
-            if pref:
-                pref.value = value if isinstance(value, str) else str(value)
-            else:
-                pref = UserPreference(
-                    user_id=current_user.id,
-                    key=key,
-                    value=value if isinstance(value, str) else str(value)
-                )
-                db.add(pref)
-
-        db.commit()
+        db.update_preferences(user['id'], preferences)
         return jsonify({'message': 'Preferences updated'}), 200
 
     except Exception as e:
-        db.rollback()
         print(f"Update preferences error: {e}")
         return jsonify({'error': 'Failed to update preferences'}), 500
