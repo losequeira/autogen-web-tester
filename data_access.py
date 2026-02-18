@@ -161,13 +161,16 @@ def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, stat
         print(f"Warning: Test not found for artifact update: {filename}")
         return
 
-    # Discover binary files
-    video_files = list(artifact_dir.glob("*.webm"))
-    video_path = video_files[0].relative_to(Path(__file__).parent) if video_files else None
+    # Discover binary files (resolve to absolute paths for reliable relative_to)
+    base_dir = Path(__file__).parent.resolve()
+    artifact_dir_abs = artifact_dir.resolve()
+
+    video_files = list(artifact_dir_abs.glob("*.webm"))
+    video_path = video_files[0].relative_to(base_dir) if video_files else None
     video_size_mb = video_files[0].stat().st_size / (1024 * 1024) if video_files else 0
 
-    har_files = list(artifact_dir.glob("*.har"))
-    har_path = har_files[0].relative_to(Path(__file__).parent) if har_files else None
+    har_files = list(artifact_dir_abs.glob("*.har"))
+    har_path = har_files[0].relative_to(base_dir) if har_files else None
 
     timestamp = artifact_dir.name
 
@@ -335,6 +338,37 @@ def delete_ai_step(workspace_id: int, filename: str) -> bool:
     db.delete(step)
     db.commit()
     return True
+
+
+# ========== RECORDINGS ==========
+
+def get_recent_recordings(workspace_id: int, limit: int = 20) -> list[dict]:
+    """Get recent test artifacts with video recordings for a workspace."""
+    db = get_db_session()
+    artifacts = (
+        db.query(TestArtifact)
+        .join(Test, TestArtifact.test_id == Test.id)
+        .filter(
+            Test.workspace_id == workspace_id,
+            TestArtifact.video_path.isnot(None),
+            TestArtifact.video_path != 'null',
+            TestArtifact.video_path != '',
+        )
+        .order_by(TestArtifact.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [{
+        'test_filename': a.test.filename,
+        'test_name': a.test.name,
+        'timestamp': a.timestamp,
+        'video_path': a.video_path,
+        'video_size_mb': a.video_size_mb,
+        'har_path': a.har_path,
+        'status': a.status,
+        'created_at': a.created_at.isoformat() if a.created_at else None,
+    } for a in artifacts]
 
 
 # ========== HELPERS ==========

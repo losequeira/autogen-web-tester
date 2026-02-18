@@ -89,14 +89,18 @@ TEMP_RECORDINGS_DIR.mkdir(exist_ok=True)
 
 def update_test_artifacts(filename: str, artifact_dir: Path, test_status: str = 'unknown', workspace_id: int = None):
     """Update test artifact metadata in the database."""
+    print(f"📼 update_test_artifacts called: filename={filename}, workspace_id={workspace_id}, status={test_status}")
     if not filename or not workspace_id:
-        print(f"Warning: Cannot update artifacts without filename and workspace_id")
+        print(f"Warning: Cannot update artifacts without filename and workspace_id (filename={filename}, workspace_id={workspace_id})")
         return
 
     try:
         db.add_test_artifact(workspace_id, filename, artifact_dir, test_status)
+        print(f"📼 Artifact saved successfully")
     except Exception as e:
+        import traceback
         print(f"Warning: Could not update test metadata: {e}")
+        traceback.print_exc()
 
 
 class BrowserToolWithScreenshots(BrowserTool):
@@ -870,13 +874,15 @@ These rules apply to ALL tasks. Users will give you natural language instruction
         if artifact_dir and saved_test_filename:
             # Give the browser time to finalize the video
             import time
-            time.sleep(1)
+            time.sleep(2)
             update_test_artifacts(
                 saved_test_filename,
                 artifact_dir,
                 test_status or 'unknown',
                 workspace_id=saved_workspace_id
             )
+            # Tell frontend to refresh now that artifacts are saved
+            socketio.emit('artifacts_updated', {'filename': saved_test_filename})
 
 
 def run_test_sync(task: str, test_filename: str = None, workspace_id: int = None):
@@ -1309,19 +1315,37 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         except Exception:
             pass
         finally:
-            loop.close()
+            try:
+                loop.close()
+            except Exception:
+                pass
 
-            # Update test artifacts if video recording was enabled
-            if artifact_dir and filename:
-                # Give the browser time to finalize the video
-                import time
-                time.sleep(1)
-                update_test_artifacts(
-                    filename,
-                    artifact_dir,
-                    test_status or 'unknown',
-                    workspace_id=workspace_id
-                )
+    # Update test artifacts AFTER loop cleanup (separate block so it always runs)
+    print(f"📼 === ARTIFACT SAVE BLOCK REACHED === artifact_dir={artifact_dir}, filename={filename}, workspace_id={workspace_id}")
+    if artifact_dir and filename:
+        try:
+            import time
+            time.sleep(2)  # Give browser time to finalize the video file
+            print(f"📼 Saving artifacts: filename={filename}, workspace_id={workspace_id}, status={test_status}, dir={artifact_dir}")
+            # List all files in artifact dir for debugging
+            all_files = list(artifact_dir.iterdir()) if artifact_dir.exists() else []
+            print(f"📼 All files in artifact dir: {all_files}")
+            video_files = list(artifact_dir.glob("*.webm")) + list(artifact_dir.glob("*.mp4"))
+            print(f"📼 Found video files: {video_files}")
+            update_test_artifacts(
+                filename,
+                artifact_dir,
+                test_status or 'unknown',
+                workspace_id=workspace_id
+            )
+            # Tell frontend to refresh now that artifacts are saved
+            socketio.emit('artifacts_updated', {'filename': filename})
+        except Exception as e:
+            import traceback
+            print(f"📼 Error saving artifacts: {e}")
+            traceback.print_exc()
+    else:
+        print(f"⚠️ Skipping artifact update: artifact_dir={artifact_dir}, filename={filename}")
 
 
 def run_playwright_code_headless(code: str, filename: str, workspace_id: int = None):
@@ -1807,18 +1831,29 @@ def save_test():
 @login_required
 def get_saved_tests():
     """Get list of saved tests."""
-    ws_id = data_access.get_default_workspace_id(current_user.id)
+    ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify([])
     tests = db.get_tests(ws_id)
     return jsonify(tests)
 
 
+@app.route('/api/recent-recordings')
+@login_required
+def get_recent_recordings():
+    """Get recent video recordings for the current workspace."""
+    ws_id = _get_workspace_id()
+    if not ws_id:
+        return jsonify([])
+    recordings = data_access.get_recent_recordings(ws_id)
+    return jsonify(recordings)
+
+
 @app.route('/api/saved-tests/<filename>', methods=['GET'])
 @login_required
 def get_saved_test(filename):
     """Get a specific saved test."""
-    ws_id = data_access.get_default_workspace_id(current_user.id)
+    ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'Test not found'}), 404
     test_data = db.get_test(ws_id, filename)
