@@ -438,7 +438,11 @@
                     <span class="close-video-viewer">&times;</span>
                 </div>
                 <div class="modal-body">
-                    <div id="video-viewer-container">
+                    <div id="video-viewer-loading" style="text-align: center; padding: 48px;">
+                        <div class="loading-spinner" style="margin: 0 auto 16px;"></div>
+                        <p style="color: var(--ctp-subtext0); font-size: 13px;">Loading recording...</p>
+                    </div>
+                    <div id="video-viewer-container" style="display: none;">
                         <video id="video-viewer-player" controls>
                             <source id="video-viewer-source" type="video/webm">
                             Your browser does not support video playback.
