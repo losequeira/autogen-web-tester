@@ -161,13 +161,16 @@ def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, stat
         print(f"Warning: Test not found for artifact update: {filename}")
         return
 
-    # Discover binary files
-    video_files = list(artifact_dir.glob("*.webm"))
-    video_path = video_files[0].relative_to(Path(__file__).parent) if video_files else None
+    # Discover binary files (resolve to absolute paths for reliable relative_to)
+    base_dir = Path(__file__).parent.resolve()
+    artifact_dir_abs = artifact_dir.resolve()
+
+    video_files = list(artifact_dir_abs.glob("*.webm"))
+    video_path = video_files[0].relative_to(base_dir) if video_files else None
     video_size_mb = video_files[0].stat().st_size / (1024 * 1024) if video_files else 0
 
-    har_files = list(artifact_dir.glob("*.har"))
-    har_path = har_files[0].relative_to(Path(__file__).parent) if har_files else None
+    har_files = list(artifact_dir_abs.glob("*.har"))
+    har_path = har_files[0].relative_to(base_dir) if har_files else None
 
     timestamp = artifact_dir.name
 
