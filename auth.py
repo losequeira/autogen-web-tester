@@ -8,7 +8,7 @@ import re
 import hmac
 from flask import Blueprint, jsonify, request, session
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from models import User, Workspace, WorkspaceType, get_db_session
+from models import User, UserPreference, Workspace, WorkspaceType, get_db_session
 from functools import wraps
 
 # Create Blueprint
@@ -139,18 +139,6 @@ def register():
 
         db.commit()
 
-        # Create workspace directory structure
-        import os
-        from config import Config
-        workspace_path = os.path.join(
-            Config.USER_DATA_PATH,
-            'workspaces',
-            str(default_workspace.id)
-        )
-        os.makedirs(os.path.join(workspace_path, 'saved_tests'), exist_ok=True)
-        os.makedirs(os.path.join(workspace_path, 'ai_steps'), exist_ok=True)
-        os.makedirs(os.path.join(workspace_path, 'artifacts'), exist_ok=True)
-
         # Auto-login after registration
         login_user(user, remember=True)
 
@@ -278,3 +266,73 @@ def check_auth():
         }), 200
     else:
         return jsonify({'authenticated': False}), 200
+
+
+ALLOWED_PREFERENCE_KEYS = {'selectedWorkspaceId', 'editorTabsState'}
+
+
+@auth_bp.route('/preferences', methods=['GET'])
+@login_required
+def get_preferences():
+    """Get all user preferences."""
+    try:
+        db = get_db_session()
+        prefs = db.query(UserPreference).filter(
+            UserPreference.user_id == current_user.id
+        ).all()
+
+        result = {}
+        for pref in prefs:
+            result[pref.key] = pref.value
+
+        return jsonify({'preferences': result}), 200
+    except Exception as e:
+        print(f"Get preferences error: {e}")
+        return jsonify({'error': 'Failed to get preferences'}), 500
+
+
+@auth_bp.route('/preferences', methods=['PUT'])
+@login_required
+def update_preferences():
+    """
+    Update one or more user preferences.
+
+    Expected JSON: {preferences: {key: value, ...}}
+    """
+    try:
+        data = request.get_json()
+        preferences = data.get('preferences', {})
+
+        if not preferences:
+            return jsonify({'error': 'No preferences provided'}), 400
+
+        # Validate keys
+        invalid_keys = set(preferences.keys()) - ALLOWED_PREFERENCE_KEYS
+        if invalid_keys:
+            return jsonify({'error': f'Invalid preference keys: {", ".join(invalid_keys)}'}), 400
+
+        db = get_db_session()
+
+        for key, value in preferences.items():
+            pref = db.query(UserPreference).filter(
+                UserPreference.user_id == current_user.id,
+                UserPreference.key == key
+            ).first()
+
+            if pref:
+                pref.value = value if isinstance(value, str) else str(value)
+            else:
+                pref = UserPreference(
+                    user_id=current_user.id,
+                    key=key,
+                    value=value if isinstance(value, str) else str(value)
+                )
+                db.add(pref)
+
+        db.commit()
+        return jsonify({'message': 'Preferences updated'}), 200
+
+    except Exception as e:
+        db.rollback()
+        print(f"Update preferences error: {e}")
+        return jsonify({'error': 'Failed to update preferences'}), 500

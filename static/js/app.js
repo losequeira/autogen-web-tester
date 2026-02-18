@@ -7,6 +7,44 @@ const socket = io();
 let currentUser = null;
 let currentWorkspaceId = null;
 
+// ========== USER PREFERENCES SYNC ==========
+// Debounce timer for batching preference saves to DB
+let _prefSaveTimer = null;
+let _pendingPrefUpdates = {};
+
+function savePreferenceToDb(key, value) {
+    _pendingPrefUpdates[key] = value;
+    if (_prefSaveTimer) clearTimeout(_prefSaveTimer);
+    _prefSaveTimer = setTimeout(_flushPreferences, 500);
+}
+
+function _flushPreferences() {
+    const updates = _pendingPrefUpdates;
+    _pendingPrefUpdates = {};
+    _prefSaveTimer = null;
+
+    if (Object.keys(updates).length === 0) return;
+
+    fetch('/api/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferences: updates })
+    }).catch(err => console.error('Failed to save preferences to DB:', err));
+}
+
+async function loadPreferencesFromDb() {
+    try {
+        const response = await fetch('/api/preferences');
+        if (!response.ok) return null;
+        const data = await response.json();
+        return data.preferences || {};
+    } catch (err) {
+        console.error('Failed to load preferences from DB:', err);
+        return null;
+    }
+}
+// ========== END USER PREFERENCES SYNC ==========
+
 // Authentication modal elements
 const loginModal = document.getElementById('login-modal');
 const registerModal = document.getElementById('register-modal');
@@ -162,6 +200,15 @@ function updateStopButtonVisibility() {
 // Socket.IO Event Handlers
 socket.on('connect', () => {
     addLogEntry('info', 'Connected to server');
+});
+
+socket.on('connect_error', () => {
+    console.warn('Socket connection failed - session may be expired');
+});
+
+// Reconnect socket after login so it picks up the new session
+socket.on('disconnect', () => {
+    console.warn('Socket disconnected');
 });
 
 socket.on('playwright_code', (data) => {
@@ -347,9 +394,28 @@ socket.on('test_complete', (data) => {
         addLogEntry('error', `❌ Test failed: ${errorMsg}`, `❌ Test failed`);
     }
 
+    // Restore AI step tab content if an AI step just finished
+    if (runningAiStepTabId) {
+        const aiTab = openTabs.find(t => t.id === runningAiStepTabId);
+        if (aiTab && activeTabId === runningAiStepTabId) {
+            // Reload fresh from DB to make sure we have the latest
+            fetch(`/api/ai-steps/${runningAiStepTabId}/markdown?workspace_id=${currentWorkspaceId}`)
+                .then(res => res.json())
+                .then(aiData => {
+                    if (aiData.markdown) {
+                        aiTab.code = aiData.markdown;
+                        setPlaywrightCode(aiData.markdown);
+                        lastSavedCode = aiData.markdown;
+                    }
+                })
+                .catch(err => console.error('Error restoring AI step content:', err));
+        }
+        runningAiStepTabId = null;
+    }
+
     // Update saved test status if this was a saved test run
     if (currentRunningTestFilename) {
-        fetch(`/api/saved-tests/${currentRunningTestFilename}/status`, {
+        fetch(`/api/saved-tests/${currentRunningTestFilename}/status?workspace_id=${currentWorkspaceId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: data.status })
@@ -431,7 +497,7 @@ socket.on('ai_step_complete_with_code', (data) => {
 
     // Reload the AI step content to restore it (it may have been cleared during execution)
     const aiStepFilename = data.ai_step_filename;
-    fetch(`/api/ai-steps/${aiStepFilename}/markdown`)
+    fetch(`/api/ai-steps/${aiStepFilename}/markdown?workspace_id=${currentWorkspaceId}`)
         .then(res => res.json())
         .then(aiStepData => {
             // Find and restore the AI step tab if it's open
@@ -593,7 +659,7 @@ function saveCurrentTest() {
 
         // Handle AI Step saves
         if (tab.fileType === 'ai-step') {
-            fetch(`/api/ai-steps/${activeTabId}/markdown`, {
+            fetch(`/api/ai-steps/${activeTabId}/markdown?workspace_id=${currentWorkspaceId}`, {
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ markdown: code })
@@ -616,7 +682,7 @@ function saveCurrentTest() {
             return;
         }
 
-        fetch(`/api/saved-tests/${activeTabId}`, {
+        fetch(`/api/saved-tests/${activeTabId}?workspace_id=${currentWorkspaceId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -756,7 +822,7 @@ async function runAllTests() {
         return;
     }
 
-    const response = await fetch('/api/saved-tests');
+    const response = await fetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
     const tests = await response.json();
 
     if (tests.length === 0) {
@@ -929,7 +995,9 @@ function saveTabsState() {
                 })),
             activeTabId: activeTabId  // Keep dashboard as activeTabId if it was active
         };
-        localStorage.setItem('editorTabsState', JSON.stringify(tabsState));
+        const json = JSON.stringify(tabsState);
+        localStorage.setItem('editorTabsState', json);
+        savePreferenceToDb('editorTabsState', json);
     } catch (err) {
         console.error('Error saving tabs state:', err);
     }
@@ -937,7 +1005,17 @@ function saveTabsState() {
 
 async function restoreTabsState() {
     try {
-        const savedState = localStorage.getItem('editorTabsState');
+        let savedState = localStorage.getItem('editorTabsState');
+
+        // Fall back to DB if localStorage is empty
+        if (!savedState) {
+            const dbPrefs = await loadPreferencesFromDb();
+            if (dbPrefs && dbPrefs.editorTabsState) {
+                savedState = dbPrefs.editorTabsState;
+                localStorage.setItem('editorTabsState', savedState);
+            }
+        }
+
         if (!savedState) return;
 
         const tabsState = JSON.parse(savedState);
@@ -966,7 +1044,7 @@ async function restoreTabsState() {
                     }
                     // Handle AI step restoration
                     else if (tabInfo.fileType === 'ai-step') {
-                        const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown`);
+                        const response = await fetch(`/api/ai-steps/${tabInfo.id}/markdown?workspace_id=${currentWorkspaceId}`);
                         if (response.ok) {
                             const data = await response.json();
                             const existingTab = openTabs.find(t => t.id === tabInfo.id);
@@ -983,7 +1061,7 @@ async function restoreTabsState() {
                     }
                     // Handle regular test file restoration
                     else {
-                        const response = await fetch(`/api/saved-tests/${tabInfo.id}`);
+                        const response = await fetch(`/api/saved-tests/${tabInfo.id}?workspace_id=${currentWorkspaceId}`);
                         if (response.ok) {
                             const data = await response.json();
 
@@ -1125,13 +1203,18 @@ function hideWelcomePage() {
 
 async function fetchTestStatistics() {
     try {
-        // Fetch saved tests
-        const testsResponse = await fetch('/api/saved-tests');
+        if (!currentWorkspaceId) {
+            return { totalTests: 0, passedTests: 0, failedTests: 0, aiSteps: 0 };
+        }
+
+        // Fetch saved tests for current workspace
+        const testsResponse = await fetch(`/api/workspaces/${currentWorkspaceId}/tests`);
         const tests = await testsResponse.json();
 
-        // Fetch AI steps
-        const aiStepsResponse = await fetch('/api/ai-steps');
-        const aiSteps = await aiStepsResponse.json();
+        // Fetch AI steps for current workspace
+        const aiStepsResponse = await fetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
+        const aiStepsData = await aiStepsResponse.json();
+        const aiSteps = aiStepsData.ai_steps || [];
 
         // Calculate statistics
         const totalTests = tests.length;
@@ -1526,12 +1609,14 @@ function hideDashboardContent() {
 
 async function loadDashboardStats() {
     try {
-        // Fetch saved tests
-        const testsResponse = await fetch('/api/saved-tests');
+        if (!currentWorkspaceId) return;
+
+        // Fetch saved tests for current workspace
+        const testsResponse = await fetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
         const tests = await testsResponse.json();
 
-        // Fetch AI steps
-        const aiStepsResponse = await fetch('/api/ai-steps');
+        // Fetch AI steps for current workspace
+        const aiStepsResponse = await fetch(`/api/ai-steps?workspace_id=${currentWorkspaceId}`);
         const aiSteps = await aiStepsResponse.json();
 
         // Calculate statistics
@@ -1719,7 +1804,7 @@ async function loadAiSteps() {
 
             runBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                runAiStep(step.filename, step.name);
+                runAiStep(step.id, step.filename, step.name);
             });
 
             editBtn.addEventListener('click', (e) => {
@@ -1747,15 +1832,28 @@ async function loadAiSteps() {
     }
 }
 
-function runAiStep(filename, name) {
+let runningAiStepTabId = null;  // Track which AI step tab is running
+
+function runAiStep(stepId, filename, name) {
     if (isTestRunning) {
         alert('A test is already running');
         return;
     }
 
-    // Clear previous results
-    humanLogContainer.innerHTML = '';
-    technicalLogContainer.innerHTML = '';
+    // Warn if the AI step tab has unsaved changes
+    const aiTab = openTabs.find(t => t.id === filename);
+    if (aiTab && aiTab.isDirty) {
+        if (!confirm('You have unsaved changes to this AI step. Run will use the last saved version.\n\nContinue anyway?')) {
+            return;
+        }
+    }
+
+    // Track the AI step tab so we can restore its content after test completes
+    runningAiStepTabId = filename;
+
+    // Clear previous log results
+    while (humanLogContainer.firstChild) humanLogContainer.removeChild(humanLogContainer.firstChild);
+    while (technicalLogContainer.firstChild) technicalLogContainer.removeChild(technicalLogContainer.firstChild);
     setPlaywrightCode('');
 
     // Update UI
@@ -1791,8 +1889,9 @@ function runAiStep(filename, name) {
     }
     openOutputPanel();
 
-    // Emit run AI step event
+    // Emit run AI step event - use database ID for unambiguous lookup
     socket.emit('run_ai_step', {
+        id: stepId,
         filename,
         workspaceId: currentWorkspaceId
     });
@@ -1801,7 +1900,7 @@ function runAiStep(filename, name) {
 }
 
 function openAiStepInEditor(filename, name) {
-    fetch(`/api/ai-steps/${filename}/markdown`)
+    fetch(`/api/ai-steps/${filename}/markdown?workspace_id=${currentWorkspaceId}`)
         .then(res => res.json())
         .then(data => {
             if (data.markdown) {
@@ -1860,7 +1959,7 @@ function showTestResultsModal(total, passed, failed, duration) {
     // Load video if available from the last completed test
     const lastTest = batchRunResults[batchRunResults.length - 1];
     if (lastTest && lastTest.filename) {
-        fetch(`/api/saved-tests/${lastTest.filename}/artifacts`)
+        fetch(`/api/saved-tests/${lastTest.filename}/artifacts?workspace_id=${currentWorkspaceId}`)
             .then(res => res.json())
             .then(artifacts => {
                 if (artifacts.length > 0) {
@@ -2000,7 +2099,7 @@ async function deleteAiStep(filename, name) {
     if (!confirm(`Delete AI step "${name}"?`)) return;
 
     try {
-        const response = await fetch(`/api/ai-steps/${filename}`, {
+        const response = await fetch(`/api/ai-steps/${filename}?workspace_id=${currentWorkspaceId}`, {
             method: 'DELETE'
         });
 
@@ -3176,12 +3275,24 @@ async function loadUserWorkspaces() {
         const data = await response.json();
         currentUser = data.user;
 
-        // Try to restore previously selected workspace from localStorage
-        const savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+        // Try to restore previously selected workspace from localStorage, then DB
+        let savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
         let workspaceFound = false;
 
+        // Fall back to DB if localStorage is empty
+        if (!savedWorkspaceId) {
+            const dbPrefs = await loadPreferencesFromDb();
+            if (dbPrefs && dbPrefs.selectedWorkspaceId) {
+                savedWorkspaceId = dbPrefs.selectedWorkspaceId;
+                localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
+            }
+            // Also restore editorTabsState from DB if missing locally
+            if (dbPrefs && dbPrefs.editorTabsState && !localStorage.getItem('editorTabsState')) {
+                localStorage.setItem('editorTabsState', dbPrefs.editorTabsState);
+            }
+        }
+
         if (savedWorkspaceId && data.workspaces && data.workspaces.length > 0) {
-            // Check if saved workspace exists and user has access to it
             const savedId = parseInt(savedWorkspaceId);
             const hasAccess = data.workspaces.some(w => w.id === savedId);
 
@@ -3196,6 +3307,12 @@ async function loadUserWorkspaces() {
         if (!workspaceFound && data.workspaces && data.workspaces.length > 0) {
             currentWorkspaceId = data.workspaces[0].id;
             console.log('Using default workspace:', currentWorkspaceId);
+        }
+
+        // Persist the selection so it survives page reloads and re-login
+        if (currentWorkspaceId) {
+            localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
+            savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
         }
 
         console.log('User authenticated:', currentUser.username);
@@ -3232,6 +3349,14 @@ async function handleLogin(event) {
             hideAuthModals();
             addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
 
+            // Update username display
+            if (currentUsernameEl) {
+                currentUsernameEl.textContent = currentUser.username;
+            }
+
+            // Initialize CodeMirror editor (skipped on page load when not authenticated)
+            initializeCodeMirror();
+
             // Load workspaces (will restore saved workspace from localStorage)
             await loadWorkspaces();
 
@@ -3239,6 +3364,11 @@ async function handleLogin(event) {
             if (hasFileExplorer && currentWorkspaceId) {
                 loadFileExplorer();
                 loadAiSteps();
+            }
+
+            // Open dashboard tab if no tabs
+            if (openTabs.length === 0) {
+                openDashboardTab();
             }
         } else {
             loginError.textContent = data.error || 'Login failed';
@@ -3280,6 +3410,14 @@ async function handleRegister(event) {
             hideAuthModals();
             addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
 
+            // Update username display
+            if (currentUsernameEl) {
+                currentUsernameEl.textContent = currentUser.username;
+            }
+
+            // Initialize CodeMirror editor (skipped on page load when not authenticated)
+            initializeCodeMirror();
+
             // Load workspaces (user's default workspace will be loaded)
             await loadWorkspaces();
 
@@ -3287,6 +3425,11 @@ async function handleRegister(event) {
             if (hasFileExplorer && currentWorkspaceId) {
                 loadFileExplorer();
                 loadAiSteps();
+            }
+
+            // Open dashboard tab
+            if (openTabs.length === 0) {
+                openDashboardTab();
             }
         } else {
             registerError.textContent = data.error || 'Registration failed';
@@ -3346,10 +3489,24 @@ async function loadWorkspaces() {
             workspaceDropdown.appendChild(option);
         });
 
-        // Set current workspace if not set
-        if (!currentWorkspaceId && userWorkspaces.length > 0) {
-            // Try to restore from localStorage first
-            const savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+        // Set current workspace - try localStorage, then DB, then default
+        if (userWorkspaces.length > 0) {
+            let savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+
+            // Fall back to DB if localStorage is empty
+            if (!savedWorkspaceId) {
+                const dbPrefs = await loadPreferencesFromDb();
+                if (dbPrefs && dbPrefs.selectedWorkspaceId) {
+                    savedWorkspaceId = dbPrefs.selectedWorkspaceId;
+                    localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
+
+                    // Also restore editorTabsState from DB if missing locally
+                    if (!localStorage.getItem('editorTabsState') && dbPrefs.editorTabsState) {
+                        localStorage.setItem('editorTabsState', dbPrefs.editorTabsState);
+                    }
+                }
+            }
+
             if (savedWorkspaceId) {
                 const savedId = parseInt(savedWorkspaceId);
                 const hasAccess = userWorkspaces.some(w => w.id === savedId);
@@ -3358,9 +3515,11 @@ async function loadWorkspaces() {
                 } else {
                     currentWorkspaceId = userWorkspaces[0].id;
                 }
-            } else {
+            } else if (!currentWorkspaceId) {
                 currentWorkspaceId = userWorkspaces[0].id;
             }
+            // Persist the selection so it survives page reloads and re-login
+            localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
         }
 
         // Select current workspace
