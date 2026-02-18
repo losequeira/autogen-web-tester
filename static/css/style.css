@@ -920,7 +920,7 @@ body {
 
 /* Video Viewer Modal */
 #video-viewer-modal .modal-content {
-    max-width: 640px;
+    width: min(56rem, 85vw);
     max-height: 90vh;
     background: var(--ctp-base);
     border: 1px solid var(--ctp-surface1);
