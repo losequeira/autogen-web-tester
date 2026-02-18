@@ -303,7 +303,7 @@ def create_test(workspace_id: int, name: str, code: str, source: str, user_id: s
         'created_by': user_id,
     }).execute()
 
-    return {'message': 'Test created successfully', 'filename': filename}
+    return {'success': True, 'filename': filename}
 
 
 def update_test(workspace_id: int, filename: str, **fields) -> dict | None:
