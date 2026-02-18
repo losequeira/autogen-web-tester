@@ -1,6 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <script>
+        // Apply theme before CSS loads to prevent flash of wrong theme
+        (function() {
+            var t = localStorage.getItem('theme');
+            if (t && ['mocha','macchiato','frappe','latte'].includes(t)) {
+                document.documentElement.setAttribute('data-theme', t);
+            }
+        })();
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AutoGen Web Tester - Live Testing UI</title>
@@ -84,7 +93,7 @@
                             </div>
 
                             <div class="workspace-selector">
-                                <label for="workspace-dropdown" style="font-size: 11px; color: #858585; margin-bottom: 4px; display: block;">WORKSPACE</label>
+                                <label for="workspace-dropdown" style="font-size: 11px; color: var(--ctp-overlay1); margin-bottom: 4px; display: block;">WORKSPACE</label>
                                 <select id="workspace-dropdown" class="workspace-dropdown">
                                     <option value="">Loading workspaces...</option>
                                 </select>
@@ -95,7 +104,7 @@
                         <!-- Workspace Members (shown for shared workspaces) -->
                         <div id="workspace-members-container" class="workspace-members-container" style="display: none;">
                             <div class="workspace-members-header">
-                                <span style="font-size: 11px; color: #858585;">MEMBERS</span>
+                                <span style="font-size: 11px; color: var(--ctp-overlay1);">MEMBERS</span>
                                 <button id="invite-member-btn" class="btn-icon-small" title="Invite Member">+</button>
                             </div>
                             <div id="workspace-members-list" class="workspace-members-list">
@@ -126,6 +135,31 @@
                         </div>
                         <div id="ai-steps-list" class="file-list">
                             <!-- AI step items loaded here -->
+                        </div>
+                    </div>
+
+                    <!-- Theme Picker -->
+                    <div class="file-explorer-section theme-section">
+                        <div class="file-explorer-header">
+                            <span class="file-explorer-title">THEME</span>
+                        </div>
+                        <div class="theme-picker">
+                            <button class="theme-option" data-theme="mocha" title="Mocha (Dark)">
+                                <span class="theme-swatch theme-swatch-mocha"></span>
+                                <span class="theme-name">Mocha</span>
+                            </button>
+                            <button class="theme-option" data-theme="macchiato" title="Macchiato (Dark)">
+                                <span class="theme-swatch theme-swatch-macchiato"></span>
+                                <span class="theme-name">Macchiato</span>
+                            </button>
+                            <button class="theme-option" data-theme="frappe" title="Frapp&eacute; (Dark)">
+                                <span class="theme-swatch theme-swatch-frappe"></span>
+                                <span class="theme-name">Frapp&eacute;</span>
+                            </button>
+                            <button class="theme-option" data-theme="latte" title="Latte (Light)">
+                                <span class="theme-swatch theme-swatch-latte"></span>
+                                <span class="theme-name">Latte</span>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -379,7 +413,7 @@
                                     </button>
                                 </div>
                             </div>
-                            <div id="no-video-message" style="color: #858585; font-size: 13px;">
+                            <div id="no-video-message" style="color: var(--ctp-overlay1); font-size: 13px;">
                                 No video recording available for this test run.
                             </div>
                         </div>
@@ -405,8 +439,8 @@
                             Your browser does not support video playback.
                         </video>
                         <div class="video-viewer-info">
-                            <p id="video-viewer-timestamp" style="color: #858585; font-size: 13px; margin-top: 12px;"></p>
-                            <p id="video-viewer-size" style="color: #858585; font-size: 13px;"></p>
+                            <p id="video-viewer-timestamp" style="color: var(--ctp-overlay1); font-size: 13px; margin-top: 12px;"></p>
+                            <p id="video-viewer-size" style="color: var(--ctp-overlay1); font-size: 13px;"></p>
                         </div>
                         <div class="video-actions" style="margin-top: 16px;">
                             <button id="video-viewer-download-btn" class="btn btn-secondary">
@@ -414,7 +448,7 @@
                             </button>
                         </div>
                     </div>
-                    <div id="video-viewer-no-recording" style="display: none; text-align: center; padding: 40px; color: #858585;">
+                    <div id="video-viewer-no-recording" style="display: none; text-align: center; padding: 40px; color: var(--ctp-overlay1);">
                         <p style="font-size: 48px; margin-bottom: 16px;">🎥</p>
                         <p>No recordings available for this test.</p>
                         <p style="font-size: 13px; margin-top: 8px;">Run the test to create a recording.</p>
@@ -431,8 +465,8 @@
                 <div class="auth-brand">
                     <div class="auth-logo">
                         <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                            <rect x="2" y="2" width="28" height="28" rx="6" stroke="#10b981" stroke-width="2"/>
-                            <path d="M10 16L14 20L22 12" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            <rect x="2" y="2" width="28" height="28" rx="6" stroke="currentColor" stroke-width="2"/>
+                            <path d="M10 16L14 20L22 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
                     </div>
                     <h1 class="auth-title">AutoGen Web Tester</h1>
@@ -527,7 +561,7 @@
                             <option value="private">Private (only you)</option>
                             <option value="shared">Shared (invite others)</option>
                         </select>
-                        <small style="color: #858585; font-size: 11px;">You can invite members to shared workspaces</small>
+                        <small style="color: var(--ctp-overlay1); font-size: 11px;">You can invite members to shared workspaces</small>
                     </div>
                     <div id="new-workspace-error" class="error-message" style="display: none;"></div>
                     <div class="button-group">
@@ -559,7 +593,7 @@
                             <option value="viewer">Viewer (read-only)</option>
                             <option value="editor">Editor (can modify tests)</option>
                         </select>
-                        <small style="color: #858585; font-size: 11px;">
+                        <small style="color: var(--ctp-overlay1); font-size: 11px;">
                             Viewers can run tests, editors can also create and modify them
                         </small>
                     </div>
