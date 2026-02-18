@@ -1313,24 +1313,31 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         except Exception:
             pass
         finally:
-            loop.close()
+            try:
+                loop.close()
+            except Exception:
+                pass
 
-            # Update test artifacts if video recording was enabled
-            if artifact_dir and filename:
-                # Give the browser time to finalize the video
-                import time
-                time.sleep(1)
-                print(f"📼 Saving artifacts: filename={filename}, workspace_id={workspace_id}, status={test_status}, dir={artifact_dir}")
-                video_files = list(artifact_dir.glob("*.webm"))
-                print(f"📼 Found video files: {video_files}")
-                update_test_artifacts(
-                    filename,
-                    artifact_dir,
-                    test_status or 'unknown',
-                    workspace_id=workspace_id
-                )
-            else:
-                print(f"⚠️ Skipping artifact update: artifact_dir={artifact_dir}, filename={filename}")
+    # Update test artifacts AFTER loop cleanup (separate block so it always runs)
+    if artifact_dir and filename:
+        try:
+            import time
+            time.sleep(1)
+            print(f"📼 Saving artifacts: filename={filename}, workspace_id={workspace_id}, status={test_status}, dir={artifact_dir}")
+            video_files = list(artifact_dir.glob("*.webm"))
+            print(f"📼 Found video files: {video_files}")
+            update_test_artifacts(
+                filename,
+                artifact_dir,
+                test_status or 'unknown',
+                workspace_id=workspace_id
+            )
+        except Exception as e:
+            import traceback
+            print(f"📼 Error saving artifacts: {e}")
+            traceback.print_exc()
+    else:
+        print(f"⚠️ Skipping artifact update: artifact_dir={artifact_dir}, filename={filename}")
 
 
 def run_playwright_code_headless(code: str, filename: str, workspace_id: int = None):
