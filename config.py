@@ -2,6 +2,7 @@
 
 import os
 import secrets
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -43,6 +44,9 @@ class Config:
     SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
     SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "test-artifacts")
+
+    # Local artifact storage (Mac app — videos/HAR saved to disk)
+    ARTIFACTS_DIR: Path = Path.home() / ".autogen" / "artifacts"
 
     # Flask Secret Key (for CSRF protection)
     SECRET_KEY = os.getenv("SECRET_KEY")

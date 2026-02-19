@@ -365,8 +365,8 @@ def get_test_artifacts(workspace_id: int, filename: str) -> list[dict] | None:
 
 
 def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, status: str):
-    """Add artifact metadata after a test run. Uploads files to Supabase Storage."""
-    from storage import upload_artifact_dir
+    """Add artifact metadata after a test run. Saves files to local disk."""
+    from storage import save_artifact_dir
 
     # Get the test
     test_resp = _sb().table('tests').select('id').eq(
@@ -382,8 +382,8 @@ def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, stat
     timestamp = artifact_dir.name
     test_name = Path(filename).stem
 
-    # Upload files to Supabase Storage
-    storage_paths = upload_artifact_dir(artifact_dir_abs, workspace_id, test_name, timestamp)
+    # Save files to ~/.autogen/artifacts/
+    storage_paths = save_artifact_dir(artifact_dir_abs, workspace_id, test_name, timestamp)
 
     video_size_mb = 0
     if storage_paths.get('video_local'):
@@ -422,7 +422,7 @@ def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, stat
 
 
 def _cleanup_old_artifacts(test_id: int, keep_last_n: int = 10):
-    """Remove old artifact DB rows and Supabase Storage files, keeping only the last N."""
+    """Remove old artifact DB rows and local disk files, keeping only the last N."""
     from storage import delete_artifact
 
     resp = _sb().table('test_artifacts').select('*').eq(

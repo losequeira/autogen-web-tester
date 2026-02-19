@@ -45,7 +45,7 @@ init_auth(app)
 
 
 # ========== WORKSPACE HELPER FUNCTIONS ==========
-# (Workspace paths removed — artifacts now stored in Supabase Storage)
+# (Workspace paths removed — artifacts stored locally in ~/.autogen/artifacts/)
 # ========== END WORKSPACE HELPER FUNCTIONS ==========
 
 # Initialize code generation agent
@@ -642,7 +642,7 @@ async def run_test_async(task: str, test_filename: str = None, workspace_id: int
         from pathlib import Path
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        # Use a temp directory for Playwright recording (uploaded to Supabase Storage later)
+        # Use a temp directory for Playwright recording (moved to ~/.autogen/artifacts/ after run)
         artifact_dir = Path(tempfile.mkdtemp(prefix='awt_')) / timestamp
         artifact_dir.mkdir(parents=True, exist_ok=True)
         video_dir = str(artifact_dir)
@@ -1089,7 +1089,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        # Use a temp directory for Playwright recording (uploaded to Supabase Storage later)
+        # Use a temp directory for Playwright recording (moved to ~/.autogen/artifacts/ after run)
         artifact_dir = Path(tempfile.mkdtemp(prefix='awt_')) / timestamp
         artifact_dir.mkdir(parents=True, exist_ok=True)
         video_dir = str(artifact_dir)
@@ -1834,16 +1834,14 @@ def delete_workspace_test(workspace_id, filename):
 @login_required
 @workspace_access_required(permission='read')
 def get_workspace_test_artifacts(workspace_id, filename):
-    """Get list of artifacts for a test in a workspace, with signed video URLs."""
-    from storage import get_signed_url
+    """Get list of artifacts for a test in a workspace, with local video URLs."""
     try:
         artifacts = db.get_test_artifacts(workspace_id, filename)
         if artifacts is None:
             return jsonify({'error': 'Test not found'}), 404
-        # Inline signed URLs so the client doesn't need a second round trip
         for a in artifacts:
             if a.get('video_path'):
-                a['video_url'] = get_signed_url(a['video_path'])
+                a['video_url'] = f"/api/video/{a['video_path']}"
         return jsonify(artifacts), 200
     except Exception as e:
         print(f"Error getting test artifacts: {e}")
@@ -2179,16 +2177,21 @@ def update_ai_step_markdown(filename):
 @app.route('/api/artifacts/<path:filepath>')
 @login_required
 def serve_artifact(filepath):
-    """Return a signed URL for a test artifact in Supabase Storage."""
-    from storage import get_signed_url
+    """Return the local video URL for a test artifact."""
+    return jsonify({'url': f'/api/video/{filepath}'}), 200
 
-    print(f"[serve_artifact] filepath={filepath}")
-    signed_url = get_signed_url(filepath)
-    print(f"[serve_artifact] signed_url={'OK' if signed_url else 'None'}")
-    if not signed_url:
+
+@app.route('/api/video/<path:filepath>')
+@login_required
+def stream_video(filepath):
+    """Stream a local artifact file (video or HAR) from ~/.autogen/artifacts/."""
+    from flask import send_file
+    from config import Config
+
+    full_path = Config.ARTIFACTS_DIR / filepath
+    if not full_path.exists():
         return jsonify({'error': 'Artifact not found'}), 404
-
-    return jsonify({'url': signed_url}), 200
+    return send_file(full_path)
 
 
 @app.route('/api/saved-tests/<filename>/artifacts')
