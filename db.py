@@ -258,6 +258,7 @@ def get_tests(workspace_id: int) -> list[dict]:
         results.append({
             'filename': t['filename'],
             'name': t['name'],
+            'code': t['code'],
             'created': t['created_at'],
             'source': t['source'],
             'last_run_status': t['last_run_status'],

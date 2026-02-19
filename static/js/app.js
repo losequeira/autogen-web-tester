@@ -79,6 +79,9 @@ const socket = io({ query: { token: authToken || '' } });
 let currentUser = null;
 let currentWorkspaceId = null;
 
+// Cache of tests keyed by filename, populated when the file explorer loads
+let testCache = {};
+
 // ========== USER PREFERENCES SYNC ==========
 // Debounce timer for batching preference saves to DB
 let _prefSaveTimer = null;
@@ -1451,6 +1454,9 @@ function loadFileExplorer() {
         .then(res => res.json())
         .then(data => {
             const tests = data.tests || [];
+            // Cache tests by filename so openFileFromExplorer can skip the extra round-trip
+            testCache = {};
+            tests.forEach(t => { testCache[t.filename] = t; });
             fileList.innerHTML = '';
 
             if (tests.length === 0) {
@@ -1546,10 +1552,18 @@ function loadFileExplorer() {
 }
 
 function openFileFromExplorer(filename, name) {
+    const cached = testCache[filename];
+    if (cached && cached.code) {
+        openTab(filename, name, cached.code);
+        return;
+    }
+
+    // Fallback: fetch from server if cache is cold
     authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`)
         .then(res => res.json())
         .then(data => {
             if (data && data.code) {
+                testCache[filename] = data;
                 openTab(filename, name, data.code);
             }
         })
