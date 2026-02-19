@@ -686,9 +686,26 @@ socket.on('codegen_error', (data) => {
 // Load Example button removed - use AI Steps section instead
 
 clearLogBtn.addEventListener('click', () => {
-    humanLogContainer.innerHTML = '';
-    technicalLogContainer.innerHTML = '';
+    humanLogContainer.replaceChildren();
+    technicalLogContainer.replaceChildren();
     addLogEntry('info', 'Log cleared');
+});
+
+const copyLogBtn = document.getElementById('copy-log');
+copyLogBtn.addEventListener('click', () => {
+    const activeContainer = humanLogContainer.classList.contains('active')
+        ? humanLogContainer
+        : technicalLogContainer;
+    const lines = [...activeContainer.querySelectorAll('.log-entry')].map(entry => {
+        const ts = entry.querySelector('.timestamp')?.textContent?.trim() || '';
+        const msg = entry.querySelector('.message')?.textContent?.trim() || '';
+        return ts ? `[${ts}] ${msg}` : msg;
+    });
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+        const orig = copyLogBtn.textContent;
+        copyLogBtn.textContent = '✓';
+        setTimeout(() => { copyLogBtn.textContent = orig; }, 1500);
+    });
 });
 
 // Stop test button handler

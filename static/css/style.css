@@ -428,6 +428,9 @@ body {
     font-size: 12px;
     line-height: 1.5;
     display: none;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
 }
 
 .log-container.active {
@@ -445,6 +448,8 @@ body {
     padding: 8px;
     border-radius: 4px;
     background: rgba(166, 173, 200, 0.05);
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 .log-entry .timestamp {
