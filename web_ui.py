@@ -51,6 +51,10 @@ init_auth(app)
 # Initialize code generation agent
 code_agent = CodeGenerationAgent(api_key=config.OPENAI_API_KEY)
 
+# Initialize workspace agent (tool-calling agent for file management)
+from workspace_agent import WorkspaceAgent
+workspace_agent = WorkspaceAgent()
+
 # Store active browser session and task
 active_browser = None
 active_task = None
@@ -2474,35 +2478,54 @@ def handle_run_ai_step(data):
 @socketio.on('chat_message')
 def handle_chat_message(data):
     """Handle chat message from AI Chat tab."""
-    message = data.get('message')
+    message = data.get('message', '')
     existing_code = data.get('existing_code')
-    image = data.get('image')  # Base64 encoded image
-    file_type = data.get('file_type', 'unknown')  # Get file type for context-aware assistance
+    image = data.get('image')
+    workspace_id = data.get('workspace_id')
+    user_id = data.get('user_id')
 
     if not message and not image:
         emit('chat_error', {'message': 'No message or image provided'})
         return
 
-    # Run in background to avoid blocking
-    socketio.start_background_task(handle_code_chat, message, existing_code, image, file_type)
+    if workspace_id and user_id:
+        # Use workspace agent with full tool access
+        socketio.start_background_task(
+            _run_workspace_agent, message, existing_code, image, workspace_id, user_id
+        )
+    else:
+        # Fallback: no workspace context, use simple code agent
+        file_type = data.get('file_type', 'unknown')
+        socketio.start_background_task(handle_code_chat, message, existing_code, image, file_type)
+
+
+def _run_workspace_agent(message, existing_code, image, workspace_id, user_id):
+    """Background task: run workspace agent with tool-calling loop."""
+    try:
+        workspace_agent.run(
+            message=message,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            emit_fn=socketio.emit,
+            image=image,
+            existing_code=existing_code,
+        )
+    except Exception as e:
+        socketio.emit('chat_error', {'message': str(e)})
 
 
 def handle_code_chat(message, existing_code, image=None, file_type='unknown'):
-    """Background task to handle code generation chat."""
+    """Background task to handle code generation chat (fallback, no workspace)."""
     try:
-        # Generate response using code agent (with optional image and file type)
         result = code_agent.generate_response(message, existing_code, image, file_type)
 
-        # Emit AI response
         socketio.emit('chat_response', {
             'role': 'ai',
             'message': result['message'],
             'timestamp': datetime.now().isoformat()
         })
 
-        # Emit generated code or content (steps) if available
         if result.get('code'):
-            # For test files - send code
             socketio.emit('code_suggestion', {
                 'code': result['code'],
                 'explanation': result.get('explanation', ''),
@@ -2510,9 +2533,8 @@ def handle_code_chat(message, existing_code, image=None, file_type='unknown'):
                 'content_type': 'code'
             })
         elif result.get('content'):
-            # For AI steps files - send steps content
             socketio.emit('code_suggestion', {
-                'code': result['content'],  # Using 'code' field for compatibility with frontend
+                'code': result['content'],
                 'explanation': result.get('explanation', ''),
                 'action': 'suggest',
                 'content_type': 'steps'
@@ -2523,9 +2545,13 @@ def handle_code_chat(message, existing_code, image=None, file_type='unknown'):
 
 
 @socketio.on('clear_chat')
-def handle_clear_chat():
+def handle_clear_chat(data=None):
     """Handle chat history clear request."""
-    code_agent.clear_history()
+    workspace_id = (data or {}).get('workspace_id')
+    if workspace_id:
+        workspace_agent.clear_history(workspace_id)
+    else:
+        code_agent.clear_history()
     emit('log', {'type': 'info', 'message': 'Chat history cleared'})
 
 

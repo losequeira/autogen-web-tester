@@ -3214,7 +3214,9 @@ function sendChatMessage() {
         message: message || 'Analyze this image and generate relevant Playwright code',
         existing_code: existingCode || null,
         image: currentImage,
-        file_type: fileType  // Send file type for context-aware assistance
+        file_type: fileType,
+        workspace_id: currentWorkspaceId,
+        user_id: currentUser ? currentUser.id : null,
     });
 
     // Clear image after sending
@@ -3356,13 +3358,11 @@ function appendChatMessageWithImage(type, content, imageSrc) {
 
 // Socket.IO event handlers for chat
 socket.on('chat_response', (data) => {
-    // Remove loading indicator
-    const systemMessages = chatMessages.querySelectorAll('.chat-message.system');
-    systemMessages.forEach(msg => {
-        if (msg.textContent.includes('thinking')) {
-            msg.remove();
-        }
+    // Remove loading indicators (thinking + tool-call)
+    chatMessages.querySelectorAll('.chat-message.system').forEach(msg => {
+        if (msg.textContent.includes('thinking')) msg.remove();
     });
+    chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
 
     // Add AI response
     appendChatMessage('ai', data.message);
@@ -3397,6 +3397,47 @@ socket.on('chat_error', (data) => {
     });
 
     appendChatMessage('system', `Error: ${data.message}`);
+});
+
+// Agent tool call notification — shown as a subtle status line in chat
+const TOOL_LABELS = {
+    list_tests:     '📋 Listing tests…',
+    list_ai_steps:  '📋 Listing AI steps…',
+    read_test:      '📖 Reading test…',
+    read_ai_step:   '📖 Reading AI steps…',
+    search_files:   '🔍 Searching files…',
+    create_test:    '✏️ Creating test…',
+    create_ai_step: '✏️ Creating AI steps…',
+    update_test:    '💾 Updating test…',
+    update_ai_step: '💾 Updating AI steps…',
+};
+
+socket.on('agent_tool_call', (data) => {
+    const label = TOOL_LABELS[data.tool] || `🔧 ${data.tool}…`;
+    // Show a transient tool-call indicator (replaces previous one if still present)
+    const existing = chatMessages.querySelector('.chat-message.tool-call');
+    if (existing) existing.remove();
+    const div = document.createElement('div');
+    div.className = 'chat-message tool-call';
+    div.textContent = label;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
+});
+
+socket.on('file_created', (data) => {
+    // Remove any tool-call indicators now that the agent finished a create action
+    chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
+    // Refresh the file explorer so the new file appears immediately
+    if (currentWorkspaceId) {
+        loadFileExplorer(currentWorkspaceId);
+    }
+});
+
+socket.on('file_updated', (data) => {
+    chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
+    if (currentWorkspaceId) {
+        loadFileExplorer(currentWorkspaceId);
+    }
 });
 
 // ========================================
