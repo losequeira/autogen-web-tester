@@ -365,10 +365,10 @@ def get_test_artifacts(workspace_id: int, filename: str) -> list[dict] | None:
 
 
 def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, status: str):
-    """Add artifact metadata after a test run. Saves files to local disk."""
+    """Save the latest recording to disk and upsert one artifact row per test."""
+    import shutil
     from storage import save_artifact_dir
 
-    # Get the test
     test_resp = _sb().table('tests').select('id').eq(
         'workspace_id', workspace_id
     ).eq('filename', filename).execute()
@@ -379,17 +379,18 @@ def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, stat
 
     test_id = test_resp.data[0]['id']
     artifact_dir_abs = artifact_dir.resolve()
-    timestamp = artifact_dir.name
     test_name = Path(filename).stem
+    timestamp = datetime.utcnow().isoformat()
 
-    # Save files to ~/.autogen/artifacts/
-    storage_paths = save_artifact_dir(artifact_dir_abs, workspace_id, test_name, timestamp)
+    # Move files to fixed path ~/.autogen/artifacts/{workspace_id}/{test_name}/
+    storage_paths = save_artifact_dir(artifact_dir_abs, workspace_id, test_name)
 
     video_size_mb = 0
     if storage_paths.get('video_local'):
         video_size_mb = storage_paths['video_local'].stat().st_size / (1024 * 1024)
 
-    # Insert artifact row
+    # Upsert: replace any existing artifact row for this test with the latest run
+    _sb().table('test_artifacts').delete().eq('test_id', test_id).execute()
     _sb().table('test_artifacts').insert({
         'test_id': test_id,
         'timestamp': timestamp,
@@ -399,46 +400,20 @@ def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, stat
         'status': status,
     }).execute()
 
-    # Update test run metadata
     _sb().table('tests').update({
         'last_run_status': status,
-        'last_run_time': datetime.utcnow().isoformat(),
-        'updated_at': datetime.utcnow().isoformat(),
+        'last_run_time': timestamp,
+        'updated_at': timestamp,
     }).eq('id', test_id).execute()
 
-    print(f"Updated test metadata with artifact: {storage_paths.get('video_path')}")
+    print(f"Artifact saved: {storage_paths.get('video_path')}")
 
-    # Clean up local temp files
-    import shutil
+    # Clean up Playwright temp dir
     try:
         if artifact_dir_abs.exists():
             shutil.rmtree(artifact_dir_abs)
-            print(f"Cleaned up local temp dir: {artifact_dir_abs}")
     except Exception as e:
-        print(f"Warning: Could not remove local temp dir: {e}")
-
-    # Cleanup old artifacts (keep last 10)
-    _cleanup_old_artifacts(test_id, keep_last_n=10)
-
-
-def _cleanup_old_artifacts(test_id: int, keep_last_n: int = 10):
-    """Remove old artifact DB rows and local disk files, keeping only the last N."""
-    from storage import delete_artifact
-
-    resp = _sb().table('test_artifacts').select('*').eq(
-        'test_id', test_id
-    ).order('created_at', desc=True).execute()
-
-    artifacts = resp.data or []
-    if len(artifacts) <= keep_last_n:
-        return
-
-    for old in artifacts[keep_last_n:]:
-        if old.get('video_path'):
-            delete_artifact(old['video_path'])
-        if old.get('har_path'):
-            delete_artifact(old['har_path'])
-        _sb().table('test_artifacts').delete().eq('id', old['id']).execute()
+        print(f"Warning: Could not remove temp dir: {e}")
 
 
 def get_recent_recordings(workspace_id: int, limit: int = 20) -> list[dict]:
