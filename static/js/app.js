@@ -3735,10 +3735,39 @@ async function checkAuthentication() {
             hideAuthModals();
             await loadUserWorkspaces();
             return true;
-        } else {
-            showLoginModal();
-            return false;
         }
+
+        // Access token may be expired. Try refreshing silently before prompting login.
+        if (refreshToken) {
+            try {
+                const refreshResp = await fetch('/api/refresh-token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ refresh_token: refreshToken })
+                });
+                if (refreshResp.ok) {
+                    const refreshData = await refreshResp.json();
+                    storeTokens(refreshData.access_token, refreshData.refresh_token);
+
+                    // Retry with the new access token
+                    const retryResp = await authFetch('/api/check-auth');
+                    const retryData = await retryResp.json();
+                    if (retryData.authenticated) {
+                        currentUser = retryData.user;
+                        hideAuthModals();
+                        await loadUserWorkspaces();
+                        return true;
+                    }
+                }
+            } catch (refreshErr) {
+                console.warn('Silent token refresh failed:', refreshErr);
+            }
+            // Refresh token is also expired or invalid — clear everything
+            clearTokens();
+        }
+
+        showLoginModal();
+        return false;
     } catch (error) {
         console.error('Auth check failed:', error);
         showLoginModal();
