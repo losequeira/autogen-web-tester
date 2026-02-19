@@ -3594,3 +3594,25 @@ body {
     cursor: pointer;
 }
 /* ========== END CUSTOM VIDEO PLAYER CONTROLS ========== */
+
+/* ========== FILE LIST LOADING STATE ========== */
+.file-list-loading {
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ctp-overlay1);
+    font-size: 12px;
+}
+
+.file-list-spinner {
+    flex-shrink: 0;
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--ctp-surface2);
+    border-top-color: var(--ctp-accent);
+    border-radius: 50%;
+    animation: spinner-rotate 0.8s linear infinite;
+}
+/* ========== END FILE LIST LOADING STATE ========== */

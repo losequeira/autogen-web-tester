@@ -1450,6 +1450,8 @@ function loadFileExplorer() {
         return;
     }
 
+    fileList.innerHTML = '<div class="file-list-loading"><span class="file-list-spinner"></span>Loading tests…</div>';
+
     authFetch(`/api/workspaces/${currentWorkspaceId}/tests`)
         .then(res => res.json())
         .then(data => {
@@ -2048,6 +2050,8 @@ async function loadAiSteps() {
         aiStepsList.innerHTML = '<div class="file-list-empty">Select a workspace</div>';
         return;
     }
+
+    aiStepsList.innerHTML = '<div class="file-list-loading"><span class="file-list-spinner"></span>Loading…</div>';
 
     try {
         const response = await authFetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
@@ -3849,6 +3853,13 @@ async function handleLogin(event) {
     const password = document.getElementById('login-password').value;
     const remember = document.getElementById('login-remember').checked;
 
+    const btn = document.getElementById('login-submit-btn');
+    const btnText = btn.querySelector('.auth-submit-text');
+    const btnSpinner = btn.querySelector('.auth-submit-spinner');
+    btn.disabled = true;
+    btnText.style.display = 'none';
+    btnSpinner.style.display = '';
+
     try {
         const response = await fetch('/api/login', {
             method: 'POST',
@@ -3903,6 +3914,10 @@ async function handleLogin(event) {
         console.error('Login error:', error);
         loginError.textContent = 'Login failed. Please try again.';
         loginError.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+        btnText.style.display = '';
+        btnSpinner.style.display = 'none';
     }
 }
 
@@ -3914,12 +3929,19 @@ async function handleRegister(event) {
     const password = document.getElementById('register-password').value;
     const passwordConfirm = document.getElementById('register-password-confirm').value;
 
-    // Client-side validation
+    // Client-side validation (before showing loading state)
     if (password !== passwordConfirm) {
         registerError.textContent = 'Passwords do not match';
         registerError.style.display = 'block';
         return;
     }
+
+    const btn = document.getElementById('register-submit-btn');
+    const btnText = btn.querySelector('.auth-submit-text');
+    const btnSpinner = btn.querySelector('.auth-submit-spinner');
+    btn.disabled = true;
+    btnText.style.display = 'none';
+    btnSpinner.style.display = '';
 
     try {
         const response = await fetch('/api/register', {
@@ -3975,6 +3997,10 @@ async function handleRegister(event) {
         console.error('Registration error:', error);
         registerError.textContent = 'Registration failed. Please try again.';
         registerError.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+        btnText.style.display = '';
+        btnSpinner.style.display = 'none';
     }
 }
 
