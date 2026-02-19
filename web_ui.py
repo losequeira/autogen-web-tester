@@ -1269,7 +1269,8 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 if video_dir and 'record_video_dir' not in kwargs:
                     print(f"📹 Adding video recording to user-created context: {video_dir}")
                     kwargs['record_video_dir'] = video_dir
-                    kwargs['record_video_size'] = {"width": 1280, "height": 720}
+                    kwargs['record_video_size'] = {'width': config.VIDEO_SIZE_WIDTH, 'height': config.VIDEO_SIZE_HEIGHT}
+                    kwargs.setdefault('viewport', {'width': config.VIDEO_SIZE_WIDTH, 'height': config.VIDEO_SIZE_HEIGHT})
                     # Also add HAR recording if not present
                     if 'record_har_path' not in kwargs:
                         kwargs['record_har_path'] = f"{video_dir}/network.har"
@@ -1344,10 +1345,10 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                     print(f"📹 Creating browser context with video recording to: {video_dir}")
                     context_options = {
                         'record_video_dir': video_dir,
-                        'record_video_size': {"width": 1280, "height": 720}
+                        'record_video_size': {'width': config.VIDEO_SIZE_WIDTH, 'height': config.VIDEO_SIZE_HEIGHT},
+                        'viewport': {'width': config.VIDEO_SIZE_WIDTH, 'height': config.VIDEO_SIZE_HEIGHT},
+                        'record_har_path': f"{video_dir}/network.har",
                     }
-                    # Also record HAR file for network activity
-                    context_options['record_har_path'] = f"{video_dir}/network.har"
                     raw_context = await browser.new_context(**context_options)
                     default_context = ContextWrapper(raw_context)
 

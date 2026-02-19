@@ -39,10 +39,13 @@ class BrowserTool:
         self.browser = await self.playwright.chromium.launch(headless=self.headless)
 
         # Create context with recording options if specified
-        context_options = {}
+        import config as _config
+        context_options = {
+            'viewport': {'width': _config.VIDEO_SIZE_WIDTH, 'height': _config.VIDEO_SIZE_HEIGHT},
+        }
         if self.record_video_dir:
             context_options['record_video_dir'] = self.record_video_dir
-            context_options['record_video_size'] = {"width": 1280, "height": 720}
+            context_options['record_video_size'] = {'width': _config.VIDEO_SIZE_WIDTH, 'height': _config.VIDEO_SIZE_HEIGHT}
 
         if self.record_har and self.record_video_dir:
             context_options['record_har_path'] = f"{self.record_video_dir}/network.har"
