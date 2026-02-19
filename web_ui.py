@@ -59,6 +59,7 @@ workspace_agent = WorkspaceAgent()
 active_browser = None
 active_task = None
 stop_requested = False
+active_loop = None   # Event loop of the currently running test (for hard stop)
 
 # Track current AI step execution for code generation prompt
 current_ai_step = None  # {'filename': '...', 'name': '...'}
@@ -1021,18 +1022,19 @@ These rules apply to ALL tasks. Users will give you natural language instruction
 
 def run_test_sync(task: str, test_filename: str = None, workspace_id: int = None):
     """Wrapper to run async test in sync context."""
+    global active_loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    active_loop = loop
     try:
         loop.run_until_complete(run_test_async(task, test_filename, workspace_id))
     finally:
+        active_loop = None
         # Properly shutdown the event loop to avoid crashes
         try:
-            # Cancel all pending tasks
             pending = asyncio.all_tasks(loop)
             for task in pending:
                 task.cancel()
-            # Run loop until all tasks are cancelled
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         except Exception:
             pass
@@ -1077,11 +1079,12 @@ def run_playwright_code(code: str):
 
 def run_playwright_code_with_streaming(code: str, filename: str = None, workspace_id: int = None):
     """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
-    global stop_requested
+    global stop_requested, active_loop
     stop_requested = False  # Reset stop flag at the start of execution
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    active_loop = loop
 
     # Create artifacts directory for this test run if filename provided
     artifact_dir = None
@@ -1468,6 +1471,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
         socketio.emit('test_complete', {'status': 'error'})
     finally:
+        active_loop = None
         try:
             pending = asyncio.all_tasks(loop)
             for task in pending:
@@ -2285,10 +2289,23 @@ def handle_run_test(data):
 
 @socketio.on('stop_test')
 def handle_stop_test():
-    """Handle test stop request."""
-    global stop_requested
+    """Hard-stop the running test by cancelling all asyncio tasks immediately."""
+    global stop_requested, active_loop
     stop_requested = True
-    emit('log', {'type': 'info', 'message': 'Stop request received, stopping test...'})
+
+    loop = active_loop
+    if loop and not loop.is_closed():
+        # Schedule cancellation of every task on the running loop from this thread.
+        # call_soon_threadsafe is safe to call from any thread and wakes the loop
+        # immediately, causing CancelledError to be raised inside whatever is awaited.
+        def _cancel_all():
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+
+        loop.call_soon_threadsafe(_cancel_all)
+        emit('log', {'type': 'info', 'message': '⏹ Test stopped'})
+    else:
+        emit('log', {'type': 'info', 'message': '⏹ Stop requested (no active test)'})
 
 
 @socketio.on('run_playwright_code')
