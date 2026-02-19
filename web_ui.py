@@ -2182,13 +2182,20 @@ def serve_artifact(filepath):
 
 
 @app.route('/api/video/<path:filepath>')
-@login_required
 def stream_video(filepath):
-    """Stream a local artifact file (video or HAR) from ~/.autogen/artifacts/."""
+    """Stream a local artifact file (video or HAR) from ~/.autogen/artifacts/.
+
+    No auth header needed — the browser <video> element fetches this directly.
+    Path-traversal is prevented by checking the resolved path stays inside ARTIFACTS_DIR.
+    """
     from flask import send_file
     from config import Config
 
-    full_path = Config.ARTIFACTS_DIR / filepath
+    base = Config.ARTIFACTS_DIR.resolve()
+    full_path = (base / filepath).resolve()
+    # Prevent path traversal outside the artifacts directory
+    if not str(full_path).startswith(str(base)):
+        return jsonify({'error': 'Forbidden'}), 403
     if not full_path.exists():
         return jsonify({'error': 'Artifact not found'}), 404
     return send_file(full_path)
