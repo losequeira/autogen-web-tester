@@ -4303,12 +4303,25 @@ closeInviteMemberBtns.forEach(btn => {
 // ========== THEME MANAGEMENT ==========
 const VALID_THEMES = ['mocha', 'macchiato', 'frappe', 'latte'];
 
+// macOS title bar colors to match each Catppuccin theme's --ctp-base
+const THEME_TITLEBAR = {
+    mocha:     { hex: '#1e1e2e', dark: true  },
+    macchiato: { hex: '#24273a', dark: true  },
+    frappe:    { hex: '#303446', dark: true  },
+    latte:     { hex: '#eff1f5', dark: false },
+};
+
 function applyTheme(themeName) {
     if (!VALID_THEMES.includes(themeName)) themeName = 'mocha';
     document.documentElement.setAttribute('data-theme', themeName);
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.theme === themeName);
     });
+    // Sync the native macOS title bar when running inside PyWebView
+    const tb = THEME_TITLEBAR[themeName] || THEME_TITLEBAR.mocha;
+    if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.set_title_bar_color(tb.hex, tb.dark);
+    }
 }
 
 function initThemePicker() {

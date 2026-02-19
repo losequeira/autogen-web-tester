@@ -89,6 +89,39 @@ def _start_server(port: int) -> None:
     )
 
 
+def _apply_macos_titlebar(hex_color: str, is_dark: bool) -> None:
+    """Set the macOS native window title bar color and appearance via PyObjC."""
+    try:
+        from AppKit import NSApp, NSColor, NSAppearance
+        ns_window = NSApp.mainWindow()
+        if not ns_window:
+            return
+        hex_color = hex_color.lstrip('#')
+        r, g, b = (int(hex_color[i:i+2], 16) / 255 for i in (0, 2, 4))
+        ns_window.setTitlebarAppearsTransparent_(True)
+        ns_window.setBackgroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(r, g, b, 1.0)
+        )
+        appearance_name = 'NSAppearanceNameDarkAqua' if is_dark else 'NSAppearanceNameAqua'
+        ns_window.setAppearance_(NSAppearance.appearanceNamed_(appearance_name))
+    except Exception as e:
+        print(f"Title bar customization failed: {e}")
+
+
+class _WindowAPI:
+    """Methods on this class are callable from JavaScript as window.pywebview.api.*"""
+
+    def set_title_bar_color(self, hex_color: str, is_dark: bool = True) -> None:
+        """Called by the frontend whenever the user switches themes."""
+        _apply_macos_titlebar(hex_color, is_dark)
+
+
+def _setup_titlebar() -> None:
+    """Run once after PyWebView starts — applies the default (mocha) title bar color."""
+    time.sleep(0.5)  # let the native window finish appearing
+    _apply_macos_titlebar('#1e1e2e', True)
+
+
 def main() -> None:
     import webview
 
@@ -109,8 +142,9 @@ def main() -> None:
         width=1400,
         height=900,
         min_size=(800, 600),
+        js_api=_WindowAPI(),
     )
-    webview.start()
+    webview.start(func=_setup_titlebar)
 
 
 if __name__ == "__main__":
