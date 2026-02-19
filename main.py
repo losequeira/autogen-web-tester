@@ -90,22 +90,34 @@ def _start_server(port: int) -> None:
 
 
 def _apply_macos_titlebar(hex_color: str, is_dark: bool) -> None:
-    """Set the macOS native window title bar color and appearance via PyObjC."""
+    """Dispatch a title bar color change to the macOS main thread via NSOperationQueue.
+
+    AppKit requires all UI calls to happen on the main thread.  PyWebView invokes
+    JS-API methods and the webview.start(func=…) callback from background threads,
+    so we always bounce through the main operation queue.
+    """
+    def _work():
+        try:
+            from AppKit import NSApp, NSColor, NSAppearance
+            ns_window = NSApp.mainWindow()
+            if not ns_window:
+                return
+            clean = hex_color.lstrip('#')
+            r, g, b = (int(clean[i:i+2], 16) / 255 for i in (0, 2, 4))
+            ns_window.setTitlebarAppearsTransparent_(True)
+            ns_window.setBackgroundColor_(
+                NSColor.colorWithRed_green_blue_alpha_(r, g, b, 1.0)
+            )
+            name = 'NSAppearanceNameDarkAqua' if is_dark else 'NSAppearanceNameAqua'
+            ns_window.setAppearance_(NSAppearance.appearanceNamed_(name))
+        except Exception as e:
+            print(f"Title bar update failed: {e}")
+
     try:
-        from AppKit import NSApp, NSColor, NSAppearance
-        ns_window = NSApp.mainWindow()
-        if not ns_window:
-            return
-        hex_color = hex_color.lstrip('#')
-        r, g, b = (int(hex_color[i:i+2], 16) / 255 for i in (0, 2, 4))
-        ns_window.setTitlebarAppearsTransparent_(True)
-        ns_window.setBackgroundColor_(
-            NSColor.colorWithRed_green_blue_alpha_(r, g, b, 1.0)
-        )
-        appearance_name = 'NSAppearanceNameDarkAqua' if is_dark else 'NSAppearanceNameAqua'
-        ns_window.setAppearance_(NSAppearance.appearanceNamed_(appearance_name))
+        from Foundation import NSOperationQueue
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_work)
     except Exception as e:
-        print(f"Title bar customization failed: {e}")
+        print(f"Could not dispatch title bar update to main thread: {e}")
 
 
 class _WindowAPI:
