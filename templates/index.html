@@ -223,32 +223,32 @@
                             </div>
                         </div>
 
-                        <div class="dashboard-stats">
+                        <div class="dashboard-stats" id="dashboard-stats">
                             <div class="stat-card stat-primary">
                                 <div class="stat-icon">📝</div>
                                 <div class="stat-content">
-                                    <div class="stat-value" id="dashboard-saved-tests">0</div>
+                                    <div class="stat-value" id="dashboard-saved-tests"><span class="stat-skeleton"></span></div>
                                     <div class="stat-label">SAVED TESTS</div>
                                 </div>
                             </div>
                             <div class="stat-card stat-success">
                                 <div class="stat-icon">✓</div>
                                 <div class="stat-content">
-                                    <div class="stat-value" id="dashboard-passed">0</div>
+                                    <div class="stat-value" id="dashboard-passed"><span class="stat-skeleton"></span></div>
                                     <div class="stat-label">PASSED</div>
                                 </div>
                             </div>
                             <div class="stat-card stat-error">
                                 <div class="stat-icon">✗</div>
                                 <div class="stat-content">
-                                    <div class="stat-value" id="dashboard-failed">0</div>
+                                    <div class="stat-value" id="dashboard-failed"><span class="stat-skeleton"></span></div>
                                     <div class="stat-label">FAILED</div>
                                 </div>
                             </div>
                             <div class="stat-card stat-info">
                                 <div class="stat-icon">🤖</div>
                                 <div class="stat-content">
-                                    <div class="stat-value" id="dashboard-ai-steps">0</div>
+                                    <div class="stat-value" id="dashboard-ai-steps"><span class="stat-skeleton"></span></div>
                                     <div class="stat-label">AI STEPS</div>
                                 </div>
                             </div>
@@ -257,7 +257,10 @@
                         <div class="dashboard-recordings">
                             <h2>📹 Recent Recordings</h2>
                             <div id="recordings-gallery" class="recordings-gallery">
-                                <!-- Video thumbnails will be loaded here -->
+                                <!-- Skeleton cards shown while loading -->
+                                <div class="recording-card skeleton-card" id="recordings-skeleton-1"></div>
+                                <div class="recording-card skeleton-card" id="recordings-skeleton-2"></div>
+                                <div class="recording-card skeleton-card" id="recordings-skeleton-3"></div>
                             </div>
                             <div id="no-recordings-message" class="no-recordings-message" style="display: none;">
                                 <p>No test recordings available yet</p>

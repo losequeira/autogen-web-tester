@@ -1845,34 +1845,44 @@ function hideDashboardContent() {
     if (dashboardView) dashboardView.style.display = 'none';
 }
 
+function _setStatValue(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
 async function loadDashboardStats() {
+    if (!currentWorkspaceId) return;
+
+    // Show skeletons
+    ['dashboard-saved-tests', 'dashboard-passed', 'dashboard-failed', 'dashboard-ai-steps'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '<span class="stat-skeleton"></span>';
+    });
+
     try {
-        if (!currentWorkspaceId) return;
-
-        // Fetch saved tests for current workspace
-        const testsResponse = await authFetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
+        const [testsResponse, aiStepsResponse] = await Promise.all([
+            authFetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`),
+            authFetch(`/api/ai-steps?workspace_id=${currentWorkspaceId}`),
+        ]);
         const tests = await testsResponse.json();
-
-        // Fetch AI steps for current workspace
-        const aiStepsResponse = await authFetch(`/api/ai-steps?workspace_id=${currentWorkspaceId}`);
         const aiSteps = await aiStepsResponse.json();
 
-        // Calculate statistics
         const totalTests = tests.length;
         const passedTests = tests.filter(t => t.last_run_status === 'success').length;
         const failedTests = tests.filter(t => t.last_run_status === 'error').length;
         const totalAiSteps = aiSteps.length;
 
-        // Update dashboard stats
-        document.getElementById('dashboard-saved-tests').textContent = totalTests;
-        document.getElementById('dashboard-passed').textContent = passedTests;
-        document.getElementById('dashboard-failed').textContent = failedTests;
-        document.getElementById('dashboard-ai-steps').textContent = totalAiSteps;
+        _setStatValue('dashboard-saved-tests', totalTests);
+        _setStatValue('dashboard-passed', passedTests);
+        _setStatValue('dashboard-failed', failedTests);
+        _setStatValue('dashboard-ai-steps', totalAiSteps);
 
-        // Load recordings gallery from DB
         await loadRecordingsGallery();
     } catch (error) {
         console.error('Error loading dashboard stats:', error);
+        ['dashboard-saved-tests', 'dashboard-passed', 'dashboard-failed', 'dashboard-ai-steps'].forEach(id => {
+            _setStatValue(id, '–');
+        });
     }
 }
 
@@ -1881,6 +1891,15 @@ async function loadRecordingsGallery() {
     const noRecordingsMessage = document.getElementById('no-recordings-message');
 
     if (!recordingsGallery) return;
+
+    // Show skeleton cards while fetching
+    recordingsGallery.style.display = 'grid';
+    noRecordingsMessage.style.display = 'none';
+    recordingsGallery.innerHTML = `
+        <div class="recording-card skeleton-card"></div>
+        <div class="recording-card skeleton-card"></div>
+        <div class="recording-card skeleton-card"></div>
+    `;
 
     try {
         const response = await authFetch(`/api/recent-recordings?workspace_id=${currentWorkspaceId}`);
@@ -1903,6 +1922,7 @@ async function loadRecordingsGallery() {
         });
     } catch (error) {
         console.error('Error loading recordings:', error);
+        recordingsGallery.innerHTML = '';
     }
 }
 
