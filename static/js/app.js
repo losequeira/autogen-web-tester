@@ -2668,16 +2668,23 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// Output Panel Toggle (VS Code style)
-toggleOutputBtn.addEventListener('click', () => {
+// Output Panel — collapsed by default (only header visible)
+const outputPreviewText = document.getElementById('output-preview-text');
+
+// Toggle on the button or anywhere on the header
+const outputPanelHeader = outputPanel.querySelector('.output-panel-header');
+outputPanelHeader.addEventListener('click', (e) => {
+    // Don't toggle when clicking log-tab buttons or clear button
+    if (e.target.closest('.log-tabs') || e.target.closest('#clear-log')) return;
     outputPanel.classList.toggle('open');
 });
 
-// Function to open output panel automatically
 function openOutputPanel() {
-    if (!outputPanel.classList.contains('open')) {
-        outputPanel.classList.add('open');
-    }
+    outputPanel.classList.add('open');
+}
+
+function _updateOutputPreview(text) {
+    if (outputPreviewText) outputPreviewText.textContent = text;
 }
 
 // Tab switching (log tabs)
@@ -2724,6 +2731,9 @@ function addLogEntry(type, message, humanMessage = null) {
     `;
     humanLogContainer.appendChild(humanEntry);
     humanLogContainer.scrollTop = humanLogContainer.scrollHeight;
+
+    // Update the collapsed-state preview with the latest human-readable entry
+    _updateOutputPreview(`${timestamp}  ${displayMessage}`);
 }
 
 function simplifyMessage(message) {
