@@ -1598,6 +1598,54 @@ body {
     border-radius: 4px;
 }
 
+.browser-screenshot-container.recording-mode img {
+    cursor: crosshair;
+    outline: 2px solid var(--ctp-red);
+    border-radius: 0 0 4px 4px;
+}
+
+/* Recording URL bar overlay */
+.recorder-url-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--ctp-mantle);
+    border-bottom: 1px solid var(--ctp-red);
+}
+
+.recorder-dot {
+    color: var(--ctp-red);
+    font-size: 12px;
+    flex-shrink: 0;
+    animation: recorder-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes recorder-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.recorder-url-input {
+    flex: 1;
+    background: var(--ctp-surface0);
+    border: 1px solid var(--ctp-surface2);
+    border-radius: 4px;
+    color: var(--ctp-text);
+    font-size: 12px;
+    padding: 3px 8px;
+    outline: none;
+}
+
+.recorder-url-input:focus {
+    border-color: var(--ctp-blue);
+}
+
 /* Browser Loading State */
 .browser-loading {
     position: absolute;

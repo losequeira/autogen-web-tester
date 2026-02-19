@@ -60,6 +60,7 @@
                         <div class="browser-controls">
                             <span id="browser-status" class="status-badge status-idle">IDLE</span>
                             <button id="stop-test-btn" class="btn-icon" style="display: none;" title="Stop Test">⏹</button>
+                            <button id="stop-recording-btn" class="btn-icon" style="display: none;" title="Stop Recording">⏹ Stop</button>
                             <button id="close-browser-sidebar" class="btn-icon">✕</button>
                         </div>
                     </div>
@@ -78,8 +79,14 @@
                                 </div>
                             </div>
 
+                            <!-- Recording URL bar (shown during interactive recording) -->
+                            <div id="recorder-url-bar" class="recorder-url-bar" style="display: none;">
+                                <span class="recorder-dot">⏺</span>
+                                <input id="recorder-url-input" class="recorder-url-input" type="text" placeholder="Enter URL and press Enter to navigate...">
+                            </div>
+
                             <!-- Browser Screenshot -->
-                            <img id="browser-screenshot" src="" alt="Browser preview" style="display: none;">
+                            <img id="browser-screenshot" src="" alt="Browser preview" style="display: none;" tabindex="0">
                             <div id="screenshot-timestamp" class="screenshot-timestamp"></div>
                         </div>
                     </div>
@@ -131,6 +138,7 @@
                             <span class="file-explorer-title">SAVED TESTS</span>
                             <div class="file-explorer-header-actions">
                                 <button id="run-all-tests-btn" class="btn-icon-small" title="Run All Tests">▶▶</button>
+                                <button id="record-test-btn" class="btn-icon-small" title="Record New Test">⏺</button>
                                 <button id="new-test-btn" class="btn-icon-small" title="New Test">+</button>
                             </div>
                         </div>
