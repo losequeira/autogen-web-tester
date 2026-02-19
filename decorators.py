@@ -6,16 +6,8 @@ Provides permission checking for workspace operations.
 
 from functools import wraps
 from flask import jsonify
-<<<<<<< ours
 from auth import get_current_user
 import db
-||||||| ancestor
-from flask_login import current_user
-from models import Workspace, get_db_session
-=======
-from flask_login import current_user
-import db
->>>>>>> theirs
 
 
 def workspace_access_required(permission='read'):

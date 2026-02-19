@@ -42,7 +42,7 @@ def _ensure_playwright_browsers() -> None:
 
 def _start_server(port: int) -> None:
     """Run the Flask+SocketIO server (blocking, intended for a daemon thread)."""
-    socketio.run(app, host="127.0.0.1", port=port, use_reloader=False, log_output=False)
+    socketio.run(app, host="127.0.0.1", port=port, use_reloader=False, log_output=False, allow_unsafe_werkzeug=True)
 
 
 def main() -> None:
