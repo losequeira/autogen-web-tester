@@ -460,10 +460,20 @@
                         <p style="color: var(--ctp-subtext0); font-size: 13px;">Loading recording...</p>
                     </div>
                     <div id="video-viewer-container" style="display: none;">
-                        <video id="video-viewer-player" controls>
-                            <source id="video-viewer-source" type="video/webm">
-                            Your browser does not support video playback.
-                        </video>
+                        <div class="video-wrapper" id="video-wrapper">
+                            <video id="video-viewer-player">
+                                <source id="video-viewer-source" type="video/webm">
+                                Your browser does not support video playback.
+                            </video>
+                            <div class="vc-controls" id="vc-controls">
+                                <button class="vc-btn" id="vc-play-btn" title="Play / Pause">▶</button>
+                                <span class="vc-time-display" id="vc-current-time">0:00</span>
+                                <div class="vc-seek-container">
+                                    <input type="range" class="vc-seek-bar" id="vc-seek-bar" min="0" max="100" step="0.1" value="0">
+                                </div>
+                                <span class="vc-time-display" id="vc-duration-time">0:00</span>
+                            </div>
+                        </div>
                         <div class="video-viewer-info">
                             <p id="video-viewer-timestamp" style="color: var(--ctp-overlay1); font-size: 13px; margin-top: 12px;"></p>
                             <p id="video-viewer-size" style="color: var(--ctp-overlay1); font-size: 13px;"></p>

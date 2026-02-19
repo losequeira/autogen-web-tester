@@ -2470,6 +2470,104 @@ window.addEventListener('click', (event) => {
     }
 });
 
+// Custom video player — controls auto-hide after 2 seconds of inactivity
+(function initVideoViewerPlayer() {
+    const wrapper = document.getElementById('video-wrapper');
+    const video = document.getElementById('video-viewer-player');
+    const controls = document.getElementById('vc-controls');
+    const playBtn = document.getElementById('vc-play-btn');
+    const seekBar = document.getElementById('vc-seek-bar');
+    const currentTimeEl = document.getElementById('vc-current-time');
+    const durationEl = document.getElementById('vc-duration-time');
+    if (!wrapper || !video || !controls) return;
+
+    let hideTimer = null;
+
+    function formatTime(s) {
+        const m = Math.floor((s || 0) / 60);
+        const ss = Math.floor((s || 0) % 60).toString().padStart(2, '0');
+        return `${m}:${ss}`;
+    }
+
+    function showControls() {
+        controls.classList.remove('vc-hidden');
+        clearTimeout(hideTimer);
+        if (!video.paused && !video.ended) {
+            hideTimer = setTimeout(() => controls.classList.add('vc-hidden'), 2000);
+        }
+    }
+
+    wrapper.addEventListener('mousemove', showControls);
+    wrapper.addEventListener('mouseenter', showControls);
+    wrapper.addEventListener('mouseleave', () => {
+        if (!video.paused && !video.ended) {
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(() => controls.classList.add('vc-hidden'), 500);
+        }
+    });
+
+    // Click on video itself toggles play/pause
+    video.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (video.paused) video.play().catch(() => {}); else video.pause();
+    });
+
+    playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (video.paused) video.play().catch(() => {}); else video.pause();
+    });
+
+    video.addEventListener('play', () => {
+        playBtn.textContent = '⏸';
+        showControls();
+    });
+
+    video.addEventListener('pause', () => {
+        playBtn.textContent = '▶';
+        clearTimeout(hideTimer);
+        controls.classList.remove('vc-hidden');
+    });
+
+    video.addEventListener('ended', () => {
+        playBtn.textContent = '▶';
+        clearTimeout(hideTimer);
+        controls.classList.remove('vc-hidden');
+    });
+
+    video.addEventListener('timeupdate', () => {
+        const dur = video.duration || 0;
+        if (dur > 0) seekBar.value = (video.currentTime / dur) * 100;
+        currentTimeEl.textContent = formatTime(video.currentTime);
+    });
+
+    video.addEventListener('loadedmetadata', () => {
+        durationEl.textContent = formatTime(video.duration);
+        seekBar.value = 0;
+        currentTimeEl.textContent = '0:00';
+        controls.classList.remove('vc-hidden');
+    });
+
+    seekBar.addEventListener('input', (e) => {
+        e.stopPropagation();
+        const dur = video.duration || 0;
+        video.currentTime = (parseFloat(e.target.value) / 100) * dur;
+        showControls();
+    });
+
+    // Reset player state when modal opens
+    const modal = document.getElementById('video-viewer-modal');
+    new MutationObserver(() => {
+        if (modal.style.display === 'none') {
+            clearTimeout(hideTimer);
+            playBtn.textContent = '▶';
+            seekBar.value = 0;
+            currentTimeEl.textContent = '0:00';
+            durationEl.textContent = '0:00';
+            controls.classList.remove('vc-hidden');
+        }
+    }).observe(modal, { attributes: true, attributeFilter: ['style'] });
+})();
+
 // AI Chat Sidebar Toggle
 toggleChatBtn.addEventListener('click', () => {
     const isOpen = aiChatSidebar.classList.toggle('open');
