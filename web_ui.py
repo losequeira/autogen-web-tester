@@ -28,16 +28,8 @@ import config
 from config import Config
 
 # Import multi-user modules
-<<<<<<< ours
 import db
 from auth import init_auth, login_required, get_current_user
-||||||| ancestor
-from models import init_db, get_db_session, close_db_session, Test, TestSource, Workspace
-from auth import init_auth
-=======
-import db
-from auth import init_auth
->>>>>>> theirs
 from decorators import workspace_access_required, workspace_owner_required
 
 app = Flask(__name__)
@@ -1848,19 +1840,10 @@ def get_workspace_test_artifacts(workspace_id, filename):
         artifacts = db.get_test_artifacts(workspace_id, filename)
         if artifacts is None:
             return jsonify({'error': 'Test not found'}), 404
-<<<<<<< ours
         # Inline signed URLs so the client doesn't need a second round trip
         for a in artifacts:
             if a.get('video_path'):
                 a['video_url'] = get_signed_url(a['video_path'])
-||||||| ancestor
-
-        with open(filepath, 'r') as f:
-            test_data = json.load(f)
-
-        artifacts = test_data.get('artifacts', [])
-=======
->>>>>>> theirs
         return jsonify(artifacts), 200
     except Exception as e:
         print(f"Error getting test artifacts: {e}")
@@ -1994,7 +1977,6 @@ def get_saved_tests():
     return jsonify(tests)
 
 
-<<<<<<< ours
 @app.route('/api/recent-recordings')
 @login_required
 def get_recent_recordings():
@@ -2006,20 +1988,6 @@ def get_recent_recordings():
     return jsonify(recordings)
 
 
-||||||| ancestor
-=======
-@app.route('/api/recent-recordings')
-@login_required
-def get_recent_recordings():
-    """Get recent video recordings for the current workspace."""
-    ws_id = _get_workspace_id()
-    if not ws_id:
-        return jsonify([])
-    recordings = data_access.get_recent_recordings(ws_id)
-    return jsonify(recordings)
-
-
->>>>>>> theirs
 @app.route('/api/saved-tests/<filename>', methods=['GET'])
 @login_required
 def get_saved_test(filename):
