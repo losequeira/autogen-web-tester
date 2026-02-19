@@ -1,18 +1,20 @@
 """
 Native macOS launcher for AutoGen Web Tester.
 Starts the Flask+SocketIO server in a background thread, then opens
-a PyWebView window so the app runs without a browser tab.
+a PyWebView native window so the app runs without a browser tab.
 """
+import multiprocessing
 
+# Must be called before any other code so PyWebView's spawned helper
+# processes are handled correctly and don't re-run the server/window code.
+multiprocessing.freeze_support()
+
+import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
-
-import webview
-
-from web_ui import app, socketio
 
 
 def _find_free_port() -> int:
@@ -22,40 +24,70 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _find_python() -> str:
+    """
+    Return a path to a real Python interpreter.
+    Inside a PyInstaller bundle sys.executable is the app binary itself,
+    so we look for python3/python on PATH instead.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    for name in ("python3", "python"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return "python3"  # last resort; will fail gracefully below
+
+
 def _ensure_playwright_browsers() -> None:
     """Install Playwright's Chromium browser on first run if it's missing."""
     try:
         from playwright.sync_api import sync_playwright
-
         with sync_playwright() as p:
-            # Attempt a quick launch; if it fails the browser is missing.
             browser = p.chromium.launch()
             browser.close()
+        return  # already installed
     except Exception:
-        print("Playwright browser not found — installing Chromium (one-time setup)…")
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-        )
+        pass
+
+    python = _find_python()
+    print(f"Playwright browser not found — installing Chromium (one-time setup)…")
+    result = subprocess.run(
+        [python, "-m", "playwright", "install", "chromium"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
         print("Playwright Chromium installed.")
+    else:
+        print(f"Could not auto-install Playwright browsers: {result.stderr.strip()}")
+        print("Run manually: playwright install chromium")
 
 
 def _start_server(port: int) -> None:
-    """Run the Flask+SocketIO server (blocking, intended for a daemon thread)."""
-    socketio.run(app, host="127.0.0.1", port=port, use_reloader=False, log_output=False, allow_unsafe_werkzeug=True)
+    """Run the Flask+SocketIO server. Imported here so child processes don't execute it."""
+    from web_ui import app, socketio
+    socketio.run(
+        app,
+        host="127.0.0.1",
+        port=port,
+        use_reloader=False,
+        log_output=False,
+        allow_unsafe_werkzeug=True,
+    )
 
 
 def main() -> None:
+    import webview
+
     port = _find_free_port()
 
-    # Start Flask server in a daemon thread so it exits when the window closes.
     server_thread = threading.Thread(target=_start_server, args=(port,), daemon=True)
     server_thread.start()
 
-    # Give Flask a moment to bind before PyWebView tries to connect.
+    # Give Flask a moment to bind before PyWebView opens the window.
     time.sleep(1.5)
 
-    # Ensure Playwright browsers are available (non-blocking check).
     playwright_thread = threading.Thread(target=_ensure_playwright_browsers, daemon=True)
     playwright_thread.start()
 
