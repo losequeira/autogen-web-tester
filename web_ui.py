@@ -1848,6 +1848,19 @@ def get_workspace_test_artifacts(workspace_id, filename):
         return jsonify({'error': 'Failed to load artifacts'}), 500
 
 
+@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>/artifacts', methods=['DELETE'])
+@login_required
+@workspace_access_required(permission='write')
+def delete_workspace_test_artifacts(workspace_id, filename):
+    """Delete all artifacts (DB rows + local files) for a test."""
+    try:
+        db.delete_test_artifacts(workspace_id, filename)
+        return jsonify({'ok': True}), 200
+    except Exception as e:
+        print(f"Error deleting artifacts: {e}")
+        return jsonify({'error': 'Failed to delete artifacts'}), 500
+
+
 @app.route('/api/workspaces/<int:workspace_id>/ai-steps', methods=['GET'])
 @login_required
 @workspace_access_required(permission='read')

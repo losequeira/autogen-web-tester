@@ -2759,6 +2759,36 @@ body {
     overflow: hidden;
     cursor: pointer;
     transition: all 0.3s;
+    position: relative;
+}
+
+.recording-delete-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0, 0, 0, 0.6);
+    color: var(--ctp-text);
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.2s, background 0.2s;
+    z-index: 10;
+}
+
+.recording-card:hover .recording-delete-btn {
+    opacity: 1;
+}
+
+.recording-delete-btn:hover {
+    background: var(--ctp-red) !important;
+    opacity: 1 !important;
 }
 
 .recording-card:hover {

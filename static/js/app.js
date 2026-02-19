@@ -1897,28 +1897,57 @@ function createRecordingCard(recording) {
     const statusClass = recording.status === 'success' || recording.status === 'passed' ? 'passed' : 'failed';
     const statusText = recording.status === 'success' || recording.status === 'passed' ? 'PASSED' : 'FAILED';
 
-    // Format timestamp
     const timestamp = recording.timestamp.replace(/_/g, ' ').replace(/-/g, ':');
 
-    card.innerHTML = `
-        <div class="recording-thumbnail">
-            <div class="recording-placeholder">🎬</div>
-            <div class="recording-play-overlay">
-                <div class="recording-play-icon">▶</div>
-            </div>
-        </div>
-        <div class="recording-info">
-            <div class="recording-name" title="${escapeHtml(recording.test_name)}">${escapeHtml(recording.test_name)}</div>
-            <div class="recording-meta">
-                <span class="recording-status ${statusClass}">${statusText}</span>
-                <span class="recording-timestamp">${timestamp}</span>
-            </div>
-        </div>
-    `;
+    // Thumbnail
+    const thumbnail = document.createElement('div');
+    thumbnail.className = 'recording-thumbnail';
+    thumbnail.innerHTML = '<div class="recording-placeholder">🎬</div><div class="recording-play-overlay"><div class="recording-play-icon">▶</div></div>';
 
-    // Click handler to open video viewer modal
+    // Info
+    const info = document.createElement('div');
+    info.className = 'recording-info';
+    const name = document.createElement('div');
+    name.className = 'recording-name';
+    name.title = recording.test_name;
+    name.textContent = recording.test_name;
+    const meta = document.createElement('div');
+    meta.className = 'recording-meta';
+    const statusSpan = document.createElement('span');
+    statusSpan.className = `recording-status ${statusClass}`;
+    statusSpan.textContent = statusText;
+    const tsSpan = document.createElement('span');
+    tsSpan.className = 'recording-timestamp';
+    tsSpan.textContent = timestamp;
+    meta.append(statusSpan, tsSpan);
+    info.append(name, meta);
+
+    // Delete button
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'recording-delete-btn';
+    deleteBtn.title = 'Delete recording';
+    deleteBtn.textContent = '✕';
+
+    card.append(thumbnail, info, deleteBtn);
+
     card.addEventListener('click', () => {
         showVideoViewerModal(recording.test_filename, recording.test_name);
+    });
+
+    deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try {
+            await authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${recording.test_filename}/artifacts`, { method: 'DELETE' });
+            card.remove();
+            const gallery = document.getElementById('recordings-gallery');
+            if (gallery && gallery.children.length === 0) {
+                gallery.style.display = 'none';
+                const msg = document.getElementById('no-recordings-message');
+                if (msg) msg.style.display = '';
+            }
+        } catch (err) {
+            console.error('Failed to delete recording:', err);
+        }
     });
 
     return card;

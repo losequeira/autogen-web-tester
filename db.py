@@ -364,6 +364,43 @@ def get_test_artifacts(workspace_id: int, filename: str) -> list[dict] | None:
     return resp.data or []
 
 
+def delete_test_artifacts(workspace_id: int, filename: str) -> None:
+    """Delete all artifact rows and local files for a test."""
+    from storage import delete_artifact
+    from config import Config
+    import shutil
+
+    test_resp = _sb().table('tests').select('id').eq(
+        'workspace_id', workspace_id
+    ).eq('filename', filename).execute()
+
+    if not test_resp.data:
+        return
+
+    test_id = test_resp.data[0]['id']
+
+    # Fetch all rows to get file paths before deleting
+    rows = _sb().table('test_artifacts').select('video_path, har_path').eq(
+        'test_id', test_id
+    ).execute().data or []
+
+    for row in rows:
+        if row.get('video_path'):
+            delete_artifact(row['video_path'])
+        if row.get('har_path'):
+            delete_artifact(row['har_path'])
+
+    # Delete the test dir entirely if empty
+    test_name = Path(filename).stem
+    test_dir = Config.ARTIFACTS_DIR / str(workspace_id) / test_name
+    try:
+        shutil.rmtree(test_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    _sb().table('test_artifacts').delete().eq('test_id', test_id).execute()
+
+
 def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, status: str):
     """Save the latest recording to disk and upsert one artifact row per test."""
     import shutil
