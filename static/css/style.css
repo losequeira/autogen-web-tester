@@ -3492,4 +3492,37 @@ body {
     display: none !important;
 }
 
+/* ========== TOAST ========== */
+.toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(12px);
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    opacity: 0;
+    transition: opacity 0.2s, transform 0.2s;
+    z-index: 9999;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.toast-visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+.toast-error {
+    background: var(--ctp-red);
+    color: var(--ctp-base);
+}
+
+.toast-success {
+    background: var(--ctp-green);
+    color: var(--ctp-base);
+}
+/* ========== END TOAST ========== */
+
 /* ========== END FULL-PAGE AUTH SCREEN ========== */

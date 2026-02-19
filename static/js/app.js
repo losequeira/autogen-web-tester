@@ -1936,26 +1936,40 @@ function createRecordingCard(recording) {
 
     deleteBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
+
+        // Optimistic: remove immediately
+        const gallery = document.getElementById('recordings-gallery');
+        const cardNextSibling = card.nextSibling;
+        const cardParent = card.parentNode;
+        card.remove();
+
+        const galleryWasVisible = gallery && gallery.style.display !== 'none';
+        const isEmpty = gallery && gallery.children.length === 0;
+        if (isEmpty) {
+            gallery.style.display = 'none';
+            const msg = document.getElementById('no-recordings-message');
+            if (msg) msg.style.display = '';
+        }
+
+        const fileItem = document.querySelector(`.file-item[data-filename="${recording.test_filename}"]`);
+        const recordingBtn = fileItem ? fileItem.querySelector('[data-action="view-recording"]') : null;
+        if (recordingBtn) recordingBtn.remove();
+
         try {
             await authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${recording.test_filename}/artifacts`, { method: 'DELETE' });
-
-            // Remove card from gallery
-            card.remove();
-            const gallery = document.getElementById('recordings-gallery');
-            if (gallery && gallery.children.length === 0) {
-                gallery.style.display = 'none';
-                const msg = document.getElementById('no-recordings-message');
-                if (msg) msg.style.display = '';
-            }
-
-            // Remove the 📹 icon from the test file list item
-            const fileItem = document.querySelector(`.file-item[data-filename="${recording.test_filename}"]`);
-            if (fileItem) {
-                const recordingBtn = fileItem.querySelector('[data-action="view-recording"]');
-                if (recordingBtn) recordingBtn.remove();
-            }
         } catch (err) {
-            console.error('Failed to delete recording:', err);
+            // Rollback
+            if (cardParent) cardParent.insertBefore(card, cardNextSibling);
+            if (isEmpty && gallery) {
+                gallery.style.display = galleryWasVisible ? '' : 'none';
+                const msg = document.getElementById('no-recordings-message');
+                if (msg) msg.style.display = 'none';
+            }
+            if (recordingBtn && fileItem) {
+                const actions = fileItem.querySelector('.file-item-actions');
+                if (actions) actions.insertBefore(recordingBtn, actions.firstChild);
+            }
+            showToast('Failed to delete recording. Please try again.');
         }
     });
 
@@ -4207,6 +4221,20 @@ async function restoreThemeFromDb() {
     }
 }
 // ========== END THEME MANAGEMENT ==========
+
+// ========== TOAST ==========
+function showToast(message, type = 'error') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('toast-visible'));
+    setTimeout(() => {
+        toast.classList.remove('toast-visible');
+        toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+    }, 3500);
+}
+// ========== END TOAST ==========
 
 // Load default example on page load
 window.addEventListener('load', async () => {
