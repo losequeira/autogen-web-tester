@@ -17,8 +17,20 @@ import threading
 import time
 
 
-def _find_free_port() -> int:
-    """Return a random available TCP port on localhost."""
+_PREFERRED_PORT = 8765  # Fixed port so WebView localStorage persists across launches
+
+
+def _find_free_port(preferred: int = _PREFERRED_PORT) -> int:
+    """Try the preferred port first (keeps localStorage origin stable), then fall back."""
+    for port in [preferred] + list(range(preferred + 1, preferred + 20)):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", port))
+                return port
+        except OSError:
+            continue
+    # Last resort: let the OS pick
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
