@@ -1938,12 +1938,21 @@ function createRecordingCard(recording) {
         e.stopPropagation();
         try {
             await authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${recording.test_filename}/artifacts`, { method: 'DELETE' });
+
+            // Remove card from gallery
             card.remove();
             const gallery = document.getElementById('recordings-gallery');
             if (gallery && gallery.children.length === 0) {
                 gallery.style.display = 'none';
                 const msg = document.getElementById('no-recordings-message');
                 if (msg) msg.style.display = '';
+            }
+
+            // Remove the 📹 icon from the test file list item
+            const fileItem = document.querySelector(`.file-item[data-filename="${recording.test_filename}"]`);
+            if (fileItem) {
+                const recordingBtn = fileItem.querySelector('[data-action="view-recording"]');
+                if (recordingBtn) recordingBtn.remove();
             }
         } catch (err) {
             console.error('Failed to delete recording:', err);
