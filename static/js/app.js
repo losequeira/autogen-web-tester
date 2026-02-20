@@ -1,5 +1,10 @@
 // AutoGen Web Tester - Frontend JavaScript
 
+// Configure marked.js for safe, clean markdown rendering
+if (typeof marked !== 'undefined') {
+    marked.setOptions({ breaks: true, gfm: true });
+}
+
 // ========== JWT TOKEN MANAGEMENT ==========
 let authToken = localStorage.getItem('access_token') || null;
 let refreshToken = localStorage.getItem('refresh_token') || null;
@@ -3065,19 +3070,19 @@ function appendChatMessage(type, content, isCode = false) {
 
         // Add code header
         const codeHeader = document.createElement('div');
-        codeHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--ctp-surface0); border-bottom: 1px solid var(--ctp-base);';
-        codeHeader.innerHTML = '<span style="font-size: 11px; color: var(--ctp-overlay1); text-transform: uppercase; letter-spacing: 0.5px;">Python</span>';
+        codeHeader.className = 'chat-code-header';
+        const langLabel = document.createElement('span');
+        langLabel.className = 'chat-code-lang';
+        langLabel.textContent = 'Python';
+        codeHeader.appendChild(langLabel);
 
-        // Add copy button
         const copyBtn = document.createElement('button');
-        copyBtn.innerHTML = '📋';
-        copyBtn.style.cssText = 'background: transparent; border: none; color: var(--ctp-overlay1); cursor: pointer; padding: 2px 6px; border-radius: 3px; font-size: 12px;';
-        copyBtn.onmouseover = () => copyBtn.style.background = 'var(--ctp-surface1)';
-        copyBtn.onmouseout = () => copyBtn.style.background = 'transparent';
+        copyBtn.className = 'chat-code-btn';
+        copyBtn.textContent = '📋 Copy';
         copyBtn.onclick = () => {
             navigator.clipboard.writeText(content);
-            copyBtn.innerHTML = '✓';
-            setTimeout(() => copyBtn.innerHTML = '📋', 2000);
+            copyBtn.textContent = '✓';
+            setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 2000);
         };
         codeHeader.appendChild(copyBtn);
         messageDiv.appendChild(codeHeader);
@@ -3088,6 +3093,66 @@ function appendChatMessage(type, content, isCode = false) {
         code.textContent = content;
         codeBlock.appendChild(code);
         messageDiv.appendChild(codeBlock);
+
+    } else if (type === 'ai' && typeof marked !== 'undefined') {
+        // Render markdown for AI messages
+        messageDiv.innerHTML = marked.parse(content);
+
+        // Enhance each code block with copy + apply buttons
+        messageDiv.querySelectorAll('pre code').forEach((codeEl) => {
+            const pre = codeEl.parentElement;
+            const codeContent = codeEl.textContent;
+            const lang = [...codeEl.classList]
+                .find(c => c.startsWith('language-'))
+                ?.replace('language-', '') || '';
+
+            const header = document.createElement('div');
+            header.className = 'chat-code-header';
+
+            const langLabel = document.createElement('span');
+            langLabel.className = 'chat-code-lang';
+            langLabel.textContent = lang || 'code';
+            header.appendChild(langLabel);
+
+            const btnGroup = document.createElement('div');
+            btnGroup.style.display = 'flex';
+            btnGroup.style.gap = '4px';
+
+            // Apply to editor button (Python code only)
+            if (lang === 'python' || (!lang && codeContent.includes('async_playwright'))) {
+                const applyBtn = document.createElement('button');
+                applyBtn.className = 'chat-code-btn apply';
+                applyBtn.textContent = '⚡ Apply';
+                applyBtn.title = 'Apply code to active editor tab';
+                applyBtn.onclick = () => {
+                    const currentCode = activeTabId ? getPlaywrightCode() : '';
+                    pendingCodeSuggestion = {
+                        code: codeContent,
+                        explanation: 'AI-suggested code from chat',
+                        currentCode,
+                        targetTabId: activeTabId,
+                        contentType: 'code',
+                    };
+                    showCodePreview();
+                };
+                btnGroup.appendChild(applyBtn);
+            }
+
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'chat-code-btn';
+            copyBtn.textContent = '📋';
+            copyBtn.title = 'Copy code';
+            copyBtn.onclick = () => {
+                navigator.clipboard.writeText(codeContent);
+                copyBtn.textContent = '✓';
+                setTimeout(() => { copyBtn.textContent = '📋'; }, 2000);
+            };
+            btnGroup.appendChild(copyBtn);
+
+            header.appendChild(btnGroup);
+            pre.insertBefore(header, codeEl);
+        });
+
     } else {
         const contentSpan = document.createElement('span');
         contentSpan.textContent = content;
@@ -3095,11 +3160,7 @@ function appendChatMessage(type, content, isCode = false) {
     }
 
     chatMessages.appendChild(messageDiv);
-    // Smooth scroll to bottom
-    chatMessages.scrollTo({
-        top: chatMessages.scrollHeight,
-        behavior: 'smooth'
-    });
+    chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
 }
 
 function appendChatMessageWithImage(type, content, imageSrc) {
