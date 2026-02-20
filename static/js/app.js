@@ -217,7 +217,7 @@ let activeTabId = null;
 let pendingCodeSuggestion = null;
 
 // Check if file explorer elements exist
-const hasFileExplorer = fileExplorer && fileList && editorTabsContainer && newTestBtn && closeAllTabsBtn && explorerResizer;
+const hasFileExplorer = fileExplorer && fileList && editorTabsContainer && newTestBtn && explorerResizer;
 
 let currentEditingTest = null;  // Track if we're editing an existing test
 let currentRecordingId = null;  // Track active recording
