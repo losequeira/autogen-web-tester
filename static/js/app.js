@@ -464,6 +464,9 @@ socket.on('test_complete', (data) => {
     isStopRequested = false;
     updateStopButtonVisibility();
 
+    // Always dismiss the loading screen — it may still be showing if no screenshot was sent
+    if (browserLoading) browserLoading.classList.remove('active');
+
     if (data.status === 'success') {
         updateBrowserStatus('passed', 'PASSED');
         addLogEntry('success', '✅ Test completed successfully!', '🎉 Test completed!');
@@ -582,6 +585,7 @@ socket.on('ai_step_complete_with_code', (data) => {
     isTestRunning = false;
     isStopRequested = false;
     updateStopButtonVisibility();
+    if (browserLoading) browserLoading.classList.remove('active');
     updateBrowserStatus('passed', 'PASSED');
     addLogEntry('success', '✅ AI Step completed successfully!', '🎉 AI Step completed!');
 
