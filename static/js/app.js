@@ -3721,6 +3721,16 @@ function displayWorkspaceMembers(members) {
 async function switchWorkspace(workspaceId) {
     currentWorkspaceId = parseInt(workspaceId);
 
+    // Close all open tabs — tests belong to a specific workspace
+    openTabs = [];
+    activeTabId = null;
+    lastSavedCode = '';
+    setPlaywrightCode('');
+    if (editorContent) editorContent.classList.add('empty');
+    hideDashboardContent();
+    renderTabs();
+    saveTabsState();
+
     // Save selected workspace to localStorage and DB
     localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
     savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
