@@ -3503,6 +3503,9 @@ async function handleLogin(event) {
             // Load workspaces (will restore saved workspace from localStorage)
             await loadWorkspaces();
 
+            // Restore theme from DB (overrides localStorage if user changed it elsewhere)
+            await restoreThemeFromDb();
+
             // Reload file lists for the current workspace
             if (hasFileExplorer && currentWorkspaceId) {
                 loadFileExplorer();
@@ -3572,6 +3575,9 @@ async function handleRegister(event) {
             // Load workspaces (user's default workspace will be loaded)
             await loadWorkspaces();
 
+            // Restore theme from DB
+            await restoreThemeFromDb();
+
             // Reload file lists for the current workspace
             if (hasFileExplorer && currentWorkspaceId) {
                 loadFileExplorer();
@@ -3636,13 +3642,19 @@ async function loadWorkspaces() {
             // Fall back to DB if localStorage is empty
             if (!savedWorkspaceId) {
                 const dbPrefs = await loadPreferencesFromDb();
-                if (dbPrefs && dbPrefs.selectedWorkspaceId) {
-                    savedWorkspaceId = dbPrefs.selectedWorkspaceId;
-                    localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
-
+                if (dbPrefs) {
+                    if (dbPrefs.selectedWorkspaceId) {
+                        savedWorkspaceId = dbPrefs.selectedWorkspaceId;
+                        localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
+                    }
                     // Also restore editorTabsState from DB if missing locally
                     if (!localStorage.getItem('editorTabsState') && dbPrefs.editorTabsState) {
                         localStorage.setItem('editorTabsState', dbPrefs.editorTabsState);
+                    }
+                    // Apply saved theme from DB
+                    if (dbPrefs.theme && VALID_THEMES.includes(dbPrefs.theme)) {
+                        applyTheme(dbPrefs.theme);
+                        localStorage.setItem('theme', dbPrefs.theme);
                     }
                 }
             }
