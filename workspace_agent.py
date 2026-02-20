@@ -26,6 +26,18 @@ class WorkspaceAgent:
         {
             "type": "function",
             "function": {
+                "name": "get_workspace_context",
+                "description": (
+                    "Return ALL tests and AI steps in the workspace with their full content. "
+                    "Use this for analysis, metrics, 'what does this test do', or any question "
+                    "that requires understanding the content of workspace files."
+                ),
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "list_tests",
                 "description": "List all Playwright tests in the workspace. Returns names, filenames, and last-run status.",
                 "parameters": {"type": "object", "properties": {}, "required": []},
@@ -176,25 +188,44 @@ class WorkspaceAgent:
         },
     ]
 
-    SYSTEM_PROMPT = """You are a workspace assistant for a web testing automation tool. \
-You help users create, read, search, and edit their Playwright tests and AI step files.
+    BASE_SYSTEM_PROMPT = """You are a workspace assistant for a web testing automation tool. \
+You help users create, read, search, analyse, and edit their Playwright tests and AI step files.
 
-Available tools:
-- list_tests / list_ai_steps — browse workspace files
-- read_test / read_ai_step — read file contents
-- search_files — find files by content
-- create_test — create a new Playwright Python test
-- create_ai_step — create a new AI steps file (natural language)
-- update_test / update_ai_step — edit existing files
+━━ FILE TYPE DISTINCTION (CRITICAL) ━━
+• TESTS — Playwright Python scripts (.py or .json filenames from list_tests). \
+Read with read_test. Edit with update_test.
+• AI STEPS — Natural-language numbered steps (.json filenames from list_ai_steps). \
+Read with read_ai_step. Edit with update_ai_step.
+NEVER call read_ai_step for a filename that came from list_tests. \
+NEVER call read_test for a filename that came from list_ai_steps.
 
-CRITICAL RULES — follow these exactly:
-1. When asked to fix, modify, or update an existing test/AI step: call read_test or read_ai_step first to see the current content, then call update_test or update_ai_step with the complete updated file. NEVER just show the code in text — always write it via the tool.
-2. When asked to create a new test or AI step: call create_test or create_ai_step directly. Do not describe what you would write — just write it.
-3. Only respond with plain text after all tool calls are done. Keep the final reply short: confirm what was done and highlight key changes.
-4. When update_test or update_ai_step is called, the change is NOT saved immediately — a diff is shown to the user for review. After the tool call, tell the user to review the proposed diff and accept or reject it.
-5. When the user pastes an error/traceback: the file paths in the traceback (e.g. "web_ui.py", "<string>") are SYSTEM internals, NOT workspace test files. Use list_tests to find the actual test that caused the error, then fix it.
+━━ TOOLS ━━
+- get_workspace_context — returns ALL tests and AI steps with their full content. \
+Call this first for any analysis, metrics, or "what does X test" question.
+- list_tests / list_ai_steps — lightweight listing (names + status, no content)
+- read_test(filename) — full Python code for ONE test (filename from list_tests)
+- read_ai_step(filename) — full steps for ONE AI step file (filename from list_ai_steps)
+- search_files(query) — keyword search across all file contents
+- create_test / create_ai_step — create new files
+- update_test / update_ai_step — propose edits (shown as diff for user review)
 
-When generating Playwright test code always use this structure:
+━━ SEMANTIC QUERY HANDLING ━━
+Before answering, extract the intent from the user's message:
+- "show me / tell me / what does / details about / metrics / analyse" → call get_workspace_context
+- "create / generate / write" → call create_test or create_ai_step
+- "fix / update / change / modify" → read the file first, then call the update tool
+- "find / search / which test" → call search_files(query)
+- Vague pronoun references ("it", "that test", "them") → infer from conversation history
+
+━━ CRITICAL RULES ━━
+1. Fix/update: always read_test or read_ai_step FIRST, then update. NEVER output code as text only.
+2. Create: call the tool directly — don't describe what you would write.
+3. Update diff: tell user to review the proposed diff shown in the UI and accept or reject it.
+4. Error tracebacks: "web_ui.py", "<string>" are system internals — the actual test is in the workspace.
+5. Never guess filenames — always use filenames returned by list_tests or list_ai_steps tools.
+6. Be concise. After tool calls, give a short plain-text summary of what was done.
+
+━━ CODE TEMPLATE ━━
 ```python
 from playwright.async_api import async_playwright
 import asyncio
@@ -209,22 +240,47 @@ async def run():
 asyncio.run(run())
 ```
 
-When creating AI steps use numbered natural-language instructions, for example:
+━━ AI STEPS TEMPLATE ━━
 ```
 1. Navigate to https://example.com
 2. Click the "Login" button
 3. Fill in the email field with "user@example.com"
 4. Click "Submit"
 5. Verify the dashboard heading is visible
-```
-
-Be concise and helpful. Use tools proactively when needed to fulfil requests."""
+```"""
 
     def __init__(self, model: str = "gpt-4o"):
         self.client = OpenAI(api_key=config.OPENAI_API_KEY)
         self.model = model
         # Per-workspace conversation histories: {workspace_id: [messages]}
         self._histories: dict[int, list[dict]] = {}
+
+    def _build_system_prompt(self, workspace_id: int) -> str:
+        """Build the system prompt with a live workspace snapshot injected."""
+        tests = db.get_tests(workspace_id)
+        ai_steps_list = db.get_ai_steps(workspace_id)
+
+        snapshot_lines = ["\n\n━━ CURRENT WORKSPACE SNAPSHOT ━━"]
+        if tests:
+            snapshot_lines.append(f"Tests ({len(tests)}):")
+            for t in tests:
+                status = t.get("last_run_status") or "never run"
+                snapshot_lines.append(f"  • {t['name']}  [filename: {t['filename']}]  status: {status}")
+        else:
+            snapshot_lines.append("Tests: none")
+
+        if ai_steps_list:
+            snapshot_lines.append(f"AI Steps ({len(ai_steps_list)}):")
+            for s in ai_steps_list:
+                snapshot_lines.append(f"  • {s['name']}  [filename: {s['filename']}]")
+        else:
+            snapshot_lines.append("AI Steps: none")
+
+        snapshot_lines.append(
+            "\nUse these exact filenames when calling read_test / read_ai_step / update_test / update_ai_step."
+        )
+
+        return self.BASE_SYSTEM_PROMPT + "\n".join(snapshot_lines)
 
     def _history(self, workspace_id: int) -> list[dict]:
         if workspace_id not in self._histories:
@@ -244,7 +300,37 @@ Be concise and helpful. Use tools proactively when needed to fulfil requests."""
     ) -> str:
         """Execute a single tool call and return the result as a string."""
         try:
-            if tool_name == "list_tests":
+            if tool_name == "get_workspace_context":
+                tests = db.get_tests(workspace_id)
+                ai_steps_list = db.get_ai_steps(workspace_id)
+                lines = []
+
+                lines.append(f"=== WORKSPACE CONTEXT ({len(tests)} test(s), {len(ai_steps_list)} AI step file(s)) ===\n")
+
+                if tests:
+                    lines.append("── TESTS (Playwright Python code) ──")
+                    for t in tests:
+                        status = t.get("last_run_status") or "never run"
+                        lines.append(f"\n[TEST] {t['name']} | file: {t['filename']} | status: {status}")
+                        full = db.get_test(workspace_id, t["filename"])
+                        code = full.get("code", "") if full else ""
+                        lines.append(f"```python\n{code}\n```")
+                else:
+                    lines.append("No tests found.")
+
+                if ai_steps_list:
+                    lines.append("\n── AI STEPS (natural language) ──")
+                    for s in ai_steps_list:
+                        lines.append(f"\n[AI STEPS] {s['name']} | file: {s['filename']}")
+                        full = db.get_ai_step(workspace_id, s["filename"])
+                        steps = full.get("steps", "") if full else ""
+                        lines.append(steps)
+                else:
+                    lines.append("\nNo AI step files found.")
+
+                return "\n".join(lines)
+
+            elif tool_name == "list_tests":
                 tests = db.get_tests(workspace_id)
                 if not tests:
                     return "No tests found in this workspace."
@@ -406,7 +492,7 @@ Be concise and helpful. Use tools proactively when needed to fulfil requests."""
         if image:
             content: Any = [
                 {"type": "text", "text": message},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}},
+                {"type": "image_url", "image_url": {"url": image}},
             ]
         elif existing_code:
             content = f"{message}\n\nCurrent file content:\n```\n{existing_code}\n```"
@@ -415,11 +501,14 @@ Be concise and helpful. Use tools proactively when needed to fulfil requests."""
 
         history.append({"role": "user", "content": content})
 
+        # Build dynamic system prompt with live workspace snapshot
+        system_prompt = self._build_system_prompt(workspace_id)
+
         # Agentic tool-call loop
         while True:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "system", "content": self.SYSTEM_PROMPT}] + history,
+                messages=[{"role": "system", "content": system_prompt}] + history,
                 tools=self.TOOLS,
                 tool_choice="auto",
             )

@@ -264,12 +264,18 @@ function updateStopButtonVisibility() {
     if (isTestRunning || isBatchRunning) {
         stopTestBtn.style.display = 'flex';
         stopTestBtn.disabled = false;
-        stopTestBtn.textContent = '⏹';
+        stopTestBtn.textContent = '';
+        const _stopIcon1 = document.createElement('i');
+        _stopIcon1.className = 'lni lni-hand-stop';
+        stopTestBtn.appendChild(_stopIcon1);
         stopTestBtn.title = 'Stop Test';
     } else {
         stopTestBtn.style.display = 'none';
         stopTestBtn.disabled = false;
-        stopTestBtn.textContent = '⏹';
+        stopTestBtn.textContent = '';
+        const _stopIcon2 = document.createElement('i');
+        _stopIcon2.className = 'lni lni-hand-stop';
+        stopTestBtn.appendChild(_stopIcon2);
         stopTestBtn.title = 'Stop Test';
     }
 }
@@ -535,8 +541,8 @@ socket.on('batch_test_progress', (data) => {
         if (spinner) spinner.remove();
 
         const statusIcon = status === 'success'
-            ? '<span class="test-status test-status-success">✓</span>'
-            : '<span class="test-status test-status-error">✗</span>';
+            ? '<span class="test-status test-status-success"><i class="lni lni-check"></i></span>'
+            : '<span class="test-status test-status-error"><i class="lni lni-xmark-circle"></i></span>';
         const actions = fileItem.querySelector('.file-item-actions');
         fileItem.insertAdjacentHTML('beforeend', statusIcon);
     }
@@ -742,9 +748,12 @@ copyLogBtn.addEventListener('click', () => {
         return ts ? `[${ts}] ${msg}` : msg;
     });
     navigator.clipboard.writeText(lines.join('\n')).then(() => {
-        const orig = copyLogBtn.textContent;
-        copyLogBtn.textContent = '✓';
-        setTimeout(() => { copyLogBtn.textContent = orig; }, 1500);
+        const orig = copyLogBtn.innerHTML;
+        copyLogBtn.textContent = '';
+        const _checkIcon = document.createElement('i');
+        _checkIcon.className = 'lni lni-check';
+        copyLogBtn.appendChild(_checkIcon);
+        setTimeout(() => { copyLogBtn.innerHTML = orig; }, 1500);
     });
 });
 
@@ -1161,7 +1170,7 @@ async function restoreTabsState() {
                         if (!existingTab) {
                             openTabs.push({
                                 id: '__dashboard__',
-                                name: '📊 Dashboard',
+                                name: 'Dashboard',
                                 code: '',
                                 isDirty: false,
                                 fileType: 'dashboard'
@@ -1239,13 +1248,13 @@ async function showWelcomePage() {
     const welcomeHTML = `
         <div class="welcome-page">
             <div class="welcome-header">
-                <h1>🤖 AutoGen Web Tester</h1>
+                <h1><i class="lni lni-android"></i> AutoGen Web Tester</h1>
                 <p class="welcome-subtitle">AI-powered browser automation and testing</p>
             </div>
 
             <div class="welcome-stats">
                 <div class="stat-card">
-                    <div class="stat-icon">📝</div>
+                    <div class="stat-icon"><i class="lni lni-pencil-1"></i></div>
                     <div class="stat-content">
                         <div class="stat-number">${stats.totalTests}</div>
                         <div class="stat-label">Saved Tests</div>
@@ -1253,7 +1262,7 @@ async function showWelcomePage() {
                 </div>
 
                 <div class="stat-card stat-success">
-                    <div class="stat-icon">✓</div>
+                    <div class="stat-icon"><i class="lni lni-check"></i></div>
                     <div class="stat-content">
                         <div class="stat-number">${stats.passedTests}</div>
                         <div class="stat-label">Passed</div>
@@ -1261,7 +1270,7 @@ async function showWelcomePage() {
                 </div>
 
                 <div class="stat-card stat-error">
-                    <div class="stat-icon">✗</div>
+                    <div class="stat-icon"><i class="lni lni-xmark-circle"></i></div>
                     <div class="stat-content">
                         <div class="stat-number">${stats.failedTests}</div>
                         <div class="stat-label">Failed</div>
@@ -1269,7 +1278,7 @@ async function showWelcomePage() {
                 </div>
 
                 <div class="stat-card">
-                    <div class="stat-icon">🤖</div>
+                    <div class="stat-icon"><i class="lni lni-android"></i></div>
                     <div class="stat-content">
                         <div class="stat-number">${stats.aiSteps}</div>
                         <div class="stat-label">AI Steps</div>
@@ -1281,14 +1290,14 @@ async function showWelcomePage() {
                 <h3>Get Started</h3>
                 <div class="action-buttons">
                     <button class="action-btn" onclick="document.getElementById('new-test-btn').click()">
-                        <span class="action-icon">➕</span>
+                        <span class="action-icon"><i class="lni lni-file-plus-circle"></i></span>
                         <div>
                             <div class="action-title">New Test</div>
                             <div class="action-desc">Create a new Playwright test</div>
                         </div>
                     </button>
                     <button class="action-btn" onclick="document.getElementById('new-ai-step-btn').click()">
-                        <span class="action-icon">🤖</span>
+                        <span class="action-icon"><i class="lni lni-file-plus-circle"></i></span>
                         <div>
                             <div class="action-title">New AI Step</div>
                             <div class="action-desc">Write tests in natural language</div>
@@ -1389,9 +1398,10 @@ function renderTabs() {
         const tabEl = document.createElement('div');
         tabEl.className = 'editor-tab' + (tab.id === activeTabId ? ' active' : '') + (tab.isDirty ? ' dirty' : '');
 
-        // Dashboard tab doesn't need an icon (already has emoji in name)
-        const icon = tab.fileType === 'dashboard' ? '' : (tab.fileType === 'ai-step' ? '📝' : '🐍');
-        const iconHtml = icon ? `<span class="editor-tab-icon">${icon}</span>` : '';
+        const icon = tab.fileType === 'dashboard'
+            ? '<i class="lni lni-bar-chart-4 tab-icon-colored"></i>'
+            : (tab.fileType === 'ai-step' ? '<i class="lni lni-pencil-1"></i>' : '<i class="lni lni-python"></i>');
+        const iconHtml = `<span class="editor-tab-icon">${icon}</span>`;
 
         const displayName = getDisplayName(tab.name, tab.fileType);
         tabEl.innerHTML = `
@@ -1475,14 +1485,16 @@ function loadFileExplorer() {
                 fileItem.className = 'file-item';
                 fileItem.dataset.filename = test.filename;
 
-                const sourceIcon = test.source === 'codegen' ? '🎥' : '🐍';
+                const sourceIcon = test.source === 'codegen' ? '<i class="lni lni-camera-movie-1"></i>' : '<i class="lni lni-python"></i>';
 
                 // Status icon based on last run
-                let statusIcon = '';
+                let statusIcon;
                 if (test.last_run_status === 'success') {
-                    statusIcon = '<span class="test-status test-status-success" title="Last run: Passed">✓</span>';
+                    statusIcon = '<span class="test-status test-status-success" title="Last run: Passed"><i class="lni lni-check"></i></span>';
                 } else if (test.last_run_status === 'error' || test.last_run_status === 'stopped') {
-                    statusIcon = '<span class="test-status test-status-error" title="Last run: Failed">✗</span>';
+                    statusIcon = '<span class="test-status test-status-error" title="Last run: Failed"><i class="lni lni-xmark-circle"></i></span>';
+                } else {
+                    statusIcon = '<span class="test-status test-status-unknown" title="Never run"><i class="lni lni-question-mark-circle"></i></span>';
                 }
 
                 // View recording button if valid artifacts exist
@@ -1491,33 +1503,33 @@ function loadFileExplorer() {
                     // Check if any artifacts have valid video paths
                     const validArtifacts = test.artifacts.filter(a => a.video_path && a.video_path !== 'null');
                     if (validArtifacts.length > 0) {
-                        viewRecordingBtn = `<button class="file-item-action" data-action="view-recording" title="View Recording (${validArtifacts.length})">📹</button>`;
+                        viewRecordingBtn = `<button class="file-item-action" data-action="view-recording" title="View Recording (${validArtifacts.length})"><i class="lni lni-camera-movie-1"></i></button>`;
                     }
                 }
 
                 // Show stop button if this test is currently running, otherwise show run button
                 let runOrStopBtn = '';
                 if (currentRunningTestFilename === test.filename) {
-                    runOrStopBtn = `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: var(--ctp-red);">⏹</button>`;
+                    runOrStopBtn = `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: var(--ctp-red);"><i class="lni lni-hand-stop"></i></button>`;
                 } else {
-                    runOrStopBtn = `<button class="file-item-action" data-action="run" title="Run Test">▶</button>`;
+                    runOrStopBtn = `<button class="file-item-action" data-action="run" title="Run Test"><i class="lni lni-play"></i></button>`;
                 }
 
                 const testDisplayName = getDisplayName(test.name, 'test');
                 fileItem.innerHTML = `
+                    ${statusIcon}
                     <span class="file-item-icon">${sourceIcon}</span>
                     <span class="file-item-name">${escapeHtml(testDisplayName)}</span>
-                    ${statusIcon}
                     <div class="file-item-actions">
                         ${viewRecordingBtn}
                         ${runOrStopBtn}
-                        <button class="file-item-action" data-action="delete" title="Delete">🗑</button>
+                        <button class="file-item-action" data-action="delete" title="Delete"><i class="lni lni-trash-3"></i></button>
                     </div>
                 `;
 
                 // Click to open
                 fileItem.addEventListener('click', (e) => {
-                    const action = e.target.dataset.action;
+                    const action = e.target.closest('[data-action]')?.dataset.action;
                     if (action === 'delete') {
                         deleteFileFromExplorer(test.filename, test.name);
                     } else if (action === 'run') {
@@ -1813,7 +1825,7 @@ function openDashboardTab() {
     // Create dashboard tab and insert at the beginning
     const dashboardTab = {
         id: dashboardTabId,
-        name: '📊 Dashboard',
+        name: 'Dashboard',
         code: '', // Dashboard doesn't use code
         isDirty: false,
         fileType: 'dashboard'
@@ -1937,12 +1949,20 @@ function createRecordingCard(recording) {
     const statusClass = recording.status === 'success' || recording.status === 'passed' ? 'passed' : 'failed';
     const statusText = recording.status === 'success' || recording.status === 'passed' ? 'PASSED' : 'FAILED';
 
-    const timestamp = recording.timestamp.replace(/_/g, ' ').replace(/-/g, ':');
+    const timestamp = (() => {
+        const raw = (recording.timestamp || '').replace(/_/g, 'T');
+        const d = new Date(raw);
+        if (isNaN(d.getTime())) return recording.timestamp || '';
+        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${days[d.getDay()]} ${day} ${months[d.getMonth()]} - ${d.getFullYear()}`;
+    })();
 
     // Thumbnail
     const thumbnail = document.createElement('div');
     thumbnail.className = 'recording-thumbnail';
-    thumbnail.innerHTML = '<div class="recording-placeholder">🎬</div><div class="recording-play-overlay"><div class="recording-play-icon">▶</div></div>';
+    thumbnail.innerHTML = '<div class="recording-placeholder"><i class="lni lni-camera-movie-1"></i></div><div class="recording-play-overlay"><div class="recording-play-icon"><i class="lni lni-play"></i></div></div>';
 
     // Info
     const info = document.createElement('div');
@@ -2095,12 +2115,12 @@ async function loadAiSteps() {
             item.dataset.filename = step.filename;
             const stepDisplayName = getDisplayName(step.name, 'ai-step');
             item.innerHTML = `
-                <span class="file-item-icon">📝</span>
+                <span class="file-item-icon"><i class="lni lni-pencil-1"></i></span>
                 <span class="file-item-name">${escapeHtml(stepDisplayName)}</span>
                 <div class="file-item-actions">
-                    <button class="file-item-action" data-action="run" title="Run AI Step">▶</button>
-                    <button class="file-item-action" data-action="edit" title="Edit">✏️</button>
-                    <button class="file-item-action" data-action="delete" title="Delete">🗑</button>
+                    <button class="file-item-action" data-action="run" title="Run AI Step"><i class="lni lni-play"></i></button>
+                    <button class="file-item-action" data-action="edit" title="Edit"><i class="lni lni-pencil-1"></i></button>
+                    <button class="file-item-action" data-action="delete" title="Delete"><i class="lni lni-trash-3"></i></button>
                 </div>
             `;
 
@@ -2326,7 +2346,11 @@ async function showVideoViewerModal(filename, testName) {
     const downloadBtn = document.getElementById('video-viewer-download-btn');
 
     // Show modal immediately with loading state
-    title.textContent = `📹 ${testName}`;
+    title.textContent = '';
+    const _titleIcon = document.createElement('i');
+    _titleIcon.className = 'lni lni-camera-movie-1';
+    title.appendChild(_titleIcon);
+    title.appendChild(document.createTextNode(` ${testName}`));
     loading.style.display = '';
     videoContainer.style.display = 'none';
     noRecording.style.display = 'none';
@@ -2360,8 +2384,18 @@ async function showVideoViewerModal(filename, testName) {
         };
 
         // Show info and download button immediately (don't wait for video decode)
-        timestampElem.textContent = `Recorded: ${latestArtifact.timestamp.replace('_', ' at ').replace(/-/g, '/')}`;
+        timestampElem.textContent = (() => {
+            const raw = (latestArtifact.timestamp || '').replace(/_/g, 'T');
+            const d = new Date(raw);
+            if (isNaN(d.getTime())) return `Recorded: ${latestArtifact.timestamp}`;
+            const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const day = String(d.getDate()).padStart(2, '0');
+            const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            return `Recorded: ${days[d.getDay()]} ${day} ${months[d.getMonth()]} - ${d.getFullYear()} at ${time}`;
+        })();
         sizeElem.textContent = `Size: ${latestArtifact.video_size_mb} MB | Status: ${latestArtifact.status}`;
+        downloadBtn.style.display = '';
         downloadBtn.onclick = () => {
             const a = document.createElement('a');
             a.href = signedUrl;
@@ -2546,18 +2580,27 @@ window.addEventListener('click', (event) => {
     });
 
     video.addEventListener('play', () => {
-        playBtn.textContent = '⏸';
+        playBtn.textContent = '';
+        const _pauseIcon = document.createElement('i');
+        _pauseIcon.className = 'lni lni-pause';
+        playBtn.appendChild(_pauseIcon);
         showControls();
     });
 
     video.addEventListener('pause', () => {
-        playBtn.textContent = '▶';
+        playBtn.textContent = '';
+        const _playIcon = document.createElement('i');
+        _playIcon.className = 'lni lni-play';
+        playBtn.appendChild(_playIcon);
         clearTimeout(hideTimer);
         controls.classList.remove('vc-hidden');
     });
 
     video.addEventListener('ended', () => {
-        playBtn.textContent = '▶';
+        playBtn.textContent = '';
+        const _playIcon2 = document.createElement('i');
+        _playIcon2.className = 'lni lni-play';
+        playBtn.appendChild(_playIcon2);
         clearTimeout(hideTimer);
         controls.classList.remove('vc-hidden');
     });
@@ -2587,7 +2630,10 @@ window.addEventListener('click', (event) => {
     new MutationObserver(() => {
         if (modal.style.display === 'none') {
             clearTimeout(hideTimer);
-            playBtn.textContent = '▶';
+            playBtn.textContent = '';
+            const _resetIcon = document.createElement('i');
+            _resetIcon.className = 'lni lni-play';
+            playBtn.appendChild(_resetIcon);
             seekBar.value = 0;
             currentTimeEl.textContent = '0:00';
             durationEl.textContent = '0:00';
@@ -2608,7 +2654,7 @@ toggleChatBtn.addEventListener('click', () => {
         // Focus on chat input
         setTimeout(() => chatInput.focus(), 300);
     } else {
-        toggleChatBtn.innerHTML = '<span style="margin-right: 4px;">💬</span> Chat';
+        toggleChatBtn.innerHTML = '<i class="lni lni-chat-bubble-2" style="margin-right: 4px;"></i> Chat';
         toggleChatBtn.classList.remove('active');
     }
 });
@@ -2616,7 +2662,7 @@ toggleChatBtn.addEventListener('click', () => {
 closeChatSidebarBtn.addEventListener('click', () => {
     aiChatSidebar.classList.remove('open');
     codeEditorSection.classList.remove('chat-open');
-    toggleChatBtn.innerHTML = '<span style="margin-right: 4px;">💬</span> Chat';
+    toggleChatBtn.innerHTML = '<i class="lni lni-chat-bubble-2" style="margin-right: 4px;"></i> Chat';
     toggleChatBtn.classList.remove('active');
 });
 
@@ -2632,7 +2678,7 @@ if (toggleBrowserBtn) {
             toggleBrowserBtn.classList.add('active');
         } else {
             codeEditorContainer.classList.remove('browser-open');
-            toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
+            toggleBrowserBtn.innerHTML = '<i class="lni lni-globe-1" style="margin-right: 4px;"></i> Browser';
             toggleBrowserBtn.classList.remove('active');
         }
     });
@@ -2643,7 +2689,7 @@ closeBrowserSidebarBtn.addEventListener('click', () => {
     browserSidebar.classList.remove('open');
     codeEditorContainer.classList.remove('browser-open');
     if (toggleBrowserBtn) {
-        toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
+        toggleBrowserBtn.innerHTML = '<i class="lni lni-globe-1" style="margin-right: 4px;"></i> Browser';
         toggleBrowserBtn.classList.remove('active');
     }
 });
@@ -2666,7 +2712,7 @@ document.addEventListener('click', (e) => {
         browserSidebar.classList.remove('open');
         codeEditorContainer.classList.remove('browser-open');
         if (toggleBrowserBtn) {
-            toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">🌐</span> Browser';
+            toggleBrowserBtn.innerHTML = '<i class="lni lni-globe-1" style="margin-right: 4px;"></i> Browser';
             toggleBrowserBtn.classList.remove('active');
         }
     }
@@ -3108,7 +3154,7 @@ function showHoverTooltip(cm, token, coords) {
     // Build tooltip content
     let html = `
         <div class="cm-hover-tooltip-header">
-            <span class="cm-hover-tooltip-icon">📘</span>
+            <i class="lni lni-book-1 cm-hover-tooltip-icon"></i>
             <code class="cm-hover-tooltip-signature">${docs.signature}</code>
         </div>
         <div class="cm-hover-tooltip-body">
@@ -3261,8 +3307,86 @@ function sendChatMessage() {
         fileInput.value = '';
     }
 
-    // Show loading indicator
-    appendChatMessage('system', 'Thinking...');
+    // Show floating thinking indicator
+    showChatThinking('Thinking…');
+}
+
+function enhanceCodeBlocks(container) {
+    container.querySelectorAll('pre code').forEach((codeEl) => {
+        const pre = codeEl.parentElement;
+        if (pre.dataset.enhanced) return; // already enhanced
+        pre.dataset.enhanced = '1';
+
+        const codeContent = codeEl.textContent;
+        const lang = [...codeEl.classList].find(c => c.startsWith('language-'))?.replace('language-', '') || '';
+
+        // Header
+        const header = document.createElement('div');
+        header.className = 'chat-code-header';
+        const langLabel = document.createElement('span');
+        langLabel.className = 'chat-code-lang';
+        langLabel.textContent = (lang || 'code').toUpperCase();
+        header.appendChild(langLabel);
+
+        const btnGroup = document.createElement('div');
+        btnGroup.style.cssText = 'display:flex;gap:4px;';
+        if (lang === 'python' || (!lang && codeContent.includes('async_playwright'))) {
+            const applyBtn = document.createElement('button');
+            applyBtn.className = 'chat-code-btn apply';
+            applyBtn.textContent = '⚡ Apply';
+            applyBtn.title = 'Apply code to active editor tab';
+            applyBtn.onclick = () => {
+                const currentCode = activeTabId ? getPlaywrightCode() : '';
+                pendingCodeSuggestion = { code: codeContent, explanation: 'AI-suggested code from chat', currentCode, targetTabId: activeTabId, contentType: 'code' };
+                showCodePreview();
+            };
+            btnGroup.appendChild(applyBtn);
+        }
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'chat-code-btn';
+        const _cpIcon1 = document.createElement('i');
+        _cpIcon1.className = 'lni lni-clipboard';
+        copyBtn.appendChild(_cpIcon1);
+        copyBtn.title = 'Copy code';
+        copyBtn.onclick = () => {
+            navigator.clipboard.writeText(codeContent);
+            copyBtn.textContent = '';
+            const _ckIcon1 = document.createElement('i');
+            _ckIcon1.className = 'lni lni-check';
+            copyBtn.appendChild(_ckIcon1);
+            setTimeout(() => {
+                copyBtn.textContent = '';
+                const _cpIcon2 = document.createElement('i');
+                _cpIcon2.className = 'lni lni-clipboard';
+                copyBtn.appendChild(_cpIcon2);
+            }, 2000);
+        };
+        btnGroup.appendChild(copyBtn);
+        header.appendChild(btnGroup);
+
+        // CodeMirror container
+        const cmContainer = document.createElement('div');
+        cmContainer.className = 'chat-cm-editor';
+
+        // Wrapper replaces <pre>
+        const wrapper = document.createElement('div');
+        wrapper.className = 'chat-code-block';
+        wrapper.appendChild(header);
+        wrapper.appendChild(cmContainer);
+        pre.replaceWith(wrapper);
+
+        if (typeof CodeMirror !== 'undefined') {
+            CodeMirror(cmContainer, {
+                value: codeContent,
+                mode: lang || 'python',
+                theme: 'material-darker',
+                readOnly: true,
+                lineNumbers: false,
+                lineWrapping: false,
+                scrollbarStyle: 'native',
+            });
+        }
+    });
 }
 
 function appendChatMessage(type, content, isCode = false) {
@@ -3282,80 +3406,47 @@ function appendChatMessage(type, content, isCode = false) {
 
         const copyBtn = document.createElement('button');
         copyBtn.className = 'chat-code-btn';
-        copyBtn.textContent = '📋 Copy';
+        copyBtn.textContent = '';
+        const _cpyIcon = document.createElement('i');
+        _cpyIcon.className = 'lni lni-clipboard';
+        copyBtn.appendChild(_cpyIcon);
+        copyBtn.appendChild(document.createTextNode(' Copy'));
         copyBtn.onclick = () => {
             navigator.clipboard.writeText(content);
-            copyBtn.textContent = '✓';
-            setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 2000);
+            copyBtn.textContent = '';
+            const _ckIcon2 = document.createElement('i');
+            _ckIcon2.className = 'lni lni-check';
+            copyBtn.appendChild(_ckIcon2);
+            setTimeout(() => {
+                copyBtn.textContent = '';
+                const _cpyIcon2 = document.createElement('i');
+                _cpyIcon2.className = 'lni lni-clipboard';
+                copyBtn.appendChild(_cpyIcon2);
+                copyBtn.appendChild(document.createTextNode(' Copy'));
+            }, 2000);
         };
         codeHeader.appendChild(copyBtn);
         messageDiv.appendChild(codeHeader);
 
-        const codeBlock = document.createElement('pre');
-        const code = document.createElement('code');
-        code.className = 'language-python';
-        code.textContent = content;
-        codeBlock.appendChild(code);
-        messageDiv.appendChild(codeBlock);
+        const cmContainer = document.createElement('div');
+        cmContainer.className = 'chat-cm-editor';
+        messageDiv.appendChild(cmContainer);
+        if (typeof CodeMirror !== 'undefined') {
+            CodeMirror(cmContainer, {
+                value: content,
+                mode: 'python',
+                theme: 'material-darker',
+                readOnly: true,
+                lineNumbers: false,
+                lineWrapping: false,
+                scrollbarStyle: 'native',
+            });
+        }
 
     } else if (type === 'ai' && typeof marked !== 'undefined') {
-        // Render markdown for AI messages
+        // AI messages now go through the typewriter path; this branch is a fallback
         messageDiv.innerHTML = marked.parse(content);
-
-        // Enhance each code block with copy + apply buttons
-        messageDiv.querySelectorAll('pre code').forEach((codeEl) => {
-            const pre = codeEl.parentElement;
-            const codeContent = codeEl.textContent;
-            const lang = [...codeEl.classList]
-                .find(c => c.startsWith('language-'))
-                ?.replace('language-', '') || '';
-
-            const header = document.createElement('div');
-            header.className = 'chat-code-header';
-
-            const langLabel = document.createElement('span');
-            langLabel.className = 'chat-code-lang';
-            langLabel.textContent = lang || 'code';
-            header.appendChild(langLabel);
-
-            const btnGroup = document.createElement('div');
-            btnGroup.style.display = 'flex';
-            btnGroup.style.gap = '4px';
-
-            // Apply to editor button (Python code only)
-            if (lang === 'python' || (!lang && codeContent.includes('async_playwright'))) {
-                const applyBtn = document.createElement('button');
-                applyBtn.className = 'chat-code-btn apply';
-                applyBtn.textContent = '⚡ Apply';
-                applyBtn.title = 'Apply code to active editor tab';
-                applyBtn.onclick = () => {
-                    const currentCode = activeTabId ? getPlaywrightCode() : '';
-                    pendingCodeSuggestion = {
-                        code: codeContent,
-                        explanation: 'AI-suggested code from chat',
-                        currentCode,
-                        targetTabId: activeTabId,
-                        contentType: 'code',
-                    };
-                    showCodePreview();
-                };
-                btnGroup.appendChild(applyBtn);
-            }
-
-            const copyBtn = document.createElement('button');
-            copyBtn.className = 'chat-code-btn';
-            copyBtn.textContent = '📋';
-            copyBtn.title = 'Copy code';
-            copyBtn.onclick = () => {
-                navigator.clipboard.writeText(codeContent);
-                copyBtn.textContent = '✓';
-                setTimeout(() => { copyBtn.textContent = '📋'; }, 2000);
-            };
-            btnGroup.appendChild(copyBtn);
-
-            header.appendChild(btnGroup);
-            pre.insertBefore(header, codeEl);
-        });
+        enhanceCodeBlocks(messageDiv);
 
     } else {
         const contentSpan = document.createElement('span');
@@ -3371,35 +3462,78 @@ function appendChatMessageWithImage(type, content, imageSrc) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `chat-message ${type}`;
 
-    // Add text content
-    const contentSpan = document.createElement('span');
-    contentSpan.textContent = content;
-    messageDiv.appendChild(contentSpan);
+    // Wrap image + text in a content div so the ❯ prefix aligns correctly
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'chat-message-content';
 
-    // Add image
     const img = document.createElement('img');
     img.src = imageSrc;
     img.alt = 'Attached image';
-    messageDiv.appendChild(img);
+    img.className = 'chat-attached-image';
+    contentDiv.appendChild(img);
 
+    if (content) {
+        const contentSpan = document.createElement('span');
+        contentSpan.textContent = content;
+        contentDiv.appendChild(contentSpan);
+    }
+
+    messageDiv.appendChild(contentDiv);
     chatMessages.appendChild(messageDiv);
-    // Smooth scroll to bottom
-    chatMessages.scrollTo({
-        top: chatMessages.scrollHeight,
-        behavior: 'smooth'
-    });
+    chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
+}
+
+// ── Floating thinking indicator helpers ──
+function showChatThinking(label) {
+    const el = document.getElementById('chat-thinking-indicator');
+    const lbl = document.getElementById('chat-thinking-label');
+    if (!el) return;
+    if (lbl) lbl.textContent = label;
+    el.style.display = 'flex';
+}
+
+function hideChatThinking() {
+    const el = document.getElementById('chat-thinking-indicator');
+    if (el) el.style.display = 'none';
+}
+
+// Typewriter reveal for AI messages
+function typewriterAppend(messageDiv, fullText, onDone) {
+    const CHARS_PER_TICK = 4; // speed: chars per ~16ms frame
+    let pos = 0;
+    const rawEl = document.createElement('span');
+    messageDiv.classList.add('streaming');
+    messageDiv.appendChild(rawEl);
+    chatMessages.appendChild(messageDiv);
+
+    function tick() {
+        if (pos < fullText.length) {
+            pos = Math.min(pos + CHARS_PER_TICK, fullText.length);
+            rawEl.textContent = fullText.slice(0, pos);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            requestAnimationFrame(tick);
+        } else {
+            // Done streaming — render markdown
+            messageDiv.classList.remove('streaming');
+            if (typeof marked !== 'undefined') {
+                messageDiv.innerHTML = marked.parse(fullText);
+                enhanceCodeBlocks(messageDiv);
+            }
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            if (onDone) onDone();
+        }
+    }
+    requestAnimationFrame(tick);
 }
 
 // Socket.IO event handlers for chat
 socket.on('chat_response', (data) => {
-    // Remove loading indicators (thinking + tool-call)
-    chatMessages.querySelectorAll('.chat-message.system').forEach(msg => {
-        if (msg.textContent.includes('thinking')) msg.remove();
-    });
+    hideChatThinking();
     chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
 
-    // Add AI response
-    appendChatMessage('ai', data.message);
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'chat-message ai';
+    typewriterAppend(messageDiv, data.message || '');
 });
 
 socket.on('code_suggestion', (data) => {
@@ -3422,40 +3556,27 @@ socket.on('code_suggestion', (data) => {
 });
 
 socket.on('chat_error', (data) => {
-    // Remove loading indicator
-    const systemMessages = chatMessages.querySelectorAll('.chat-message.system');
-    systemMessages.forEach(msg => {
-        if (msg.textContent.includes('thinking')) {
-            msg.remove();
-        }
-    });
-
+    hideChatThinking();
     appendChatMessage('system', `Error: ${data.message}`);
 });
 
 // Agent tool call notification — shown as a subtle status line in chat
 const TOOL_LABELS = {
-    list_tests:     '📋 Listing tests…',
-    list_ai_steps:  '📋 Listing AI steps…',
-    read_test:      '📖 Reading test…',
-    read_ai_step:   '📖 Reading AI steps…',
-    search_files:   '🔍 Searching files…',
-    create_test:    '✏️ Creating test…',
-    create_ai_step: '✏️ Creating AI steps…',
-    update_test:    '💾 Updating test…',
-    update_ai_step: '💾 Updating AI steps…',
+    get_workspace_context: 'Analysing workspace…',
+    list_tests:            'Listing tests…',
+    list_ai_steps:         'Listing AI steps…',
+    read_test:             'Reading test…',
+    read_ai_step:          'Reading AI steps…',
+    search_files:          'Searching files…',
+    create_test:           'Creating test…',
+    create_ai_step:        'Creating AI steps…',
+    update_test:           'Updating test…',
+    update_ai_step:        'Updating AI steps…',
 };
 
 socket.on('agent_tool_call', (data) => {
-    const label = TOOL_LABELS[data.tool] || `🔧 ${data.tool}…`;
-    // Show a transient tool-call indicator (replaces previous one if still present)
-    const existing = chatMessages.querySelector('.chat-message.tool-call');
-    if (existing) existing.remove();
-    const div = document.createElement('div');
-    div.className = 'chat-message tool-call';
-    div.textContent = label;
-    chatMessages.appendChild(div);
-    chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
+    const label = TOOL_LABELS[data.tool] || `${data.tool}…`;
+    showChatThinking(label);
 });
 
 socket.on('file_created', (data) => {
@@ -3755,7 +3876,7 @@ document.addEventListener('keydown', (e) => {
         !codePreviewPanel.classList.contains('open')) {
         aiChatSidebar.classList.remove('open');
         codeEditorSection.classList.remove('chat-open');
-        toggleChatBtn.innerHTML = '<span style="margin-right: 4px;">💬</span> Chat';
+        toggleChatBtn.innerHTML = '<i class="lni lni-chat-bubble-2" style="margin-right: 4px;"></i> Chat';
         toggleChatBtn.classList.remove('active');
     }
 });
@@ -3771,6 +3892,7 @@ document.addEventListener('keydown', (e) => {
 clearChatBtn.addEventListener('click', () => {
     if (confirm('Clear all chat messages?')) {
         chatMessages.innerHTML = '';
+        hideChatThinking();
         socket.emit('clear_chat', { workspace_id: currentWorkspaceId });
         appendChatMessage('system', 'Chat history cleared');
     }
