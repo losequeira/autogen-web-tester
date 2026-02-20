@@ -6,8 +6,12 @@ list, read, search, create, and update tests and AI steps.
 """
 
 import json
+import subprocess
+import sys
+import tempfile
 import traceback
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from openai import OpenAI
@@ -186,6 +190,47 @@ class WorkspaceAgent:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_test",
+                "description": (
+                    "Execute a Playwright test in headless mode and return pass/fail status "
+                    "plus the full error traceback if it fails. Use this to verify a fix works "
+                    "or to diagnose why a test is failing before attempting a repair."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Filename of the test to run (e.g. 'my_test.py')",
+                        },
+                    },
+                    "required": ["filename"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_test_results",
+                "description": (
+                    "Get the last run status, timestamp, and artifact info for a test. "
+                    "Use this to understand a test's history before deciding how to fix it."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Filename of the test (e.g. 'my_test.py')",
+                        },
+                    },
+                    "required": ["filename"],
+                },
+            },
+        },
     ]
 
     BASE_SYSTEM_PROMPT = """You are a workspace assistant for a web testing automation tool. \
@@ -208,6 +253,8 @@ Call this first for any analysis, metrics, or "what does X test" question.
 - search_files(query) — keyword search across all file contents
 - create_test / create_ai_step — create new files
 - update_test / update_ai_step — propose edits (shown as diff for user review)
+- run_test(filename) — execute a test headless; returns pass/fail + full traceback on error
+- get_test_results(filename) — last run status, timestamp, and artifact info for a test
 
 ━━ SEMANTIC QUERY HANDLING ━━
 Before answering, extract the intent from the user's message:
@@ -215,6 +262,9 @@ Before answering, extract the intent from the user's message:
 - "create / generate / write" → call create_test or create_ai_step
 - "fix / update / change / modify" → read the file first, then call the update tool
 - "find / search / which test" → call search_files(query)
+- "run / execute / check if it passes" → call run_test(filename)
+- "why did it fail / last result / history" → call get_test_results(filename)
+- "fix failing test" → get_test_results → read_test → update_test → run_test to verify
 - Vague pronoun references ("it", "that test", "them") → infer from conversation history
 
 ━━ CRITICAL RULES ━━
@@ -224,6 +274,8 @@ Before answering, extract the intent from the user's message:
 4. Error tracebacks: "web_ui.py", "<string>" are system internals — the actual test is in the workspace.
 5. Never guess filenames — always use filenames returned by list_tests or list_ai_steps tools.
 6. Be concise. After tool calls, give a short plain-text summary of what was done.
+7. run_test executes headless (no browser window). It updates the DB status automatically.
+8. For failing tests: use run_test to capture the live traceback, then fix based on the actual error.
 
 ━━ CODE TEMPLATE ━━
 ```python
@@ -254,6 +306,37 @@ asyncio.run(run())
         self.model = model
         # Per-workspace conversation histories: {workspace_id: [messages]}
         self._histories: dict[int, list[dict]] = {}
+
+    @staticmethod
+    def _run_headless(code: str) -> tuple[str, str | None]:
+        """Write code to a temp file and run it in a subprocess (headless).
+
+        Returns (status, error_msg) where status is 'success' or 'error'.
+        """
+        modified_code = code.replace("headless=False", "headless=True")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, prefix="awt_run_"
+        ) as tmp:
+            tmp.write(modified_code)
+            tmp_path = Path(tmp.name)
+
+        try:
+            result = subprocess.run(
+                [sys.executable, str(tmp_path)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                return "success", None
+            error_msg = (result.stderr or result.stdout or "Unknown error").strip()
+            return "error", error_msg
+        except subprocess.TimeoutExpired:
+            return "error", "Test timed out after 120 seconds."
+        except Exception as exc:
+            return "error", f"{exc}\n{traceback.format_exc()}"
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def _build_system_prompt(self, workspace_id: int) -> str:
         """Build the system prompt with a live workspace snapshot injected."""
@@ -466,12 +549,107 @@ asyncio.run(run())
                 })
                 return f"Change proposed for '{filename}'. The diff is now shown to the user for review."
 
+            elif tool_name == "run_test":
+                filename = tool_args["filename"]
+                test = db.get_test(workspace_id, filename)
+                if not test:
+                    return f"Test '{filename}' not found."
+
+                emit_fn("agent_tool_call", {
+                    "tool": "run_test",
+                    "args": {"filename": filename},
+                    "timestamp": datetime.now().isoformat(),
+                    "message": f"Running '{test['name']}' headless…",
+                })
+
+                status, error_msg = self._run_headless(test["code"])
+
+                # Persist the result so get_test_results stays in sync
+                timestamp = datetime.utcnow().isoformat()
+                db.update_test(workspace_id, filename, {
+                    "last_run_status": status,
+                    "last_run_time": timestamp,
+                })
+
+                if status == "success":
+                    return f"✅ Test '{filename}' passed."
+                else:
+                    # Trim very long tracebacks so they fit in the context window
+                    trimmed = (error_msg or "")[-4000:]
+                    return (
+                        f"❌ Test '{filename}' failed.\n\nTraceback (last 4 000 chars):\n{trimmed}"
+                    )
+
+            elif tool_name == "get_test_results":
+                filename = tool_args["filename"]
+                test = db.get_test(workspace_id, filename)
+                if not test:
+                    return f"Test '{filename}' not found."
+
+                status = test.get("last_run_status") or "never run"
+                run_time = test.get("last_run_time") or "—"
+                lines = [
+                    f"Test: {test['name']}",
+                    f"Filename: {filename}",
+                    f"Last status: {status}",
+                    f"Last run:    {run_time}",
+                ]
+
+                artifacts = db.get_test_artifacts(workspace_id, filename) or []
+                if artifacts:
+                    a = artifacts[0]  # most recent
+                    lines.append(f"Artifact status: {a.get('status', '—')}")
+                    lines.append(f"Artifact time:   {a.get('timestamp', '—')}")
+                    if a.get("video_path"):
+                        lines.append(f"Video:  {a['video_path']}")
+                    if a.get("har_path"):
+                        lines.append(f"HAR:    {a['har_path']}")
+                else:
+                    lines.append("No recorded artifacts yet.")
+
+                return "\n".join(lines)
+
             else:
                 return f"Unknown tool: {tool_name}"
 
         except Exception as e:
             traceback.print_exc()
             return f"Tool '{tool_name}' failed: {str(e)}"
+
+    @staticmethod
+    def _history_without_images(history: list[dict]) -> list[dict]:
+        """Return a copy of history with base64 image data removed from older messages.
+
+        Only the most-recent user message keeps its image so the model can still
+        see the screenshot the user just sent; all earlier image turns are reduced
+        to their text content.  This prevents the context window from ballooning
+        when a user sends a screenshot mid-conversation.
+        """
+        result = []
+        last_image_idx = max(
+            (i for i, m in enumerate(history)
+             if m.get("role") == "user" and isinstance(m.get("content"), list)),
+            default=None,
+        )
+        for i, msg in enumerate(history):
+            if (
+                msg.get("role") == "user"
+                and isinstance(msg.get("content"), list)
+                and i != last_image_idx
+            ):
+                # Replace multimodal list with text-only string
+                text = " ".join(
+                    part["text"]
+                    for part in msg["content"]
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+                result.append({**msg, "content": text or "[image]"})
+            else:
+                result.append(msg)
+        return result
+
+    _MAX_TOOL_ITERATIONS = 15
+    _API_TIMEOUT = 90  # seconds
 
     def run(
         self,
@@ -491,7 +669,7 @@ asyncio.run(run())
         # Build user message content
         if image:
             content: Any = [
-                {"type": "text", "text": message},
+                {"type": "text", "text": message or "See the attached image."},
                 {"type": "image_url", "image_url": {"url": image}},
             ]
         elif existing_code:
@@ -504,13 +682,20 @@ asyncio.run(run())
         # Build dynamic system prompt with live workspace snapshot
         system_prompt = self._build_system_prompt(workspace_id)
 
-        # Agentic tool-call loop
-        while True:
+        # Agentic tool-call loop (bounded to avoid infinite loops)
+        for iteration in range(self._MAX_TOOL_ITERATIONS):
+            # Strip images from older history turns to keep token count manageable
+            messages_for_api = (
+                [{"role": "system", "content": system_prompt}]
+                + self._history_without_images(history)
+            )
+
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "system", "content": system_prompt}] + history,
+                messages=messages_for_api,
                 tools=self.TOOLS,
                 tool_choice="auto",
+                timeout=self._API_TIMEOUT,
             )
 
             choice = response.choices[0]
@@ -545,4 +730,11 @@ asyncio.run(run())
                     "message": msg.content or "",
                     "timestamp": datetime.now().isoformat(),
                 })
-                break
+                return
+
+        # Reached iteration cap — emit whatever partial answer we have
+        emit_fn("chat_response", {
+            "role": "ai",
+            "message": "I reached the maximum number of steps. Please try rephrasing your request.",
+            "timestamp": datetime.now().isoformat(),
+        })

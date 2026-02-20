@@ -173,6 +173,8 @@ const clearChatBtn = document.getElementById('clear-chat-btn');
 const toggleChatBtn = document.getElementById('toggle-chat');
 const closeChatSidebarBtn = document.getElementById('close-chat-sidebar');
 const aiChatSidebar = document.getElementById('ai-chat-sidebar');
+const chatResizer = document.getElementById('chat-resizer');
+const contextMenu = document.getElementById('context-menu');
 const codeEditorSection = document.querySelector('.code-editor-section');
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -1559,6 +1561,11 @@ function loadFileExplorer() {
                     }
                 });
 
+                fileItem.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    showContextMenu(e.clientX, e.clientY, { filename: test.filename, name: test.name, type: 'test' });
+                });
+
                 fileList.appendChild(fileItem);
             });
 
@@ -1648,6 +1655,41 @@ if (hasFileExplorer && explorerResizer) {
             // Save the new width to localStorage
             const currentWidth = fileExplorer.offsetWidth;
             localStorage.setItem('fileExplorerWidth', currentWidth);
+        }
+    });
+}
+
+// Chat Resizer
+if (chatResizer) {
+    let isChatResizing = false;
+    let chatResizeStartX = 0;
+    let chatResizeStartWidth = 0;
+
+    chatResizer.addEventListener('mousedown', (e) => {
+        isChatResizing = true;
+        chatResizeStartX = e.clientX;
+        chatResizeStartWidth = aiChatSidebar.offsetWidth;
+        chatResizer.classList.add('resizing');
+        aiChatSidebar.style.transition = 'none';
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isChatResizing) return;
+        const diff = chatResizeStartX - e.clientX;
+        const newWidth = Math.max(MIN_CHAT_WIDTH, Math.min(700, chatResizeStartWidth + diff));
+        aiChatSidebar.style.width = newWidth + 'px';
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (isChatResizing) {
+            isChatResizing = false;
+            chatResizer.classList.remove('resizing');
+            aiChatSidebar.style.transition = '';
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            localStorage.setItem('aiChatWidth', aiChatSidebar.offsetWidth);
         }
     });
 }
@@ -2151,6 +2193,11 @@ async function loadAiSteps() {
                 }
             });
 
+            item.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                showContextMenu(e.clientX, e.clientY, { filename: step.filename, name: step.name, type: 'ai-step', id: step.id });
+            });
+
             aiStepsList.appendChild(item);
         });
     } catch (err) {
@@ -2642,28 +2689,98 @@ window.addEventListener('click', (event) => {
     }).observe(modal, { attributes: true, attributeFilter: ['style'] });
 })();
 
+// Context Menu helpers
+let contextMenuTarget = null; // { filename, name, type: 'test'|'ai-step', id? }
+
+function showContextMenu(x, y, target) {
+    contextMenuTarget = target;
+    contextMenu.style.left = x + 'px';
+    contextMenu.style.top = y + 'px';
+    contextMenu.style.display = 'block';
+    // Flip if off-screen
+    const rect = contextMenu.getBoundingClientRect();
+    if (rect.right > window.innerWidth)  contextMenu.style.left = (x - rect.width) + 'px';
+    if (rect.bottom > window.innerHeight) contextMenu.style.top = (y - rect.height) + 'px';
+}
+
+function hideContextMenu() {
+    contextMenu.style.display = 'none';
+    contextMenuTarget = null;
+}
+
+document.addEventListener('click', hideContextMenu);
+
+contextMenu.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const btn = e.target.closest('[data-action]');
+    if (!btn || !contextMenuTarget) return;
+    const { filename, name, type, id } = contextMenuTarget;
+    const action = btn.dataset.action;
+    hideContextMenu();
+
+    if (action === 'rename') {
+        const newName = prompt('New name:', name);
+        if (!newName || newName.trim() === name) return;
+        const url = type === 'test'
+            ? `/api/workspaces/${currentWorkspaceId}/tests/${filename}`
+            : `/api/ai-steps/${filename}`;
+        authFetch(url, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName.trim() }),
+        }).then(() => {
+            if (type === 'test') loadFileExplorer();
+            else loadAiSteps();
+        });
+
+    } else if (action === 'run') {
+        if (type === 'test') runSavedTest(filename, name);
+        else runAiStep(id, filename, name);
+
+    } else if (action === 'delete') {
+        if (type === 'test') deleteFileFromExplorer(filename, name);
+        else deleteAiStep(filename, name);
+
+    } else if (action === 'ask-ai') {
+        openFileFromExplorer(filename, name);
+        openChat();
+        setTimeout(() => chatInput.focus(), 300);
+    }
+});
+
+// AI Chat Sidebar helpers
+const DEFAULT_CHAT_WIDTH = 450;
+const MIN_CHAT_WIDTH = 280;
+
+function openChat() {
+    const savedWidth = parseInt(localStorage.getItem('aiChatWidth')) || DEFAULT_CHAT_WIDTH;
+    aiChatSidebar.style.width = savedWidth + 'px';
+    aiChatSidebar.classList.add('open');
+    chatResizer.classList.add('visible');
+    toggleChatBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Chat';
+    toggleChatBtn.classList.add('active');
+}
+
+function closeChat() {
+    aiChatSidebar.classList.remove('open');
+    aiChatSidebar.style.width = '';
+    chatResizer.classList.remove('visible');
+    toggleChatBtn.innerHTML = '<i class="lni lni-chat-bubble-2" style="margin-right: 4px;"></i> Chat';
+    toggleChatBtn.classList.remove('active');
+}
+
 // AI Chat Sidebar Toggle
 toggleChatBtn.addEventListener('click', () => {
-    const isOpen = aiChatSidebar.classList.toggle('open');
-    codeEditorSection.classList.toggle('chat-open');
-
-    // Update button appearance
-    if (isOpen) {
-        toggleChatBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Chat';
-        toggleChatBtn.classList.add('active');
-        // Focus on chat input
-        setTimeout(() => chatInput.focus(), 300);
+    if (aiChatSidebar.classList.contains('open')) {
+        closeChat();
     } else {
-        toggleChatBtn.innerHTML = '<i class="lni lni-chat-bubble-2" style="margin-right: 4px;"></i> Chat';
-        toggleChatBtn.classList.remove('active');
+        openChat();
+        setTimeout(() => chatInput.focus(), 300);
     }
 });
 
 closeChatSidebarBtn.addEventListener('click', () => {
-    aiChatSidebar.classList.remove('open');
-    codeEditorSection.classList.remove('chat-open');
-    toggleChatBtn.innerHTML = '<i class="lni lni-chat-bubble-2" style="margin-right: 4px;"></i> Chat';
-    toggleChatBtn.classList.remove('active');
+    closeChat();
 });
 
 // Live Browser Sidebar Toggle (removed from UI - browser opens automatically during test runs)
@@ -2677,14 +2794,29 @@ if (toggleBrowserBtn) {
             toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
             toggleBrowserBtn.classList.add('active');
         } else {
+            // Re-open sidebar if test is running — user must stop first
+            if (isTestRunning || isBatchRunning) {
+                browserSidebar.classList.add('open');
+                codeEditorContainer.classList.add('browser-open');
+                toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
+                toggleBrowserBtn.classList.add('active');
+                stopAndCloseModal.style.display = 'block';
+                return;
+            }
             codeEditorContainer.classList.remove('browser-open');
             toggleBrowserBtn.innerHTML = '<i class="lni lni-globe-1" style="margin-right: 4px;"></i> Browser';
             toggleBrowserBtn.classList.remove('active');
+            closeOutputPanel();
         }
     });
 }
 
-closeBrowserSidebarBtn.addEventListener('click', () => {
+// Stop-and-close modal
+const stopAndCloseModal = document.getElementById('stop-and-close-modal');
+const stopAndCloseConfirmBtn = document.getElementById('stop-and-close-confirm-btn');
+const stopAndCloseCancelBtn = document.getElementById('stop-and-close-cancel-btn');
+
+function _doCloseBrowserSidebar() {
     const codeEditorContainer = document.querySelector('.code-editor-container');
     browserSidebar.classList.remove('open');
     codeEditorContainer.classList.remove('browser-open');
@@ -2692,6 +2824,33 @@ closeBrowserSidebarBtn.addEventListener('click', () => {
         toggleBrowserBtn.innerHTML = '<i class="lni lni-globe-1" style="margin-right: 4px;"></i> Browser';
         toggleBrowserBtn.classList.remove('active');
     }
+    closeOutputPanel();
+}
+
+function _requestCloseBrowserSidebar() {
+    if (isTestRunning || isBatchRunning) {
+        stopAndCloseModal.style.display = 'block';
+    } else {
+        _doCloseBrowserSidebar();
+    }
+}
+
+stopAndCloseConfirmBtn.addEventListener('click', () => {
+    stopAndCloseModal.style.display = 'none';
+    if (!isStopRequested) {
+        isStopRequested = true;
+        socket.emit('stop_test');
+        addLogEntry('info', '⏹ Stop request sent to server');
+    }
+    _doCloseBrowserSidebar();
+});
+
+stopAndCloseCancelBtn.addEventListener('click', () => {
+    stopAndCloseModal.style.display = 'none';
+});
+
+closeBrowserSidebarBtn.addEventListener('click', () => {
+    _requestCloseBrowserSidebar();
 });
 
 // Close browser sidebar when clicking outside (but not on logs)
@@ -2708,12 +2867,10 @@ document.addEventListener('click', (e) => {
 
     // Close if clicking outside browser AND not on logs
     if (!clickInsideBrowser && !clickOnToggleButton && !clickInsideLogs) {
-        const codeEditorContainer = document.querySelector('.code-editor-container');
-        browserSidebar.classList.remove('open');
-        codeEditorContainer.classList.remove('browser-open');
-        if (toggleBrowserBtn) {
-            toggleBrowserBtn.innerHTML = '<i class="lni lni-globe-1" style="margin-right: 4px;"></i> Browser';
-            toggleBrowserBtn.classList.remove('active');
+        if (isTestRunning || isBatchRunning) {
+            stopAndCloseModal.style.display = 'block';
+        } else {
+            _doCloseBrowserSidebar();
         }
     }
 });
@@ -2731,6 +2888,10 @@ outputPanelHeader.addEventListener('click', (e) => {
 
 function openOutputPanel() {
     outputPanel.classList.add('open');
+}
+
+function closeOutputPanel() {
+    outputPanel.classList.remove('open');
 }
 
 function _updateOutputPreview(text) {
@@ -3262,10 +3423,7 @@ function sendChatMessage() {
 
     // Open chat sidebar if not already open
     if (!aiChatSidebar.classList.contains('open')) {
-        aiChatSidebar.classList.add('open');
-        codeEditorSection.classList.add('chat-open');
-        toggleChatBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Chat';
-        toggleChatBtn.classList.add('active');
+        openChat();
     }
 
     // Get existing code from bottom panel
@@ -3874,11 +4032,9 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' &&
         aiChatSidebar.classList.contains('open') &&
         !codePreviewPanel.classList.contains('open')) {
-        aiChatSidebar.classList.remove('open');
-        codeEditorSection.classList.remove('chat-open');
-        toggleChatBtn.innerHTML = '<i class="lni lni-chat-bubble-2" style="margin-right: 4px;"></i> Chat';
-        toggleChatBtn.classList.remove('active');
+        closeChat();
     }
+    if (e.key === 'Escape') hideContextMenu();
 });
 
 // Cmd+S (Mac) / Ctrl+S (Windows/Linux) to save file

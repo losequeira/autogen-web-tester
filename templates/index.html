@@ -276,6 +276,9 @@
                     </div>
                 </div>
 
+                <!-- Chat Resizer -->
+                <div id="chat-resizer" class="chat-resizer"></div>
+
                 <!-- AI Chat Sidebar (Right) -->
                 <div id="ai-chat-sidebar" class="ai-chat-sidebar">
                     <div class="chat-sidebar-header">
@@ -498,6 +501,24 @@
             </div>
         </div>
 
+    <!-- Stop & Close Browser Modal -->
+    <div id="stop-and-close-modal" class="modal" style="display:none;">
+        <div class="modal-content" style="max-width:360px;background:var(--ctp-base);border:1px solid var(--ctp-surface0);">
+            <div class="modal-header" style="background:linear-gradient(135deg, var(--ctp-accent) 0%, var(--ctp-mauve) 100%);color:var(--ctp-crust);">
+                <h2><i class="lni lni-hand-stop"></i> Test is running</h2>
+            </div>
+            <div class="modal-body">
+                <p style="color:var(--ctp-subtext1);font-size:13px;margin-bottom:20px;">
+                    A test is currently running. Stop it before closing the browser viewer.
+                </p>
+                <div class="button-group">
+                    <button id="stop-and-close-confirm-btn" class="btn" style="background:var(--ctp-red);border-color:var(--ctp-red);color:var(--ctp-crust);">Stop &amp; Close</button>
+                    <button id="stop-and-close-cancel-btn" class="btn" style="background:var(--ctp-surface1);border:2px solid var(--ctp-surface2);color:var(--ctp-text);">Keep Running</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Full-page Auth Screen -->
     <div id="auth-page">
         <div class="auth-bg-grid"></div>
@@ -646,6 +667,15 @@
                 </form>
             </div>
         </div>
+    </div>
+
+    <!-- Right-Click Context Menu -->
+    <div id="context-menu" class="context-menu" style="display:none;">
+        <button class="context-menu-item" data-action="rename"><i class="lni lni-pencil-1"></i> Rename</button>
+        <button class="context-menu-item" data-action="run"><i class="lni lni-play"></i> Run</button>
+        <button class="context-menu-item context-menu-item--danger" data-action="delete"><i class="lni lni-trash-3"></i> Delete</button>
+        <div class="context-menu-separator"></div>
+        <button class="context-menu-item" data-action="ask-ai"><i class="lni lni-chat-bubble-2"></i> Ask AI</button>
     </div>
 
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>

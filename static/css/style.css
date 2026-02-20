@@ -593,17 +593,9 @@ body {
         grid-template-columns: 1fr;
     }
 
-    .ai-chat-sidebar {
-        width: 100%;
-    }
-
-    .code-editor-section.chat-open {
-        margin-right: 0;
-        display: none;
-    }
-
     .ai-chat-sidebar.open {
-        width: 100%;
+        width: 100% !important;
+        min-width: 0;
     }
 }
 
@@ -958,6 +950,9 @@ body {
     max-height: 90vh;
     background: var(--ctp-base);
     border: 1px solid var(--ctp-surface1);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
 #video-viewer-modal .modal-header {
@@ -975,9 +970,9 @@ body {
 }
 
 #video-viewer-modal .modal-body {
-    background: var(--ctp-base);
-    max-height: none;
-    overflow: visible;
+    background: #000;
+    max-height: calc(90vh - 48px);
+    overflow: hidden;
     padding: 0;
 }
 
@@ -985,15 +980,13 @@ body {
     padding: 0;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    min-height: 200px;
-    margin: 0 -20px;
+    width: 100%;
 }
 
 #video-viewer-player {
     background: #000;
     width: 100%;
-    max-height: 75vh;
+    max-height: calc(90vh - 48px);
     height: auto;
     object-fit: contain;
     display: block;
@@ -1122,13 +1115,9 @@ body {
     flex: 1;
     display: flex;
     flex-direction: column;
-    transition: margin-right 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    min-width: 300px;
     background: var(--ctp-base);
     overflow: hidden;
-}
-
-.code-editor-section.chat-open {
-    margin-right: 450px;
 }
 
 /* VS Code Style Output Panel */
@@ -1519,24 +1508,45 @@ body {
     pointer-events: none;
 }
 
+/* Chat Resizer */
+.chat-resizer {
+    width: 4px;
+    background: transparent;
+    cursor: col-resize;
+    transition: background 0.2s;
+    position: relative;
+    z-index: 1;
+    display: none;
+    flex-shrink: 0;
+}
+
+.chat-resizer.visible {
+    display: block;
+}
+
+.chat-resizer:hover,
+.chat-resizer.resizing {
+    background: var(--ctp-accent);
+}
+
 /* AI Chat Sidebar - VS Code Style */
 .ai-chat-sidebar {
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 450px;
+    width: 0;
+    min-width: 0;
+    flex-shrink: 0;
     background: var(--ctp-base);
-    border-left: 1px solid var(--ctp-surface0);
+    border-left: none;
     display: flex;
     flex-direction: column;
-    transform: translateX(100%);
-    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    z-index: 10;
+    overflow: hidden;
+    transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                border-color 0.25s;
 }
 
 .ai-chat-sidebar.open {
-    transform: translateX(0);
+    width: 450px;
+    min-width: 280px;
+    border-left: 1px solid var(--ctp-surface0);
 }
 
 /* Live Browser Sidebar - VS Code Style */
@@ -3793,4 +3803,44 @@ body {
     vertical-align: middle;
 }
 /* ========== END LINEICONS SIZING ========== */
+
+/* Context Menu */
+.context-menu {
+    position: fixed;
+    z-index: 2000;
+    background: var(--ctp-surface0);
+    border: 1px solid var(--ctp-surface1);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    padding: 4px 0;
+    min-width: 160px;
+}
+
+.context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 14px;
+    background: none;
+    border: none;
+    color: var(--ctp-text);
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.context-menu-item:hover {
+    background: var(--ctp-surface1);
+}
+
+.context-menu-item--danger {
+    color: var(--ctp-red);
+}
+
+.context-menu-separator {
+    height: 1px;
+    background: var(--ctp-surface1);
+    margin: 4px 0;
+}
 /* ========== END FILE LIST LOADING STATE ========== */
