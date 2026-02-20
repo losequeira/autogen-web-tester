@@ -72,6 +72,9 @@ active_recordings = {}
 TEMP_RECORDINGS_DIR = Path(__file__).parent / 'temp_recordings'
 TEMP_RECORDINGS_DIR.mkdir(exist_ok=True)
 
+# Embedded browser recorder sessions: recording_id -> {loop, actions, stop_event, page_ref, test_name}
+active_recorders: dict = {}
+
 
 
 def update_test_artifacts(filename: str, artifact_dir: Path, test_status: str = 'unknown', workspace_id: int = None):
@@ -465,6 +468,161 @@ def run_codegen_process(recording_id: str, url: str, output_file: str, test_name
                 os.remove(output_file)
         except Exception:
             pass
+
+
+def generate_code_from_actions(actions: list) -> str:
+    """Generate Playwright Python code from a list of recorded (action, *args) tuples."""
+    lines = [
+        'from playwright.async_api import async_playwright',
+        'import asyncio',
+        '',
+        'async def run():',
+        '    async with async_playwright() as p:',
+        '        browser = await p.chromium.launch(headless=False)',
+        '        page = await browser.new_page()',
+    ]
+    for action in actions:
+        kind = action[0]
+        if kind == 'goto':
+            url = action[1].replace("'", "\\'")
+            lines.append(f"        await page.goto('{url}')")
+        elif kind == 'click':
+            lines.append(f"        await page.mouse.click({action[1]}, {action[2]})")
+        elif kind == 'type':
+            text = action[1].replace('\\', '\\\\').replace("'", "\\'")
+            lines.append(f"        await page.keyboard.type('{text}')")
+    lines.extend([
+        '        await browser.close()',
+        '',
+        'asyncio.run(run())',
+    ])
+    return '\n'.join(lines)
+
+
+def run_embedded_recorder(recording_id: str, url: str, test_name: str):
+    """
+    Run a headless Playwright browser for interactive recording.
+    Streams screenshots via Socket.IO; responds to recorder_interact socket events.
+    """
+    import asyncio as _asyncio
+    from playwright.async_api import async_playwright as _async_playwright
+
+    loop = _asyncio.new_event_loop()
+    actions: list = []
+    stop_event = _asyncio.Event()
+    page_ref: list = [None]
+
+    active_recorders[recording_id] = {
+        'loop': loop,
+        'actions': actions,
+        'stop_event': stop_event,
+        'page_ref': page_ref,
+        'test_name': test_name,
+    }
+
+    viewport_w = getattr(config, 'VIDEO_SIZE_WIDTH', 1280)
+    viewport_h = getattr(config, 'VIDEO_SIZE_HEIGHT', 720)
+
+    async def _run():
+        async with _async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                viewport={'width': viewport_w, 'height': viewport_h}
+            )
+            page = await context.new_page()
+            page_ref[0] = page
+
+            try:
+                await page.goto(url, timeout=30000)
+                actions.append(('goto', url))
+            except Exception as e:
+                socketio.emit('log', {'type': 'error', 'message': f'Recorder navigation error: {e}'})
+
+            socketio.emit('codegen_status', {
+                'recording_id': recording_id,
+                'status': 'recording',
+                'message': f'Recording started at {url}',
+                'viewport': {'width': viewport_w, 'height': viewport_h},
+            })
+
+            # Stream screenshots at ~10 FPS until stop is requested
+            while not stop_event.is_set():
+                try:
+                    shot = await page.screenshot(type='jpeg', quality=70)
+                    img_b64 = base64.b64encode(shot).decode('utf-8')
+                    socketio.emit('screenshot', {
+                        'image': img_b64,
+                        'action': 'stream',
+                        'timestamp': datetime.now().isoformat(),
+                        'recorder_id': recording_id,
+                        'url': page.url,
+                    })
+                except Exception as e:
+                    if not stop_event.is_set():
+                        print(f'Recorder screenshot error: {e}')
+                    break
+                await _asyncio.sleep(0.1)
+
+            await context.close()
+            await browser.close()
+
+    try:
+        loop.run_until_complete(_run())
+    except Exception as e:
+        print(f'Embedded recorder error: {e}')
+        socketio.emit('codegen_error', {
+            'recording_id': recording_id,
+            'message': str(e),
+        })
+    finally:
+        loop.close()
+        active_recorders.pop(recording_id, None)
+
+
+@socketio.on('recorder_interact')
+def handle_recorder_interact(data):
+    """Handle interactive input events (click, type, navigate, stop) for the embedded recorder."""
+    recording_id = data.get('recording_id')
+    action = data.get('action')
+
+    recorder = active_recorders.get(recording_id)
+    if not recorder:
+        return
+
+    loop = recorder['loop']
+    page = recorder['page_ref'][0]
+    actions = recorder['actions']
+
+    if action == 'click' and page:
+        x = int(data.get('x', 0))
+        y = int(data.get('y', 0))
+        actions.append(('click', x, y))
+        asyncio.run_coroutine_threadsafe(page.mouse.click(x, y), loop)
+
+    elif action == 'type' and page:
+        text = data.get('text', '')
+        actions.append(('type', text))
+        asyncio.run_coroutine_threadsafe(page.keyboard.type(text), loop)
+
+    elif action == 'key' and page:
+        key = data.get('key', '')
+        if key:
+            asyncio.run_coroutine_threadsafe(page.keyboard.press(key), loop)
+
+    elif action == 'navigate' and page:
+        nav_url = data.get('url', '')
+        if nav_url:
+            actions.append(('goto', nav_url))
+            asyncio.run_coroutine_threadsafe(page.goto(nav_url), loop)
+
+    elif action == 'stop':
+        code = generate_code_from_actions(actions)
+        loop.call_soon_threadsafe(recorder['stop_event'].set)
+        socketio.emit('codegen_complete', {
+            'recording_id': recording_id,
+            'code': code,
+            'name': recorder.get('test_name') or 'Recorded Test',
+        })
 
 
 async def run_test_async(task: str, test_filename: str = None, workspace_id: int = None):
@@ -1251,12 +1409,30 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
             print("=" * 50)
 
             # Execute user's code with wrapped Playwright
+            # Import common Playwright symbols the user code might reference
+            from playwright.async_api import (
+                expect as _pw_expect,
+                Page as _pw_Page,
+                Browser as _pw_Browser,
+                BrowserContext as _pw_BrowserContext,
+                Locator as _pw_Locator,
+                ElementHandle as _pw_ElementHandle,
+                TimeoutError as _pw_TimeoutError,
+            )
             exec_globals = {
                 'asyncio': asyncio,
                 'async_playwright': async_playwright_wrapper,
                 'base64': base64,
                 'datetime': datetime,
                 'socketio': socketio,
+                # Playwright public API
+                'expect': _pw_expect,
+                'Page': _pw_Page,
+                'Browser': _pw_Browser,
+                'BrowserContext': _pw_BrowserContext,
+                'Locator': _pw_Locator,
+                'ElementHandle': _pw_ElementHandle,
+                'TimeoutError': _pw_TimeoutError,
             }
             exec(modified_code, exec_globals)
 
@@ -1766,16 +1942,12 @@ def start_codegen():
     # Generate unique recording ID
     recording_id = str(uuid.uuid4())
 
-    # Create temp file for output
-    temp_file = TEMP_RECORDINGS_DIR / f'{recording_id}.py'
-
-    # Start codegen in background thread
+    # Start embedded headless recorder in background thread (streams screenshots to browser sidebar)
     socketio.start_background_task(
-        run_codegen_process,
+        run_embedded_recorder,
         recording_id=recording_id,
         url=url,
-        output_file=str(temp_file),
-        test_name=test_name
+        test_name=test_name,
     )
 
     return jsonify({
