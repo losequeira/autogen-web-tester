@@ -1409,12 +1409,30 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
             print("=" * 50)
 
             # Execute user's code with wrapped Playwright
+            # Import common Playwright symbols the user code might reference
+            from playwright.async_api import (
+                expect as _pw_expect,
+                Page as _pw_Page,
+                Browser as _pw_Browser,
+                BrowserContext as _pw_BrowserContext,
+                Locator as _pw_Locator,
+                ElementHandle as _pw_ElementHandle,
+                TimeoutError as _pw_TimeoutError,
+            )
             exec_globals = {
                 'asyncio': asyncio,
                 'async_playwright': async_playwright_wrapper,
                 'base64': base64,
                 'datetime': datetime,
                 'socketio': socketio,
+                # Playwright public API
+                'expect': _pw_expect,
+                'Page': _pw_Page,
+                'Browser': _pw_Browser,
+                'BrowserContext': _pw_BrowserContext,
+                'Locator': _pw_Locator,
+                'ElementHandle': _pw_ElementHandle,
+                'TimeoutError': _pw_TimeoutError,
             }
             exec(modified_code, exec_globals)
 
