@@ -2074,6 +2074,9 @@ body {
     padding: 16px;
     background: var(--ctp-base);
     min-height: 300px;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
 }
 
 .chat-message {
@@ -2081,6 +2084,8 @@ body {
     padding: 0;
     word-wrap: break-word;
     animation: slideIn 0.2s ease-out;
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 @keyframes slideIn {
