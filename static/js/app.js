@@ -54,6 +54,19 @@ function dismissLoadingOverlay() {
     overlay.addEventListener('transitionend', () => overlay.remove());
 }
 
+function showAppOverlay(label = 'Loading workspace…') {
+    const overlay = document.getElementById('workspace-switch-overlay');
+    if (!overlay) return;
+    const labelEl = overlay.querySelector('.workspace-switch-label');
+    if (labelEl) labelEl.textContent = label;
+    overlay.style.display = 'flex';
+}
+
+function hideAppOverlay() {
+    const overlay = document.getElementById('workspace-switch-overlay');
+    if (overlay) overlay.style.display = 'none';
+}
+
 // Initialize Socket.IO with auth token (passed as query param for Flask-SocketIO compat)
 const socket = io({ query: { token: authToken || '' } });
 
@@ -1295,10 +1308,19 @@ async function fetchTestStatistics() {
     }
 }
 
+function updateFormatBtnVisibility() {
+    if (!formatCodeBtn) return;
+    const activeTab = openTabs.find(t => t.id === activeTabId);
+    const hasFile = activeTab && activeTab.fileType !== 'dashboard';
+    formatCodeBtn.style.display = hasFile ? '' : 'none';
+}
+
 function renderTabs() {
     if (!editorTabsContainer) return;
 
     editorTabsContainer.innerHTML = '';
+
+    updateFormatBtnVisibility();
 
     // Show welcome page if no tabs are open
     if (openTabs.length === 0) {
@@ -1659,17 +1681,20 @@ function openDashboardTab() {
 }
 
 function showDashboardContent() {
-    // Hide editor, show dashboard
-    if (codemirrorEditor) codemirrorEditor.style.display = 'none';
+    // Hide the entire editor content area so its ::before placeholder can't bleed through
+    if (editorContent) {
+        editorContent.style.display = 'none';
+        editorContent.classList.remove('empty');
+    }
     if (dashboardView) dashboardView.style.display = 'block';
-    if (editorContent) editorContent.classList.remove('empty');
 
     // Load dashboard statistics
     loadDashboardStats();
 }
 
 function hideDashboardContent() {
-    // Show editor, hide dashboard
+    // Restore editor content area and hide dashboard
+    if (editorContent) editorContent.style.display = '';
     if (codemirrorEditor) codemirrorEditor.style.display = 'block';
     if (dashboardView) dashboardView.style.display = 'none';
 }
