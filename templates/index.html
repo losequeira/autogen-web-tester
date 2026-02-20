@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{{ theme }}">
 <head>
     <script>
         // Apply theme before CSS loads to prevent flash of wrong theme
@@ -37,6 +37,13 @@
     <!-- Loading overlay (removed by JS after app initializes) -->
     <div id="loading-overlay">
         <div class="loading-spinner"></div>
+        <span class="workspace-switch-label">Loading workspace…</span>
+    </div>
+
+    <!-- Workspace switch overlay (reusable, hidden by default) -->
+    <div id="workspace-switch-overlay" style="display:none;">
+        <div class="loading-spinner"></div>
+        <span class="workspace-switch-label">Switching workspace…</span>
     </div>
 
     <!-- Main VS Code-style layout (hidden until authenticated) -->
@@ -178,9 +185,8 @@
                     <div id="editor-tabs" class="editor-tabs">
                         <div class="editor-tabs-container"></div>
                         <div class="editor-tabs-actions">
-                            <button id="format-code-btn" class="btn-icon-small" title="Format Code (Shift+Alt+F)">✨</button>
+                            <button id="format-code-btn" class="btn-icon-small" title="Format Code (Shift+Alt+F)" style="display:none;">✨</button>
                             <button id="toggle-chat" class="btn btn-small">💬 Chat</button>
-                            <button id="close-all-tabs" class="btn-icon-small" title="Close All">⊗</button>
                         </div>
                     </div>
 

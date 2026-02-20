@@ -196,6 +196,23 @@
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+#workspace-switch-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9998;
+    background: var(--ctp-base);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+}
+.workspace-switch-label {
+    color: var(--ctp-subtext1);
+    font-size: 13px;
+    font-family: 'DM Sans', sans-serif;
+    letter-spacing: 0.02em;
+}
 /* ========== END LOADING OVERLAY ========== */
 
 * {
@@ -2074,6 +2091,9 @@ body {
     padding: 16px;
     background: var(--ctp-base);
     min-height: 300px;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
 }
 
 .chat-message {
@@ -2081,6 +2101,8 @@ body {
     padding: 0;
     word-wrap: break-word;
     animation: slideIn 0.2s ease-out;
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 @keyframes slideIn {

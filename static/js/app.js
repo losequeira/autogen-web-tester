@@ -54,6 +54,19 @@ function dismissLoadingOverlay() {
     overlay.addEventListener('transitionend', () => overlay.remove());
 }
 
+function showAppOverlay(label = 'Loading workspace…') {
+    const overlay = document.getElementById('workspace-switch-overlay');
+    if (!overlay) return;
+    const labelEl = overlay.querySelector('.workspace-switch-label');
+    if (labelEl) labelEl.textContent = label;
+    overlay.style.display = 'flex';
+}
+
+function hideAppOverlay() {
+    const overlay = document.getElementById('workspace-switch-overlay');
+    if (overlay) overlay.style.display = 'none';
+}
+
 // Initialize Socket.IO with auth token (passed as query param for Flask-SocketIO compat)
 const socket = io({ query: { token: authToken || '' } });
 
@@ -204,7 +217,7 @@ let activeTabId = null;
 let pendingCodeSuggestion = null;
 
 // Check if file explorer elements exist
-const hasFileExplorer = fileExplorer && fileList && editorTabsContainer && newTestBtn && closeAllTabsBtn && explorerResizer;
+const hasFileExplorer = fileExplorer && fileList && editorTabsContainer && newTestBtn && explorerResizer;
 
 let currentEditingTest = null;  // Track if we're editing an existing test
 let currentRecordingId = null;  // Track active recording
@@ -866,9 +879,6 @@ function runSavedTest(filename, name) {
         }
     }
 
-    // Automatically open output panel to show logs
-    openOutputPanel();
-
     socket.emit('run_saved_test', {
         filename,
         workspaceId: currentWorkspaceId
@@ -1298,10 +1308,19 @@ async function fetchTestStatistics() {
     }
 }
 
+function updateFormatBtnVisibility() {
+    if (!formatCodeBtn) return;
+    const activeTab = openTabs.find(t => t.id === activeTabId);
+    const hasFile = activeTab && activeTab.fileType !== 'dashboard';
+    formatCodeBtn.style.display = hasFile ? '' : 'none';
+}
+
 function renderTabs() {
     if (!editorTabsContainer) return;
 
     editorTabsContainer.innerHTML = '';
+
+    updateFormatBtnVisibility();
 
     // Show welcome page if no tabs are open
     if (openTabs.length === 0) {
@@ -1662,17 +1681,20 @@ function openDashboardTab() {
 }
 
 function showDashboardContent() {
-    // Hide editor, show dashboard
-    if (codemirrorEditor) codemirrorEditor.style.display = 'none';
+    // Hide the entire editor content area so its ::before placeholder can't bleed through
+    if (editorContent) {
+        editorContent.style.display = 'none';
+        editorContent.classList.remove('empty');
+    }
     if (dashboardView) dashboardView.style.display = 'block';
-    if (editorContent) editorContent.classList.remove('empty');
 
     // Load dashboard statistics
     loadDashboardStats();
 }
 
 function hideDashboardContent() {
-    // Show editor, hide dashboard
+    // Restore editor content area and hide dashboard
+    if (editorContent) editorContent.style.display = '';
     if (codemirrorEditor) codemirrorEditor.style.display = 'block';
     if (dashboardView) dashboardView.style.display = 'none';
 }
@@ -1948,7 +1970,6 @@ function runAiStep(stepId, filename, name) {
             toggleBrowserBtn.classList.add('active');
         }
     }
-    openOutputPanel();
 
     // Emit run AI step event - use database ID for unambiguous lookup
     socket.emit('run_ai_step', {
@@ -3118,10 +3139,48 @@ function closeCodePreview() {
 acceptCodeBtn.addEventListener('click', () => {
     if (!pendingCodeSuggestion) return;
 
-    // Apply code to editor
+    if (pendingCodeSuggestion.agentPending) {
+        // Agent-proposed change: commit to DB via API, then apply to editor
+        const { filename, fileType, workspaceId, code } = pendingCodeSuggestion;
+        const isSteps = fileType === 'ai_step';
+        const apiPath = isSteps
+            ? `/api/ai-steps/${filename}?workspace_id=${workspaceId}`
+            : `/api/workspaces/${workspaceId}/tests/${filename}`;
+        const body = isSteps ? { steps: code } : { code };
+
+        closeCodePreview();
+
+        authFetch(apiPath, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        })
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                // Apply to editor if the tab is open
+                setPlaywrightCode(code);
+                const tab = openTabs.find(t => t.id === filename);
+                if (tab) {
+                    tab.code = code;
+                    tab.isDirty = false;
+                    if (activeTabId === filename) lastSavedCode = code;
+                    renderTabs();
+                }
+                delete testCache[filename];
+                if (currentWorkspaceId) loadFileExplorer(currentWorkspaceId);
+                addLogEntry('success', `✓ Changes to ${filename} saved`);
+                appendChatMessage('system', `✓ Changes accepted and saved to ${filename}`);
+            })
+            .catch(err => {
+                addLogEntry('error', `Failed to save changes: ${err.message}`);
+                appendChatMessage('system', `✗ Failed to save changes: ${err.message}`);
+            });
+        return;
+    }
+
+    // Non-agent flow: apply code to editor only
     setPlaywrightCode(pendingCodeSuggestion.code);
 
-    // Update or create tab
     if (pendingCodeSuggestion.targetTabId) {
         const tab = openTabs.find(t => t.id === pendingCodeSuggestion.targetTabId);
         if (tab) {
@@ -3444,6 +3503,9 @@ async function handleLogin(event) {
             // Load workspaces (will restore saved workspace from localStorage)
             await loadWorkspaces();
 
+            // Restore theme from DB (overrides localStorage if user changed it elsewhere)
+            await restoreThemeFromDb();
+
             // Reload file lists for the current workspace
             if (hasFileExplorer && currentWorkspaceId) {
                 loadFileExplorer();
@@ -3513,6 +3575,9 @@ async function handleRegister(event) {
             // Load workspaces (user's default workspace will be loaded)
             await loadWorkspaces();
 
+            // Restore theme from DB
+            await restoreThemeFromDb();
+
             // Reload file lists for the current workspace
             if (hasFileExplorer && currentWorkspaceId) {
                 loadFileExplorer();
@@ -3577,13 +3642,19 @@ async function loadWorkspaces() {
             // Fall back to DB if localStorage is empty
             if (!savedWorkspaceId) {
                 const dbPrefs = await loadPreferencesFromDb();
-                if (dbPrefs && dbPrefs.selectedWorkspaceId) {
-                    savedWorkspaceId = dbPrefs.selectedWorkspaceId;
-                    localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
-
+                if (dbPrefs) {
+                    if (dbPrefs.selectedWorkspaceId) {
+                        savedWorkspaceId = dbPrefs.selectedWorkspaceId;
+                        localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
+                    }
                     // Also restore editorTabsState from DB if missing locally
                     if (!localStorage.getItem('editorTabsState') && dbPrefs.editorTabsState) {
                         localStorage.setItem('editorTabsState', dbPrefs.editorTabsState);
+                    }
+                    // Apply saved theme from DB
+                    if (dbPrefs.theme && VALID_THEMES.includes(dbPrefs.theme)) {
+                        applyTheme(dbPrefs.theme);
+                        localStorage.setItem('theme', dbPrefs.theme);
                     }
                 }
             }
@@ -3685,21 +3756,42 @@ function displayWorkspaceMembers(members) {
 }
 
 async function switchWorkspace(workspaceId) {
-    currentWorkspaceId = parseInt(workspaceId);
+    const wsSwitchOverlay = document.getElementById('workspace-switch-overlay');
+    if (wsSwitchOverlay) wsSwitchOverlay.style.display = 'flex';
 
-    // Save selected workspace to localStorage and DB
-    localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
-    savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
+    try {
+        currentWorkspaceId = parseInt(workspaceId);
 
-    await loadWorkspaceDetails();
+        // Sync the dropdown immediately so it reflects the selection
+        if (workspaceDropdown) workspaceDropdown.value = currentWorkspaceId;
 
-    // Reload file lists for new workspace
-    if (hasFileExplorer) {
-        loadFileExplorer();
-        loadAiSteps();
+        // Close all open tabs — tests belong to a specific workspace
+        openTabs = [];
+        activeTabId = null;
+        lastSavedCode = '';
+        setPlaywrightCode('');
+        renderTabs();
+        saveTabsState();
+
+        // Save selected workspace to localStorage and DB
+        localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
+        savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
+
+        await loadWorkspaceDetails();
+
+        // Reload file lists for new workspace
+        if (hasFileExplorer) {
+            loadFileExplorer();
+            loadAiSteps();
+        }
+
+        // Re-open dashboard tab so the main area shows workspace stats (not "No file open")
+        openDashboardTab();
+
+        addLogEntry('info', `Switched to workspace: ${currentWorkspace.name}`);
+    } finally {
+        if (wsSwitchOverlay) wsSwitchOverlay.style.display = 'none';
     }
-
-    addLogEntry('info', `Switched to workspace: ${currentWorkspace.name}`);
 }
 
 let _isFirstWorkspaceFlow = false;
