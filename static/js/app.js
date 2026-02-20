@@ -3118,10 +3118,48 @@ function closeCodePreview() {
 acceptCodeBtn.addEventListener('click', () => {
     if (!pendingCodeSuggestion) return;
 
-    // Apply code to editor
+    if (pendingCodeSuggestion.agentPending) {
+        // Agent-proposed change: commit to DB via API, then apply to editor
+        const { filename, fileType, workspaceId, code } = pendingCodeSuggestion;
+        const isSteps = fileType === 'ai_step';
+        const apiPath = isSteps
+            ? `/api/ai-steps/${filename}?workspace_id=${workspaceId}`
+            : `/api/workspaces/${workspaceId}/tests/${filename}`;
+        const body = isSteps ? { steps: code } : { code };
+
+        closeCodePreview();
+
+        authFetch(apiPath, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        })
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                // Apply to editor if the tab is open
+                setPlaywrightCode(code);
+                const tab = openTabs.find(t => t.id === filename);
+                if (tab) {
+                    tab.code = code;
+                    tab.isDirty = false;
+                    if (activeTabId === filename) lastSavedCode = code;
+                    renderTabs();
+                }
+                delete testCache[filename];
+                if (currentWorkspaceId) loadFileExplorer(currentWorkspaceId);
+                addLogEntry('success', `✓ Changes to ${filename} saved`);
+                appendChatMessage('system', `✓ Changes accepted and saved to ${filename}`);
+            })
+            .catch(err => {
+                addLogEntry('error', `Failed to save changes: ${err.message}`);
+                appendChatMessage('system', `✗ Failed to save changes: ${err.message}`);
+            });
+        return;
+    }
+
+    // Non-agent flow: apply code to editor only
     setPlaywrightCode(pendingCodeSuggestion.code);
 
-    // Update or create tab
     if (pendingCodeSuggestion.targetTabId) {
         const tab = openTabs.find(t => t.id === pendingCodeSuggestion.targetTabId);
         if (tab) {
