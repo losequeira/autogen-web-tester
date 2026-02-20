@@ -3865,6 +3865,9 @@ const TOOL_LABELS = {
     create_ai_step:        'Creating AI steps…',
     update_test:           'Updating test…',
     update_ai_step:        'Updating AI steps…',
+    run_test:              'Running test…',
+    get_test_results:      'Getting results…',
+    get_test_trace:        'Reading trace…',
 };
 
 socket.on('agent_tool_call', (data) => {

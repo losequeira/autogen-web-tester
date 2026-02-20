@@ -231,6 +231,29 @@ class WorkspaceAgent:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_test_trace",
+                "description": (
+                    "Get the Playwright trace availability and metadata for a test. "
+                    "Returns all recorded trace artifacts with their paths, timestamps, and run status. "
+                    "Use this when the user asks about trace data, recorded actions, network events, "
+                    "or wants to understand what happened during a test run. "
+                    "A trace captures screenshots, network requests, console logs, and browser actions."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Filename of the test (e.g. 'my_test.py')",
+                        },
+                    },
+                    "required": ["filename"],
+                },
+            },
+        },
     ]
 
     BASE_SYSTEM_PROMPT = """You are a workspace assistant for a web testing automation tool. \
@@ -255,6 +278,7 @@ Call this first for any analysis, metrics, or "what does X test" question.
 - update_test / update_ai_step — propose edits (shown as diff for user review)
 - run_test(filename) — execute a test headless; returns pass/fail + full traceback on error
 - get_test_results(filename) — last run status, timestamp, and artifact info for a test
+- get_test_trace(filename) — trace availability and metadata (paths, timestamps, network/action recording info)
 
 ━━ SEMANTIC QUERY HANDLING ━━
 Before answering, extract the intent from the user's message:
@@ -264,6 +288,7 @@ Before answering, extract the intent from the user's message:
 - "find / search / which test" → call search_files(query)
 - "run / execute / check if it passes" → call run_test(filename)
 - "why did it fail / last result / history" → call get_test_results(filename)
+- "trace / recorded actions / network events / what happened / browser trace" → call get_test_trace(filename)
 - "fix failing test" → get_test_results → read_test → update_test → run_test to verify
 - Vague pronoun references ("it", "that test", "them") → infer from conversation history
 
@@ -348,7 +373,12 @@ asyncio.run(run())
             snapshot_lines.append(f"Tests ({len(tests)}):")
             for t in tests:
                 status = t.get("last_run_status") or "never run"
-                snapshot_lines.append(f"  • {t['name']}  [filename: {t['filename']}]  status: {status}")
+                artifacts = t.get("test_artifacts") or []
+                has_trace = any(a.get("trace_path") for a in artifacts)
+                trace_label = "  [trace available]" if has_trace else ""
+                snapshot_lines.append(
+                    f"  • {t['name']}  [filename: {t['filename']}]  status: {status}{trace_label}"
+                )
         else:
             snapshot_lines.append("Tests: none")
 
@@ -606,6 +636,44 @@ asyncio.run(run())
                         lines.append(f"HAR:    {a['har_path']}")
                 else:
                     lines.append("No recorded artifacts yet.")
+
+                return "\n".join(lines)
+
+            elif tool_name == "get_test_trace":
+                filename = tool_args["filename"]
+                test = db.get_test(workspace_id, filename)
+                if not test:
+                    return f"Test '{filename}' not found."
+
+                artifacts = db.get_test_artifacts(workspace_id, filename) or []
+                trace_artifacts = [a for a in artifacts if a.get("trace_path")]
+
+                lines = [
+                    f"Test: {test['name']}",
+                    f"Filename: {filename}",
+                ]
+
+                if not trace_artifacts:
+                    lines.append(
+                        "No trace recordings found for this test. "
+                        "Traces are captured when ENABLE_TRACE_RECORDING is enabled in config."
+                    )
+                else:
+                    lines.append(f"\nTrace recordings ({len(trace_artifacts)}):")
+                    for i, a in enumerate(trace_artifacts, 1):
+                        lines.append(f"\n  [{i}] Timestamp: {a.get('timestamp', '—')}")
+                        lines.append(f"      Run status: {a.get('status', '—')}")
+                        lines.append(f"      Trace path: {a['trace_path']}")
+                        if a.get("har_path"):
+                            lines.append(f"      HAR path:   {a['har_path']}")
+                        if a.get("video_path"):
+                            lines.append(f"      Video path: {a['video_path']}")
+
+                    lines.append(
+                        "\nTrace files (.trace.zip) contain: browser actions, screenshots at each step, "
+                        "network requests/responses, console logs, and performance timeline. "
+                        "They can be viewed in the Playwright trace viewer (/trace-viewer/)."
+                    )
 
                 return "\n".join(lines)
 
