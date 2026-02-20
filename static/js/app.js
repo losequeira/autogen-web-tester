@@ -86,6 +86,8 @@ let testCache = {};
 // Debounce timer for batching preference saves to DB
 let _prefSaveTimer = null;
 let _pendingPrefUpdates = {};
+// Cache preferences for startup so we only GET once; invalidated after PUT
+let _cachedPreferences = null;
 
 function savePreferenceToDb(key, value) {
     _pendingPrefUpdates[key] = value;
@@ -100,6 +102,7 @@ function _flushPreferences() {
 
     if (Object.keys(updates).length === 0) return;
 
+    _cachedPreferences = null; // invalidate cache after any PUT
     authFetch('/api/preferences', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -107,16 +110,24 @@ function _flushPreferences() {
     }).catch(err => console.error('Failed to save preferences to DB:', err));
 }
 
+/** Fetch preferences once and cache for startup; returns cached value when available. */
 async function loadPreferencesFromDb() {
+    if (_cachedPreferences !== null) return _cachedPreferences;
     try {
         const response = await authFetch('/api/preferences');
         if (!response.ok) return null;
         const data = await response.json();
-        return data.preferences || {};
+        _cachedPreferences = data.preferences || {};
+        return _cachedPreferences;
     } catch (err) {
         console.error('Failed to load preferences from DB:', err);
         return null;
     }
+}
+
+/** Ensure preferences are fetched and cached (e.g. right after auth). Call once at startup. */
+async function ensurePreferencesCached() {
+    if (_cachedPreferences === null) await loadPreferencesFromDb();
 }
 // ========== END USER PREFERENCES SYNC ==========
 
@@ -153,6 +164,15 @@ let currentWorkspace = null;
 
 // DOM Elements
 const clearLogBtn = document.getElementById('clear-log');
+const liveViewerIframe = document.getElementById('live-viewer-iframe');
+
+/** Lazy-load live-viewer iframe on first use (faster startup). */
+function ensureLiveViewerLoaded() {
+    if (liveViewerIframe && !liveViewerIframe.src.includes('/live-viewer')) {
+        liveViewerIframe.src = '/live-viewer/';
+    }
+}
+
 const browserScreenshot = document.getElementById('browser-screenshot');
 const browserStatus = document.getElementById('browser-status');
 const browserTestName = document.getElementById('browser-test-name');
@@ -237,6 +257,7 @@ let currentEditingTest = null;  // Track if we're editing an existing test
 let currentRecordingId = null;  // Track active recording
 let recorderViewport = { width: 1280, height: 720 };  // Actual browser viewport for coordinate scaling
 let pendingCodegenTest = null;  // Track test info from codegen
+let pendingCodegenTabId = null;  // Tab (filename) to fill with recorded code when codegen_complete
 let currentEditingAiStep = null;  // Track if we're editing an existing AI step
 let currentRunningTestFilename = null;  // Track which saved test is currently running
 
@@ -340,20 +361,31 @@ socket.on('log', (data) => {
 });
 
 socket.on('screenshot', (data) => {
-    // Hide loading state and show screenshot
+    // Hide loading state
     if (browserLoading) {
         browserLoading.classList.remove('active');
     }
-    if (browserScreenshot) {
-        browserScreenshot.style.display = 'block';
-    }
 
-    // Update browser screenshot (JPEG format for faster loading)
-    browserScreenshot.src = `data:image/jpeg;base64,${data.image}`;
-
-    // Update recorder URL bar with current page URL
-    if (data.recorder_id && recorderUrlInput && document.activeElement !== recorderUrlInput) {
-        recorderUrlInput.value = data.url || '';
+    if (data.recorder_id) {
+        // Recording mode: show CDP stream in live viewer iframe (same container as test runs); clicks/keys relayed from iframe
+        if (liveViewerIframe) {
+            ensureLiveViewerLoaded();
+            liveViewerIframe.style.display = 'block';
+            liveViewerIframe.contentWindow?.postMessage({ type: 'screenshot', image: data.image, url: data.url || '', recording: true, title: data.title || '' }, '*');
+        }
+        if (browserScreenshot) browserScreenshot.style.display = 'none';
+        // Update recorder URL bar
+        if (recorderUrlInput && document.activeElement !== recorderUrlInput) {
+            recorderUrlInput.value = data.url || '';
+        }
+    } else {
+        // Test streaming mode: show the live viewer iframe and forward the frame via postMessage
+        if (liveViewerIframe) {
+            ensureLiveViewerLoaded();
+            liveViewerIframe.style.display = 'block';
+            liveViewerIframe.contentWindow?.postMessage({ type: 'screenshot', image: data.image, url: data.url || '' }, '*');
+        }
+        if (browserScreenshot) browserScreenshot.style.display = 'none';
     }
 
 
@@ -465,6 +497,7 @@ socket.on('test_complete', (data) => {
 
     // Always dismiss the loading screen — it may still be showing if no screenshot was sent
     if (browserLoading) browserLoading.classList.remove('active');
+    liveViewerIframe?.contentWindow?.postMessage({ type: 'test_complete' }, '*');
 
     if (data.status === 'success') {
         updateBrowserStatus('passed', 'PASSED');
@@ -527,17 +560,15 @@ socket.on('batch_test_progress', (data) => {
     const { filename, name, status } = data;
     runningTestsSet.delete(filename);
 
-    // Update UI: remove spinner, add status icon
+    // Update UI: remove spinner, set status border (no icon), remove batch-running-active so border shows passed/failed
     const fileItem = document.querySelector(`.file-item[data-filename="${filename}"]`);
     if (fileItem) {
         const spinner = fileItem.querySelector('.test-loading-spinner');
         if (spinner) spinner.remove();
 
-        const statusIcon = status === 'success'
-            ? '<span class="test-status test-status-success"><i class="lni lni-check"></i></span>'
-            : '<span class="test-status test-status-error"><i class="lni lni-xmark-circle"></i></span>';
-        const actions = fileItem.querySelector('.file-item-actions');
-        fileItem.insertAdjacentHTML('beforeend', statusIcon);
+        fileItem.classList.remove('batch-running-active');
+        fileItem.classList.remove('file-item-status-passed', 'file-item-status-failed', 'file-item-status-unknown', 'file-item-status-running');
+        fileItem.classList.add(status === 'success' ? 'file-item-status-passed' : 'file-item-status-failed');
     }
 
     // Store result
@@ -665,12 +696,19 @@ socket.on('codegen_status', (data) => {
         browserStatus.style.background = 'var(--ctp-red)';
         addLogEntry('info', data.message, '🎥 Recording in progress...');
 
-        // Show browser sidebar in interactive recording mode
-        if (browserSidebar) browserSidebar.classList.add('active');
-        if (stopRecordingBtn) stopRecordingBtn.style.display = 'inline-flex';
-        if (recorderUrlBar) recorderUrlBar.style.display = 'flex';
-        if (browserScreenshotContainer) browserScreenshotContainer.classList.add('recording-mode');
-        if (recorderUrlInput && data.url) recorderUrlInput.value = data.url || '';
+        const isBrowserMode = data.mode === 'browser';
+        if (isBrowserMode) {
+            // Real Playwright Chromium window: no in-app recorder UI
+            addLogEntry('info', 'A Chromium window has opened. Interact with the page, then close the window when done.', '🖥️ Record in browser window');
+            if (browserSidebar) browserSidebar.classList.add('active');
+        } else {
+            // Embedded recorder: show URL bar and click relay
+            if (browserSidebar) browserSidebar.classList.add('active');
+            if (stopRecordingBtn) stopRecordingBtn.style.display = 'inline-flex';
+            if (recorderUrlBar) recorderUrlBar.style.display = 'flex';
+            if (browserScreenshotContainer) browserScreenshotContainer.classList.add('recording-mode');
+            if (recorderUrlInput && data.url) recorderUrlInput.value = data.url || '';
+        }
     }
 });
 
@@ -684,19 +722,23 @@ socket.on('codegen_complete', (data) => {
     if (stopRecordingBtn) stopRecordingBtn.style.display = 'none';
     if (recorderUrlBar) recorderUrlBar.style.display = 'none';
     if (browserScreenshotContainer) browserScreenshotContainer.classList.remove('recording-mode');
+    if (liveViewerIframe?.contentWindow) liveViewerIframe.contentWindow.postMessage({ type: 'recording_ended' }, '*');
 
-    // Display generated code
-    setPlaywrightCode(data.code);
-
-    // Store test info for saving with 'codegen' source
-    pendingCodegenTest = {
-        name: data.name,
-        source: 'codegen'
-    };
+    if (pendingCodegenTabId) {
+        const tab = openTabs.find(t => t.id === pendingCodegenTabId);
+        if (tab) {
+            tab.code = data.code;
+            tab.isDirty = true;
+            switchToTab(pendingCodegenTabId);
+        }
+        pendingCodegenTabId = null;
+    } else {
+        setPlaywrightCode(data.code);
+        pendingCodegenTest = { name: data.name, source: 'codegen' };
+    }
 
     addLogEntry('success', '✅ Recording complete! Code generated.', '✅ Recording complete!');
 
-    // Scroll to code section
     const editorElement = document.getElementById('codemirror-editor');
     if (editorElement) {
         editorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -705,14 +747,15 @@ socket.on('codegen_complete', (data) => {
 
 socket.on('codegen_error', (data) => {
     currentRecordingId = null;
+    pendingCodegenTabId = null;
     browserStatus.textContent = 'Recording Error';
     browserStatus.classList.remove('recording');
     browserStatus.style.background = 'var(--ctp-surface2)';
 
-    // Exit recording mode
     if (stopRecordingBtn) stopRecordingBtn.style.display = 'none';
     if (recorderUrlBar) recorderUrlBar.style.display = 'none';
     if (browserScreenshotContainer) browserScreenshotContainer.classList.remove('recording-mode');
+    if (liveViewerIframe?.contentWindow) liveViewerIframe.contentWindow.postMessage({ type: 'recording_ended' }, '*');
 
     addLogEntry('error', `❌ Recording failed: ${data.message}`, '❌ Recording failed');
 });
@@ -923,8 +966,9 @@ function runSavedTest(filename, name) {
         browserLoading.querySelector('.loading-text').textContent = 'Starting browser...';
         browserLoading.querySelector('.loading-subtext').textContent = 'Initializing Playwright session';
     }
-    if (browserScreenshot) {
-        browserScreenshot.style.display = 'none';
+    if (liveViewerIframe) {
+        liveViewerIframe.style.display = 'none';
+        liveViewerIframe.contentWindow?.postMessage({ type: 'test_reset' }, '*');
     }
 
     // Automatically open browser sidebar
@@ -990,9 +1034,8 @@ async function runAllTests() {
         runningTestsSet.add(test.filename);
         const fileItem = document.querySelector(`.file-item[data-filename="${test.filename}"]`);
         if (fileItem) {
+            fileItem.classList.remove('file-item-status-passed', 'file-item-status-failed', 'file-item-status-unknown', 'file-item-status-running');
             fileItem.classList.add('batch-running-active');
-            const statusIcon = fileItem.querySelector('.test-status');
-            if (statusIcon) statusIcon.remove();
 
             const spinner = document.createElement('span');
             spinner.className = 'test-loading-spinner';
@@ -1192,64 +1235,71 @@ async function restoreTabsState() {
         const tabsState = JSON.parse(savedState);
         if (!tabsState.openTabs || tabsState.openTabs.length === 0) return;
 
-        // Restore each tab
-        for (const tabInfo of tabsState.openTabs) {
-            // Only restore saved test files (not temporary tabs like new_, generated_, chat_)
-            if (!tabInfo.id.startsWith('new_') &&
-                !tabInfo.id.startsWith('generated_') &&
-                !tabInfo.id.startsWith('chat_')) {
+        const tabsToRestore = tabsState.openTabs.filter(tabInfo =>
+            !tabInfo.id.startsWith('new_') &&
+            !tabInfo.id.startsWith('generated_') &&
+            !tabInfo.id.startsWith('chat_')
+        );
 
+        // Fetch all ai-step and test tab contents in parallel
+        const fetchPromises = tabsToRestore
+            .filter(tabInfo => tabInfo.fileType === 'ai-step' || tabInfo.fileType === 'test')
+            .map(async (tabInfo) => {
                 try {
-                    // Handle dashboard tab restoration (no API fetch needed)
-                    if (tabInfo.fileType === 'dashboard') {
-                        const existingTab = openTabs.find(t => t.id === tabInfo.id);
-                        if (!existingTab) {
-                            openTabs.push({
-                                id: '__dashboard__',
-                                name: 'Dashboard',
-                                code: '',
-                                isDirty: false,
-                                fileType: 'dashboard'
-                            });
-                        }
-                    }
-                    // Handle AI step restoration
-                    else if (tabInfo.fileType === 'ai-step') {
+                    if (tabInfo.fileType === 'ai-step') {
                         const response = await authFetch(`/api/ai-steps/${tabInfo.id}/markdown?workspace_id=${currentWorkspaceId}`);
                         if (response.ok) {
                             const data = await response.json();
-                            const existingTab = openTabs.find(t => t.id === tabInfo.id);
-                            if (!existingTab) {
-                                openTabs.push({
-                                    id: tabInfo.id,
-                                    name: tabInfo.name,
-                                    code: data.markdown,
-                                    isDirty: false,
-                                    fileType: 'ai-step'
-                                });
-                            }
+                            return { tabInfo, type: 'ai-step', data };
                         }
-                    }
-                    // Handle regular test file restoration
-                    else {
+                    } else {
                         const response = await authFetch(`/api/saved-tests/${tabInfo.id}?workspace_id=${currentWorkspaceId}`);
                         if (response.ok) {
                             const data = await response.json();
-
-                            const existingTab = openTabs.find(t => t.id === tabInfo.id);
-                            if (!existingTab) {
-                                openTabs.push({
-                                    id: tabInfo.id,
-                                    name: tabInfo.name,
-                                    code: data.code,
-                                    isDirty: false,
-                                    fileType: 'test'
-                                });
-                            }
+                            return { tabInfo, type: 'test', data };
                         }
                     }
                 } catch (err) {
                     console.error(`Error restoring tab ${tabInfo.id}:`, err);
+                }
+                return null;
+            });
+
+        const fetchResults = await Promise.all(fetchPromises);
+        const resultById = new Map();
+        fetchResults.forEach(r => { if (r) resultById.set(r.tabInfo.id, r); });
+
+        // Restore tabs in original order
+        for (const tabInfo of tabsToRestore) {
+            if (tabInfo.fileType === 'dashboard') {
+                if (!openTabs.find(t => t.id === '__dashboard__')) {
+                    openTabs.push({
+                        id: '__dashboard__',
+                        name: 'Dashboard',
+                        code: '',
+                        isDirty: false,
+                        fileType: 'dashboard'
+                    });
+                }
+            } else {
+                const result = resultById.get(tabInfo.id);
+                if (!result || openTabs.find(t => t.id === tabInfo.id)) continue;
+                if (result.type === 'ai-step') {
+                    openTabs.push({
+                        id: tabInfo.id,
+                        name: tabInfo.name,
+                        code: result.data.markdown,
+                        isDirty: false,
+                        fileType: 'ai-step'
+                    });
+                } else {
+                    openTabs.push({
+                        id: tabInfo.id,
+                        name: tabInfo.name,
+                        code: result.data.code,
+                        isDirty: false,
+                        fileType: 'test'
+                    });
                 }
             }
         }
@@ -1433,19 +1483,30 @@ function renderTabs() {
     openTabs.forEach(tab => {
         const tabEl = document.createElement('div');
         tabEl.className = 'editor-tab' + (tab.id === activeTabId ? ' active' : '') + (tab.isDirty ? ' dirty' : '');
+        tabEl.dataset.fileType = tab.fileType || 'test';
 
         const icon = tab.fileType === 'dashboard'
             ? '<i class="lni lni-bar-chart-4 tab-icon-colored"></i>'
             : tab.fileType === 'ai-step' ? '<i class="lni lni-pencil-1"></i>'
             : tab.fileType === 'recording' ? '<i class="lni lni-camera-movie-1"></i>'
-            : tab.fileType === 'trace' ? '<i class="lni lni-layers"></i>'
+            : tab.fileType === 'trace' ? '<i class="lni lni-layers-1"></i>'
             : '<i class="lni lni-python"></i>';
         const iconHtml = `<span class="editor-tab-icon">${icon}</span>`;
 
         const displayName = getDisplayName(tab.name, tab.fileType);
+        let nameHtml;
+        if (tab.fileType === 'recording' && displayName.endsWith(' — Recording')) {
+            const testNamePart = displayName.slice(0, -(' — Recording').length);
+            nameHtml = `<span class="editor-tab-name">${escapeHtml(testNamePart)}</span><span class="editor-tab-suffix"> — Recording</span>`;
+        } else if (tab.fileType === 'trace' && displayName.endsWith(' — Trace')) {
+            const testNamePart = displayName.slice(0, -(' — Trace').length);
+            nameHtml = `<span class="editor-tab-name">${escapeHtml(testNamePart)}</span><span class="editor-tab-suffix"> — Trace</span>`;
+        } else {
+            nameHtml = `<span class="editor-tab-name">${escapeHtml(displayName)}</span>`;
+        }
         tabEl.innerHTML = `
             ${iconHtml}
-            <span class="editor-tab-name">${escapeHtml(displayName)}</span>
+            ${nameHtml}
             <button class="editor-tab-close" data-tab-id="${tab.id}">×</button>
         `;
 
@@ -1548,39 +1609,38 @@ function loadFileExplorer() {
 
                 const sourceIcon = test.source === 'codegen' ? '<i class="lni lni-camera-movie-1"></i>' : '<i class="lni lni-python"></i>';
 
-                // Status icon based on last run
-                let statusIcon;
-                if (test.last_run_status === 'success') {
-                    statusIcon = '<span class="test-status test-status-success" title="Last run: Passed"><i class="lni lni-check"></i></span>';
+                // Status border class (no icon)
+                if (currentRunningTestFilename === test.filename) {
+                    fileItem.classList.add('file-item-status-running');
+                } else if (test.last_run_status === 'success') {
+                    fileItem.classList.add('file-item-status-passed');
                 } else if (test.last_run_status === 'error' || test.last_run_status === 'stopped') {
-                    statusIcon = '<span class="test-status test-status-error" title="Last run: Failed"><i class="lni lni-xmark-circle"></i></span>';
+                    fileItem.classList.add('file-item-status-failed');
                 } else {
-                    statusIcon = '<span class="test-status test-status-unknown" title="Never run"><i class="lni lni-question-mark-circle"></i></span>';
+                    fileItem.classList.add('file-item-status-unknown');
                 }
 
-                // Expand arrow (invisible placeholder when no children)
+                // Expand chevron (distinct from play icon; invisible placeholder when no children)
                 const expandArrow = hasChildren
-                    ? '<span class="file-tree-expand">&#9658;</span>'
-                    : '<span class="file-tree-expand" style="visibility:hidden;">&#9658;</span>';
+                    ? '<span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>'
+                    : '<span class="file-tree-expand" style="visibility:hidden;"><i class="lni lni-chevron-down"></i></span>';
 
                 // Show stop button if this test is currently running, otherwise show run button
                 let runOrStopBtn = '';
                 if (currentRunningTestFilename === test.filename) {
                     runOrStopBtn = `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: var(--ctp-red);"><i class="lni lni-hand-stop"></i></button>`;
                 } else {
-                    runOrStopBtn = `<button class="file-item-action" data-action="run" title="Run Test"><i class="lni lni-play"></i></button>`;
+                    runOrStopBtn = `<button class="file-item-action file-item-action--run" data-action="run" title="Run Test"><i class="lni lni-play"></i></button>`;
                 }
 
                 const testDisplayName = getDisplayName(test.name, 'test');
                 // All interpolated values are either hardcoded HTML or sanitized via escapeHtml()
                 fileItem.innerHTML = `
                     ${expandArrow}
-                    ${statusIcon}
                     <span class="file-item-icon">${sourceIcon}</span>
                     <span class="file-item-name">${escapeHtml(testDisplayName)}</span>
                     <div class="file-item-actions">
                         ${runOrStopBtn}
-                        <button class="file-item-action" data-action="delete" title="Delete"><i class="lni lni-trash-3"></i></button>
                     </div>
                 `;
 
@@ -1608,7 +1668,7 @@ function loadFileExplorer() {
                     traceChild.dataset.childAction = 'trace';
                     traceChild.dataset.filename = test.filename;
                     // Hardcoded icon + text — no user content
-                    traceChild.innerHTML = '<i class="lni lni-layers"></i> Trace';
+                    traceChild.innerHTML = '<i class="lni lni-layers-1"></i> Trace';
                     traceChild.addEventListener('click', (e) => {
                         e.stopPropagation();
                         openTraceTab(test.filename, test.name);
@@ -1853,7 +1913,7 @@ if (runAllTestsBtn) {
     });
 }
 
-// Record Test Button — starts embedded in-app recorder
+// Record Test Button — name first, create empty test tab, then URL and open Playwright codegen (works logged in or not)
 const recordTestBtn = document.getElementById('record-test-btn');
 if (recordTestBtn) {
     recordTestBtn.addEventListener('click', async () => {
@@ -1861,24 +1921,54 @@ if (recordTestBtn) {
             alert('A recording is already in progress.');
             return;
         }
-        const url = prompt('Enter the URL to record (e.g. https://example.com):');
-        if (!url) return;
-        const name = prompt('Enter a name for this test:') || 'Recorded Test';
+        const name = prompt('Enter a name for this test:');
+        if (!name) return;
+
+        const emptyCode = '# Record your actions in the Playwright window; close it when done to generate code here.';
+        let tabIdForRecording = null;
 
         try {
-            const res = await authFetch('/api/start-codegen', {
+            if (currentUser && currentWorkspaceId) {
+                const saveRes = await authFetch('/api/save-test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, code: emptyCode, source: 'codegen' }),
+                });
+                const saveData = await saveRes.json();
+                if (!saveData.success || !saveData.filename) {
+                    alert('Error creating test: ' + (saveData.error || 'Unknown error'));
+                    return;
+                }
+                tabIdForRecording = saveData.filename;
+                openTab(saveData.filename, name, emptyCode);
+                loadFileExplorer();
+                addLogEntry('success', `Created test: ${name}`);
+            } else {
+                tabIdForRecording = `record_${Date.now()}.py`;
+                openTab(tabIdForRecording, name, emptyCode);
+                addLogEntry('info', `Recording into "${name}". Log in to save tests to a workspace.`);
+            }
+
+            const url = prompt('Enter the URL to record (e.g. https://example.com):');
+            if (!url) return;
+
+            pendingCodegenTabId = tabIdForRecording;
+
+            const res = await fetch('/api/start-codegen', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url, name }),
             });
             const data = await res.json();
             if (data.error) {
+                pendingCodegenTabId = null;
                 alert('Failed to start recording: ' + data.error);
                 return;
             }
             currentRecordingId = data.recording_id;
             addLogEntry('info', `Starting recording for ${url}...`, '🎥 Starting recording...');
         } catch (err) {
+            pendingCodegenTabId = null;
             alert('Failed to start recording: ' + err);
         }
     });
@@ -1932,6 +2022,24 @@ if (browserScreenshot) {
         }
     });
 }
+
+// Live viewer iframe: relay recorder click/key from iframe to socket (when recording stream is shown in live viewer)
+window.addEventListener('message', (e) => {
+    if (e.source !== liveViewerIframe?.contentWindow || !e.data || !e.data.type) return;
+    if (!currentRecordingId || !browserScreenshotContainer?.classList.contains('recording-mode')) return;
+    const d = e.data;
+    if (d.type === 'recorder_click') {
+        const x = Math.round((d.xRatio ?? 0) * recorderViewport.width);
+        const y = Math.round((d.yRatio ?? 0) * recorderViewport.height);
+        socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'click', x, y });
+    } else if (d.type === 'recorder_key') {
+        if (d.text != null) {
+            socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'type', text: d.text });
+        } else if (d.key) {
+            socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'key', key: d.key });
+        }
+    }
+});
 
 // Dashboard Button
 const dashboardBtn = document.getElementById('dashboard-btn');
@@ -2354,8 +2462,9 @@ function runAiStep(stepId, filename, name) {
         browserLoading.querySelector('.loading-text').textContent = 'Running AI steps...';
         browserLoading.querySelector('.loading-subtext').textContent = 'Agent is automating your test';
     }
-    if (browserScreenshot) {
-        browserScreenshot.style.display = 'none';
+    if (liveViewerIframe) {
+        liveViewerIframe.style.display = 'none';
+        liveViewerIframe.contentWindow?.postMessage({ type: 'test_reset' }, '*');
     }
 
     // Open browser sidebar and output panel
@@ -2929,12 +3038,15 @@ if (toggleBrowserBtn) {
             toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
             toggleBrowserBtn.classList.add('active');
         } else {
-            // Re-open sidebar if test is running — user must stop first
+            // Re-open sidebar if test is running — show confirm first, then modal
             if (isTestRunning || isBatchRunning) {
                 browserSidebar.classList.add('open');
                 codeEditorContainer.classList.add('browser-open');
                 toggleBrowserBtn.innerHTML = '<span style="margin-right: 4px;">✕</span> Browser';
                 toggleBrowserBtn.classList.add('active');
+                if (!confirm('Are you sure you want to stop the running test?')) {
+                    return;
+                }
                 stopAndCloseModal.style.display = 'block';
                 return;
             }
@@ -2964,6 +3076,10 @@ function _doCloseBrowserSidebar() {
 
 function _requestCloseBrowserSidebar() {
     if (isTestRunning || isBatchRunning) {
+        // Show native confirm first; only then show the "test is running" modal
+        if (!confirm('Are you sure you want to stop the running test?')) {
+            return;
+        }
         stopAndCloseModal.style.display = 'block';
     } else {
         _doCloseBrowserSidebar();
@@ -2980,9 +3096,13 @@ stopAndCloseConfirmBtn.addEventListener('click', () => {
     _doCloseBrowserSidebar();
 });
 
-stopAndCloseCancelBtn.addEventListener('click', () => {
-    stopAndCloseModal.style.display = 'none';
-});
+if (stopAndCloseCancelBtn) {
+    stopAndCloseCancelBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (stopAndCloseModal) stopAndCloseModal.style.display = 'none';
+    });
+}
 
 closeBrowserSidebarBtn.addEventListener('click', () => {
     _requestCloseBrowserSidebar();
@@ -3003,6 +3123,9 @@ document.addEventListener('click', (e) => {
     // Close if clicking outside browser AND not on logs
     if (!clickInsideBrowser && !clickOnToggleButton && !clickInsideLogs) {
         if (isTestRunning || isBatchRunning) {
+            if (!confirm('Are you sure you want to stop the running test?')) {
+                return;
+            }
             stopAndCloseModal.style.display = 'block';
         } else {
             _doCloseBrowserSidebar();
@@ -4357,6 +4480,7 @@ async function checkAuthentication() {
 
 async function loadUserWorkspaces() {
     try {
+        await ensurePreferencesCached();
         const response = await authFetch('/api/current-user');
         if (!response.ok) {
             if (response.status === 401) {
@@ -4406,8 +4530,31 @@ async function loadUserWorkspaces() {
         // Persist the selection so it survives page reloads and re-login
         if (currentWorkspaceId) {
             localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
-            savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
+            // Only PUT when we changed from saved (e.g. used default) to avoid duplicate preference saves on startup
+            const unchanged = savedWorkspaceId != null && parseInt(savedWorkspaceId, 10) === currentWorkspaceId;
+            if (!unchanged) {
+                savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
+            }
         }
+
+        // Use workspaces from current-user response (avoid extra GET /api/workspaces on init)
+        userWorkspaces = data.workspaces || [];
+        if (userWorkspaces.length === 0) {
+            showFirstWorkspaceModal();
+            return;
+        }
+        if (workspaceDropdown) {
+            while (workspaceDropdown.firstChild) workspaceDropdown.removeChild(workspaceDropdown.firstChild);
+            userWorkspaces.forEach(workspace => {
+                const option = document.createElement('option');
+                option.value = workspace.id;
+                option.textContent = `${workspace.name} ${workspace.type === 'shared' ? '(Shared)' : ''}`;
+                workspaceDropdown.appendChild(option);
+            });
+            workspaceDropdown.value = currentWorkspaceId;
+        }
+
+        await loadWorkspaceDetails();
 
         console.log('User authenticated:', currentUser.username);
         console.log('Current workspace:', currentWorkspaceId);
@@ -4661,7 +4808,11 @@ async function loadWorkspaces() {
             }
             // Persist the selection so it survives page reloads and re-login
             localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
-            savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
+            // Only PUT when the value changed to avoid duplicate preference saves on startup
+            const unchanged = savedWorkspaceId != null && parseInt(savedWorkspaceId, 10) === currentWorkspaceId;
+            if (!unchanged) {
+                savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
+            }
         }
 
         // Select current workspace
@@ -4963,6 +5114,9 @@ function applyTheme(themeName) {
     });
     // Persist in cookie so the server can inject it on next page load (login page etc.)
     document.cookie = `theme=${themeName}; path=/; max-age=31536000; SameSite=Lax`;
+    try {
+        if (liveViewerIframe && liveViewerIframe.contentWindow) liveViewerIframe.contentWindow.postMessage({ type: 'theme', theme: themeName }, '*');
+    } catch (_) {}
     // Sync the native macOS title bar when running inside PyWebView
     const tb = THEME_TITLEBAR[themeName] || THEME_TITLEBAR.mocha;
     if (window.pywebview && window.pywebview.api) {
@@ -5016,6 +5170,14 @@ window.addEventListener('load', async () => {
     const isAuthenticated = await checkAuthentication();
 
     if (!isAuthenticated) {
+        // Show app anyway so recording works without login (record since app loads)
+        hideAuthModals();
+        if (currentUsernameEl) currentUsernameEl.textContent = 'Not logged in';
+        initializeCodeMirror();
+        if (openTabs.length === 0) {
+            openDashboardTab();
+        }
+        addLogEntry('info', '👋 Record a test anytime with the Record button. Log in to save tests to a workspace.');
         dismissLoadingOverlay();
         return;
     }
@@ -5032,8 +5194,7 @@ window.addEventListener('load', async () => {
         currentUsernameEl.textContent = currentUser.username;
     }
 
-    // Load workspaces
-    await loadWorkspaces();
+    // Workspace dropdown and details already set by loadUserWorkspaces() from checkAuthentication
 
     // Initialize CodeMirror editor
     initializeCodeMirror();

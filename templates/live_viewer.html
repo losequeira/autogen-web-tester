@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Live Browser</title>
+  <script>
+    (function() {
+      var t = localStorage.getItem('theme');
+      if (t && ['mocha','macchiato','frappe','latte'].indexOf(t) !== -1) {
+        document.documentElement.setAttribute('data-theme', t);
+      } else {
+        document.documentElement.setAttribute('data-theme', 'mocha');
+      }
+    })();
+  </script>
+  <style>
+    /* Catppuccin theme variables — match main app (static/css/style.css) */
+    :root, [data-theme="mocha"] {
+      --ctp-base: #1e1e2e;
+      --ctp-mantle: #181825;
+      --ctp-crust: #11111b;
+      --ctp-text: #cdd6f4;
+      --ctp-surface0: #313244;
+      --ctp-surface1: #45475a;
+      --ctp-green: #a6e3a1;
+    }
+    [data-theme="latte"] {
+      --ctp-base: #eff1f5;
+      --ctp-mantle: #e6e9ef;
+      --ctp-crust: #dce0e8;
+      --ctp-text: #4c4f69;
+      --ctp-surface0: #ccd0da;
+      --ctp-surface1: #bcc0cc;
+      --ctp-green: #40a02b;
+    }
+    [data-theme="frappe"] {
+      --ctp-base: #303446;
+      --ctp-mantle: #292c3c;
+      --ctp-crust: #232634;
+      --ctp-text: #c6d0f5;
+      --ctp-surface0: #414559;
+      --ctp-surface1: #51576d;
+      --ctp-green: #a6d189;
+    }
+    [data-theme="macchiato"] {
+      --ctp-base: #24273a;
+      --ctp-mantle: #1e2030;
+      --ctp-crust: #181926;
+      --ctp-text: #cad3f5;
+      --ctp-surface0: #363a4f;
+      --ctp-surface1: #494d64;
+      --ctp-green: #a6da95;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--ctp-base);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    /* ── Browser chrome toolbar ── */
+    #toolbar {
+      background: var(--ctp-mantle);
+      border-bottom: 1px solid var(--ctp-surface0);
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    /* macOS traffic lights */
+    .traffic-lights {
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .traffic-lights span {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+    .tl-red    { background: #ff5f57; }
+    .tl-yellow { background: #febc2e; }
+    .tl-green  { background: #28c840; }
+
+    /* Nav buttons */
+    .nav-btn {
+      background: none;
+      border: none;
+      color: var(--ctp-surface1);
+      cursor: default;
+      font-size: 15px;
+      line-height: 1;
+      padding: 2px 4px;
+    }
+
+    /* URL bar */
+    #url-bar {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: var(--ctp-base);
+      border: 1px solid var(--ctp-surface0);
+      border-radius: 6px;
+      padding: 4px 10px;
+      min-width: 0;
+    }
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--ctp-green);
+      flex-shrink: 0;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+    #url-text {
+      font-size: 12px;
+      color: var(--ctp-text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0.8;
+      flex: 1;
+    }
+    #url-text.placeholder { color: var(--ctp-surface1); font-style: italic; }
+
+    /* ── Viewport ── */
+    #viewport {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: var(--ctp-crust);
+      position: relative;
+      outline: none;
+    }
+    #viewport.recording { cursor: pointer; }
+    #screen {
+      max-width: 100%;
+      max-height: 100%;
+      display: block;
+    }
+    #status {
+      color: var(--ctp-surface1);
+      font: 13px monospace;
+    }
+
+    /* Recording title overlay — on top of the video when tab is recording */
+    #recording-title {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 10px 14px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.4) 60%, transparent 100%);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+      z-index: 10;
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #viewport.recording #recording-title {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="toolbar">
+    <div class="traffic-lights">
+      <span class="tl-red"></span>
+      <span class="tl-yellow"></span>
+      <span class="tl-green"></span>
+    </div>
+    <button class="nav-btn" title="Back">&#8592;</button>
+    <button class="nav-btn" title="Forward">&#8594;</button>
+    <div id="url-bar">
+      <span class="live-dot" id="live-dot" style="display:none"></span>
+      <span id="url-text" class="placeholder">Waiting for browser…</span>
+    </div>
+  </div>
+
+  <div id="viewport" tabindex="-1">
+    <span id="recording-title" aria-hidden="true"></span>
+    <span id="status">Starting browser…</span>
+    <img id="screen" style="display:none" alt="">
+  </div>
+
+  <script>
+    const img     = document.getElementById('screen');
+    const status  = document.getElementById('status');
+    const urlText = document.getElementById('url-text');
+    const liveDot = document.getElementById('live-dot');
+    const viewport = document.getElementById('viewport');
+    const recordingTitle = document.getElementById('recording-title');
+
+    let isRecording = false;
+
+    function applyTheme(themeName) {
+      if (['mocha','macchiato','frappe','latte'].indexOf(themeName) !== -1) {
+        document.documentElement.setAttribute('data-theme', themeName);
+      }
+    }
+    applyTheme(localStorage.getItem('theme') || 'mocha');
+
+    window.addEventListener('message', (e) => {
+      const data = e.data;
+      if (!data || !data.type) return;
+
+      if (data.type === 'theme') {
+        applyTheme(data.theme);
+        return;
+      }
+
+      if (data.type === 'screenshot') {
+        img.style.display = 'block';
+        status.style.display = 'none';
+        img.src = 'data:image/jpeg;base64,' + data.image;
+        liveDot.style.display = 'block';
+        isRecording = data.recording === true;
+        viewport.classList.toggle('recording', isRecording);
+        if (isRecording) {
+          viewport.setAttribute('tabindex', '0');
+          recordingTitle.textContent = data.title || (data.url && data.url !== 'about:blank' ? data.url : 'Recording');
+        } else {
+          viewport.setAttribute('tabindex', '-1');
+          recordingTitle.textContent = '';
+        }
+        if (data.url && data.url !== 'about:blank') {
+          urlText.textContent = data.url;
+          urlText.classList.remove('placeholder');
+        }
+
+      } else if (data.type === 'test_complete' || data.type === 'test_error') {
+        liveDot.style.display = 'none';
+
+      } else if (data.type === 'test_reset' || data.type === 'recording_ended') {
+        isRecording = false;
+        viewport.classList.remove('recording');
+        viewport.setAttribute('tabindex', '-1');
+        recordingTitle.textContent = '';
+        if (data.type === 'test_reset') {
+          img.style.display = 'none';
+          status.style.display = 'block';
+          status.textContent = 'Starting browser…';
+          liveDot.style.display = 'none';
+          urlText.textContent = 'Hola Loe...';
+          urlText.classList.add('placeholder');
+        }
+      }
+    });
+
+    viewport.addEventListener('click', (e) => {
+      if (!isRecording || !img.offsetWidth) return;
+      var r = img.getBoundingClientRect();
+      var xRatio = (e.clientX - r.left) / r.width;
+      var yRatio = (e.clientY - r.top) / r.height;
+      if (xRatio >= 0 && xRatio <= 1 && yRatio >= 0 && yRatio <= 1) {
+        window.parent.postMessage({ type: 'recorder_click', xRatio: xRatio, yRatio: yRatio }, '*');
+      }
+    });
+
+    viewport.addEventListener('keydown', (e) => {
+      if (!isRecording) return;
+      if (e.key.length === 1) {
+        e.preventDefault();
+        window.parent.postMessage({ type: 'recorder_key', key: e.key, text: e.key }, '*');
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        window.parent.postMessage({ type: 'recorder_key', key: 'Enter', text: '\n' }, '*');
+      } else if (e.key === 'Backspace') {
+        e.preventDefault();
+        window.parent.postMessage({ type: 'recorder_key', key: 'Backspace' }, '*');
+      }
+    });
+  </script>
+</body>
+</html>

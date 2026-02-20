@@ -9,12 +9,20 @@ import multiprocessing
 # processes are handled correctly and don't re-run the server/window code.
 multiprocessing.freeze_support()
 
+import os
 import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
+
+# Point Playwright to the system browser cache instead of looking inside the bundle.
+# Without this, Playwright resolves browser paths relative to its bundled driver package.
+os.environ.setdefault(
+    'PLAYWRIGHT_BROWSERS_PATH',
+    os.path.expanduser('~/Library/Caches/ms-playwright'),
+)
 
 
 _PREFERRED_PORT = 8765  # Fixed port so WebView localStorage persists across launches

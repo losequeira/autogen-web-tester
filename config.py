@@ -1,12 +1,18 @@
 """Configuration for AutoGen Web Tester."""
 
 import os
+import sys
 import secrets
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables — resolve .env path for both dev and frozen (PyInstaller) modes
+if getattr(sys, 'frozen', False):
+    _base_dir = Path(sys._MEIPASS)
+else:
+    _base_dir = Path(__file__).parent
+
+load_dotenv(_base_dir / '.env')
 
 # API Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

@@ -5,11 +5,47 @@ Replaces SQLAlchemy ORM (models.py) and the old data_access.py.
 All database operations go through supabase_client.get_supabase_client().table(...).
 """
 
+import logging
+import time
 from datetime import datetime
 from enum import Enum as PyEnum
 from pathlib import Path
 
+import httpx
 from supabase_client import get_supabase_client
+
+logger = logging.getLogger(__name__)
+
+# Retry config for transient Supabase/network errors (e.g. HTTP/2 read errors)
+_SUPABASE_RETRY_ATTEMPTS = 3
+_SUPABASE_RETRY_BACKOFF_BASE_S = 0.5
+
+
+def _with_supabase_retry(func, *args, **kwargs):
+    """Run a callable with retries on transient httpx/httpcore network errors."""
+    last_exc = None
+    for attempt in range(_SUPABASE_RETRY_ATTEMPTS):
+        try:
+            return func(*args, **kwargs)
+        except (httpx.RequestError, OSError, ConnectionError) as e:
+            last_exc = e
+            if attempt < _SUPABASE_RETRY_ATTEMPTS - 1:
+                delay = _SUPABASE_RETRY_BACKOFF_BASE_S * (2**attempt)
+                logger.warning(
+                    "Supabase request failed (attempt %s/%s): %s. Retrying in %.1fs.",
+                    attempt + 1,
+                    _SUPABASE_RETRY_ATTEMPTS,
+                    e,
+                    delay,
+                )
+                time.sleep(delay)
+            else:
+                logger.error(
+                    "Supabase request failed after %s attempts: %s",
+                    _SUPABASE_RETRY_ATTEMPTS,
+                    e,
+                )
+    raise last_exc
 
 
 # ========== Enums (plain Python, no SQLAlchemy) ==========
@@ -248,24 +284,25 @@ def update_member_role(workspace_id: int, user_id: str, role: str) -> dict | Non
 # ========== Tests ==========
 
 def get_tests(workspace_id: int) -> list[dict]:
-    resp = _sb().table('tests').select(
-        '*, test_artifacts(timestamp, video_path, video_size_mb, har_path, trace_path, status)'
-    ).eq('workspace_id', workspace_id).order('created_at', desc=True).execute()
-
-    results = []
-    for t in (resp.data or []):
-        artifacts = t.pop('test_artifacts', []) or []
-        results.append({
-            'filename': t['filename'],
-            'name': t['name'],
-            'code': t['code'],
-            'created': t['created_at'],
-            'source': t['source'],
-            'last_run_status': t['last_run_status'],
-            'last_run_time': t['last_run_time'],
-            'artifacts': artifacts,
-        })
-    return results
+    def _fetch():
+        resp = _sb().table('tests').select(
+            '*, test_artifacts(timestamp, video_path, video_size_mb, har_path, trace_path, status)'
+        ).eq('workspace_id', workspace_id).order('created_at', desc=True).execute()
+        results = []
+        for t in (resp.data or []):
+            artifacts = t.pop('test_artifacts', []) or []
+            results.append({
+                'filename': t['filename'],
+                'name': t['name'],
+                'code': t['code'],
+                'created': t['created_at'],
+                'source': t['source'],
+                'last_run_status': t['last_run_status'],
+                'last_run_time': t['last_run_time'],
+                'artifacts': artifacts,
+            })
+        return results
+    return _with_supabase_retry(_fetch)
 
 
 def get_test(workspace_id: int, filename: str) -> dict | None:
@@ -485,18 +522,19 @@ def get_recent_recordings(workspace_id: int, limit: int = 20) -> list[dict]:
 # ========== AI Steps ==========
 
 def get_ai_steps(workspace_id: int) -> list[dict]:
-    resp = _sb().table('ai_steps').select('*').eq(
-        'workspace_id', workspace_id
-    ).order('created_at', desc=True).execute()
-
-    return [{
-        'id': s['id'],
-        'filename': s['filename'],
-        'name': s['name'],
-        'created': s['created_at'],
-        'last_run_status': s['last_run_status'],
-        'last_run_time': s['last_run_time'],
-    } for s in (resp.data or [])]
+    def _fetch():
+        resp = _sb().table('ai_steps').select('*').eq(
+            'workspace_id', workspace_id
+        ).order('created_at', desc=True).execute()
+        return [{
+            'id': s['id'],
+            'filename': s['filename'],
+            'name': s['name'],
+            'created': s['created_at'],
+            'last_run_status': s['last_run_status'],
+            'last_run_time': s['last_run_time'],
+        } for s in (resp.data or [])]
+    return _with_supabase_retry(_fetch)
 
 
 def get_ai_step(workspace_id: int, filename: str) -> dict | None:

@@ -613,7 +613,7 @@ body {
 
 /* File Explorer Sidebar */
 .file-explorer {
-    width: 250px;
+    width: 290px;
     background: var(--ctp-mantle);
     border-right: 1px solid var(--ctp-surface0);
     display: flex;
@@ -659,7 +659,7 @@ body {
 }
 
 .file-explorer-title {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--ctp-overlay1);
     letter-spacing: 0.5px;
@@ -672,15 +672,33 @@ body {
 }
 
 .file-item {
-    padding: 6px 12px;
+    padding: 9px 14px;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     transition: background 0.1s;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--ctp-text);
     user-select: none;
+    border-left: 3px solid transparent;
+}
+
+.file-item.file-item-status-passed {
+    border-left-color: var(--ctp-green);
+}
+
+.file-item.file-item-status-failed {
+    border-left-color: var(--ctp-red);
+}
+
+.file-item.file-item-status-running,
+.file-item.batch-running-active {
+    border-left-color: var(--ctp-yellow);
+}
+
+.file-item.file-item-status-unknown {
+    border-left-color: transparent;
 }
 
 .file-item:hover {
@@ -692,36 +710,23 @@ body {
 }
 
 .file-item-icon {
-    font-size: 16px;
+    font-size: 18px;
     flex-shrink: 0;
 }
+
+/* File type icon colors */
+.file-item-icon .lni-python        { color: #a6e3a1; } /* green  — test    */
+.file-item-icon .lni-pencil-1      { color: #89b4fa; } /* blue   — ai-step */
+.file-item-icon .lni-camera-movie-1 { color: #fab387; } /* peach  — recording */
+
+[data-child-action="recording"] i  { color: #fab387; } /* peach  — recording child */
+[data-child-action="trace"] i      { color: #f9e2af; } /* yellow — trace child     */
 
 .file-item-name {
     flex: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-/* Test Status Icons */
-.test-status {
-    font-size: 14px;
-    font-weight: bold;
-    margin-left: 0;
-    margin-right: 4px;
-    flex-shrink: 0;
-}
-
-.test-status-success {
-    color: var(--ctp-green);
-}
-
-.test-status-error {
-    color: var(--ctp-red);
-}
-
-.test-status-unknown {
-    color: var(--ctp-overlay1);
 }
 
 .file-item-actions {
@@ -753,6 +758,16 @@ body {
 .file-item-action:hover {
     background: var(--ctp-surface1);
     color: var(--ctp-text);
+}
+
+.file-item-action--run,
+.file-item-action[data-action="run"] {
+    color: var(--ctp-green);
+}
+.file-item-action--run:hover,
+.file-item-action[data-action="run"]:hover {
+    color: var(--ctp-green);
+    filter: brightness(1.1);
 }
 
 /* Run All Button Container */
@@ -1025,32 +1040,69 @@ body {
 .file-tree-node { display: flex; flex-direction: column; }
 
 .file-tree-expand {
-    width: 14px;
+    min-width: 48px;
+    width: 48px;
     flex-shrink: 0;
-    font-size: 9px;
+    font-size: 14px;
     color: var(--ctp-overlay1);
     transition: transform 0.15s;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    padding: 6px 8px 6px 16px;
+    cursor: pointer;
+    box-sizing: border-box;
+    /* Extend clickable area left so space before the icon also toggles expand */
+    margin-left: -16px;
 }
 
-.file-tree-node.expanded .file-tree-expand { transform: rotate(90deg); }
+/* Chevron points right when collapsed, down when expanded (distinct from play icon) */
+.file-tree-expand { transform: rotate(-90deg); }
+.file-tree-node.expanded .file-tree-expand { transform: rotate(0deg); }
 
-.file-tree-children { display: none; padding-left: 28px; }
+.file-tree-children {
+    display: none;
+    padding-left: 28px;
+    position: relative;
+}
 .file-tree-node.expanded .file-tree-children { display: block; }
 
+/* Vertical line from parent down through children (aligns with expand icon center ~16px) */
+.file-tree-children::before {
+    content: '';
+    position: absolute;
+    left: 16px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--ctp-surface1);
+    pointer-events: none;
+}
+
 .file-tree-child {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 4px 8px 4px 4px;
-    font-size: 12px;
+    gap: 10px;
+    padding: 8px 12px 8px 8px;
+    font-size: 15px;
     color: var(--ctp-subtext1);
     cursor: pointer;
-    border-radius: 5px;
+    border-radius: 6px;
     user-select: none;
 }
+/* Horizontal connector from vertical line to child (child content starts at 28px, vertical at 16px) */
+.file-tree-child::before {
+    content: '';
+    position: absolute;
+    left: -12px;
+    top: 50%;
+    width: 12px;
+    height: 1px;
+    background: var(--ctp-surface1);
+    pointer-events: none;
+}
+.file-tree-child i { font-size: 1.1em; }
 
 .file-tree-child:hover { background: var(--ctp-surface0); color: var(--ctp-text); }
 .file-tree-child.active { color: var(--ctp-accent); background: var(--ctp-surface0); cursor: default; }
@@ -1471,8 +1523,22 @@ body {
     left: 0;
     right: 0;
     height: 2px;
-    background: var(--ctp-accent);
+    background: var(--tab-type-color, var(--ctp-accent));
 }
+
+/* Per-type accent colors */
+.editor-tab[data-file-type="test"]      { --tab-type-color: #a6e3a1; } /* green  */
+.editor-tab[data-file-type="ai-step"]   { --tab-type-color: #89b4fa; } /* blue   */
+.editor-tab[data-file-type="recording"] { --tab-type-color: #fab387; } /* peach  */
+.editor-tab[data-file-type="trace"]     { --tab-type-color: #f9e2af; } /* yellow */
+.editor-tab[data-file-type="dashboard"] { --tab-type-color: #cba6f7; } /* mauve  */
+
+/* Color the icon to match the tab type */
+.editor-tab[data-file-type="test"]      .editor-tab-icon { color: #a6e3a1; }
+.editor-tab[data-file-type="ai-step"]   .editor-tab-icon { color: #89b4fa; }
+.editor-tab[data-file-type="recording"] .editor-tab-icon { color: #fab387; }
+.editor-tab[data-file-type="trace"]     .editor-tab-icon { color: #f9e2af; }
+.editor-tab[data-file-type="dashboard"] .editor-tab-icon { color: #cba6f7; }
 
 .editor-tab.dirty .editor-tab-name::after {
     content: ' ●';
@@ -1487,6 +1553,15 @@ body {
     max-width: 120px;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* Suffix (e.g. " — Recording") stays visible when tab name is truncated */
+.editor-tab-suffix {
+    flex-shrink: 0;
+    color: var(--ctp-overlay1);
+}
+.editor-tab.active .editor-tab-suffix {
+    color: var(--ctp-text);
 }
 
 .editor-tab-close {

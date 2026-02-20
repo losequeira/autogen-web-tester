@@ -5,6 +5,7 @@ Provides a browser interface to write and run tests, watch browser automation li
 
 import asyncio
 import base64
+import sys
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from datetime import datetime
@@ -15,6 +16,9 @@ import subprocess
 import tempfile
 import uuid
 import re
+
+# Resolve base directory for templates/static when running frozen (PyInstaller)
+_BASE_DIR = Path(sys._MEIPASS) if getattr(sys, 'frozen', False) else Path(__file__).parent
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.teams import RoundRobinGroupChat
@@ -38,7 +42,11 @@ import db
 from auth import init_auth, login_required, get_current_user
 from decorators import workspace_access_required, workspace_owner_required
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    template_folder=str(_BASE_DIR / 'templates'),
+    static_folder=str(_BASE_DIR / 'static'),
+)
 
 # Apply multi-user configuration
 app.config.from_object(Config)
@@ -140,24 +148,77 @@ class BrowserToolWithScreenshots(BrowserTool):
         self.streaming = False
         self.stream_task = None
         self.playwright_code = []  # Track Playwright code
+        self._current_url = ''    # Reliably tracked page URL
 
     async def start_streaming(self):
-        """Stream screenshots at high quality via polling."""
+        """Use CDP Page.startScreencast for push-based streaming (falls back to polling)."""
         self.streaming = True
-        while self.streaming and self.page:
-            try:
-                await self._send_screenshot('stream')
-                await asyncio.sleep(0.1)  # 10 FPS
-            except Exception as e:
-                if not self.streaming:
-                    break
-                error_msg = str(e).lower()
-                if "target closed" in error_msg and self.original_page and self.page != self.original_page:
-                    self.page = self.original_page
+        import config as _config
+        if not _config.USE_CDP_SCREENCAST or not self.page:
+            # Fallback to polling
+            self._current_url = self.page.url
+            while self.streaming and self.page:
+                try:
+                    await self._send_screenshot('stream')
                     await asyncio.sleep(0.1)
-                    continue
-                print(f"Stream error: {e}")
-                break
+                except Exception as e:
+                    if not self.streaming:
+                        break
+                    error_msg = str(e).lower()
+                    if "target closed" in error_msg and self.original_page and self.page != self.original_page:
+                        self.page = self.original_page
+                        await asyncio.sleep(0.1)
+                        continue
+                    print(f"Stream error: {e}")
+                    break
+            return
+
+        cdp = await self.page.context.new_cdp_session(self.page)
+        self._current_url = self.page.url
+
+        # Track URL changes in real-time via Playwright's navigation event
+        def on_navigated(frame):
+            if frame == self.page.main_frame:
+                self._current_url = frame.url
+
+        self.page.on('framenavigated', on_navigated)
+
+        async def on_frame(params):
+            if not self.streaming:
+                return
+            socketio.emit('screenshot', {
+                'action': 'stream',
+                'image': params['data'],  # already base64 JPEG
+                'timestamp': datetime.now().isoformat(),
+                'url': self.page.url if self.page else self._current_url
+            })
+            try:
+                await cdp.send('Page.screencastFrameAck', {'sessionId': params['sessionId']})
+            except Exception:
+                pass
+
+        cdp.on('Page.screencastFrame', lambda p: asyncio.create_task(on_frame(p)))
+
+        await cdp.send('Page.startScreencast', {
+            'format': 'jpeg',
+            'quality': _config.SCREENCAST_JPEG_QUALITY,
+            'maxWidth': _config.SCREENCAST_MAX_WIDTH,
+            'maxHeight': _config.SCREENCAST_MAX_HEIGHT,
+            'everyNthFrame': 1
+        })
+
+        while self.streaming and self.page:
+            await asyncio.sleep(0.2)
+
+        try:
+            self.page.remove_listener('framenavigated', on_navigated)
+        except Exception:
+            pass
+        try:
+            await cdp.send('Page.stopScreencast')
+            await cdp.detach()
+        except Exception:
+            pass
 
     def stop_streaming(self):
         """Stop continuous streaming."""
@@ -177,7 +238,8 @@ class BrowserToolWithScreenshots(BrowserTool):
             socketio.emit('screenshot', {
                 'action': action_name,
                 'image': screenshot_b64,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'url': self.page.url if self.page else self._current_url
             })
         except Exception as e:
             error_msg = str(e).lower()
@@ -191,6 +253,7 @@ class BrowserToolWithScreenshots(BrowserTool):
     async def navigate(self, url: str) -> str:
         self.playwright_code.append(f'await page.goto("{url}")')
         result = await super().navigate(url)
+        self._current_url = self.page.url if self.page else url
         await self._send_screenshot('navigate')
         return result
 
@@ -202,6 +265,7 @@ class BrowserToolWithScreenshots(BrowserTool):
         else:
             self.playwright_code.append(f'await page.get_by_text("{escaped_text}").click()')
         result = await super().click_text(text, role)
+        self._current_url = self.page.url if self.page else self._current_url
         await self._send_screenshot('click_text')
         return result
 
@@ -219,6 +283,7 @@ class BrowserToolWithScreenshots(BrowserTool):
         escaped_selector = selector.replace('"', '\\"')
         self.playwright_code.append(f'await page.click("{escaped_selector}")')
         result = await super().click(selector)
+        self._current_url = self.page.url if self.page else self._current_url
         await self._send_screenshot('click')
         return result
 
@@ -413,24 +478,25 @@ def run_codegen_process(recording_id: str, url: str, output_file: str, test_name
     This runs in a background thread.
     """
     try:
-        # Emit starting status
+        # Emit starting status (mode 'browser' = real Chromium window; frontend won't show in-app recorder)
         socketio.emit('codegen_status', {
             'recording_id': recording_id,
             'status': 'recording',
-            'message': f'🎥 Recording started for {url}'
+            'message': f'🎥 Recording started for {url}',
+            'mode': 'browser',
         })
 
-        # Start Playwright codegen process
+        # Start Playwright codegen process (same Python as app for venvs/frozen builds)
         process = subprocess.Popen(
             [
-                'playwright', 'codegen',
+                sys.executable, '-m', 'playwright', 'codegen',
                 '--target', 'python-async',
                 '--output', output_file,
                 '--browser', 'chromium',
-                url
+                url,
             ],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
         )
 
         # Store process in active recordings
@@ -591,12 +657,14 @@ def run_embedded_recorder(recording_id: str, url: str, test_name: str):
                 try:
                     shot = await page.screenshot(type='jpeg', quality=70)
                     img_b64 = base64.b64encode(shot).decode('utf-8')
+                    title = await page.title() if page else ''
                     socketio.emit('screenshot', {
                         'image': img_b64,
                         'action': 'stream',
                         'timestamp': datetime.now().isoformat(),
                         'recorder_id': recording_id,
                         'url': page.url,
+                        'title': title or None,
                     })
                 except Exception as e:
                     if not stop_event.is_set():
@@ -1171,7 +1239,8 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 socketio.emit('screenshot', {
                     'action': action_name,
                     'image': base64.b64encode(screenshot_bytes).decode('utf-8'),
-                    'timestamp': datetime.now().isoformat()
+                    'timestamp': datetime.now().isoformat(),
+                    'url': page.url,
                 })
             except Exception as e:
                 pass
@@ -1890,7 +1959,7 @@ def get_workspace_ai_steps(workspace_id):
         ai_steps = db.get_ai_steps(workspace_id)
         return jsonify({'ai_steps': ai_steps}), 200
     except Exception as e:
-        print(f"Error getting AI steps: {e}")
+        app.logger.exception("Error getting AI steps for workspace %s: %s", workspace_id, e)
         return jsonify({'error': 'Failed to get AI steps'}), 500
 
 
@@ -1956,11 +2025,15 @@ def start_codegen():
     # Generate unique recording ID
     recording_id = str(uuid.uuid4())
 
-    # Start embedded headless recorder in background thread (streams screenshots to browser sidebar)
+    # Temp file for codegen output (real Playwright Chromium window + Inspector)
+    output_file = str(TEMP_RECORDINGS_DIR / f'codegen_{recording_id}.py')
+
+    # Start real Playwright codegen subprocess in background (opens Chromium + Inspector)
     socketio.start_background_task(
-        run_embedded_recorder,
+        run_codegen_process,
         recording_id=recording_id,
         url=url,
+        output_file=output_file,
         test_name=test_name,
     )
 
@@ -2227,6 +2300,13 @@ def serve_trace(filepath):
     if not full_path.exists():
         return jsonify({'error': 'Trace not found'}), 404
     return send_file(full_path, mimetype='application/zip')
+
+
+@app.route('/live-viewer/')
+@app.route('/live-viewer')
+def live_viewer():
+    """Serve the embedded live browser viewer page (similar to trace viewer)."""
+    return render_template('live_viewer.html')
 
 
 @app.route('/trace-viewer/')
