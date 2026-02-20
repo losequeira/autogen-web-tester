@@ -1380,12 +1380,16 @@ def run_playwright_code_headless(code: str, filename: str, workspace_id: int = N
             pass
 
 
+VALID_THEMES = {'mocha', 'macchiato', 'frappe', 'latte'}
+
 @app.route('/')
 def index():
     """Render main page."""
-    # Pass cloud environment flag to template
     is_cloud = bool(os.environ.get('K_SERVICE') or os.environ.get('CLOUD_RUN_JOB') or os.environ.get('GAE_ENV'))
-    return render_template('index.html', is_cloud=is_cloud)
+    theme = request.cookies.get('theme', 'mocha')
+    if theme not in VALID_THEMES:
+        theme = 'mocha'
+    return render_template('index.html', is_cloud=is_cloud, theme=theme)
 
 
 # ========== WORKSPACE MANAGEMENT API ENDPOINTS ==========
