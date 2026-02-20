@@ -1388,19 +1388,12 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
 
         try:
             nonlocal test_status
-            # Remove the playwright import line and asyncio.run() from user's code
-            # so we can provide our wrapped version
-            modified_code = code.replace('asyncio.run(run())', '')
-
-            # Remove common import patterns
-            import_patterns = [
-                'from playwright.async_api import async_playwright\n',
-                'from playwright.async_api import async_playwright, Playwright\n',
-                'from playwright.async_api import Playwright, async_playwright\n',
-                'import asyncio\n',
-            ]
-            for pattern in import_patterns:
-                modified_code = modified_code.replace(pattern, '')
+            # Remove asyncio.run(...) call and all playwright/asyncio imports
+            # using regex so any variation of the import line is handled
+            modified_code = re.sub(r'asyncio\.run\(\s*\w+\(\)\s*\)', '', code)
+            modified_code = re.sub(r'^from playwright\.[^\n]*\n?', '', modified_code, flags=re.MULTILINE)
+            modified_code = re.sub(r'^import playwright[^\n]*\n?', '', modified_code, flags=re.MULTILINE)
+            modified_code = re.sub(r'^import asyncio\n?', '', modified_code, flags=re.MULTILINE)
 
             # Log the modified code for debugging
             print("=" * 50)
@@ -1490,7 +1483,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
     if artifact_dir and filename:
         try:
             import time
-            time.sleep(2)  # Give browser time to finalize the video file
+            time.sleep(5)  # Give browser time to finalize the video file
             print(f"📼 Saving artifacts: filename={filename}, workspace_id={workspace_id}, status={test_status}, dir={artifact_dir}")
             # List all files in artifact dir for debugging
             all_files = list(artifact_dir.iterdir()) if artifact_dir.exists() else []

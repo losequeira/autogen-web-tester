@@ -2675,7 +2675,7 @@ const outputPreviewText = document.getElementById('output-preview-text');
 const outputPanelHeader = outputPanel.querySelector('.output-panel-header');
 outputPanelHeader.addEventListener('click', (e) => {
     // Don't toggle when clicking log-tab buttons or clear button
-    if (e.target.closest('.log-tabs') || e.target.closest('#clear-log')) return;
+    if (e.target.closest('.log-tabs') || e.target.closest('#clear-log') || e.target.closest('#copy-log')) return;
     outputPanel.classList.toggle('open');
 });
 
@@ -3461,13 +3461,76 @@ socket.on('file_created', (data) => {
     if (currentWorkspaceId) {
         loadFileExplorer(currentWorkspaceId);
     }
+    // Auto-open the newly created file in a tab
+    const { filename, name, type } = data;
+    if (filename && name && currentWorkspaceId) {
+        const fileType = type === 'ai_step' ? 'ai-step' : 'test';
+        const apiPath = fileType === 'ai-step'
+            ? `/api/ai-steps/${filename}`
+            : `/api/workspaces/${currentWorkspaceId}/tests/${filename}`;
+        authFetch(apiPath)
+            .then(res => res.json())
+            .then(freshData => {
+                if (freshData && freshData.code !== undefined) {
+                    testCache[filename] = freshData;
+                    openTab(filename, name, freshData.code, fileType);
+                }
+            })
+            .catch(err => console.error('Failed to open new tab after file_created:', err));
+    }
 });
 
 socket.on('file_updated', (data) => {
     chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
+    // Immediately evict the stale cache entry so any open-from-explorer
+    // while async fetches are in-flight will fall back to a fresh API call.
+    const { filename, type } = data;
+    if (filename) delete testCache[filename];
     if (currentWorkspaceId) {
         loadFileExplorer(currentWorkspaceId);
     }
+    // If the updated file is open in a tab, refresh its content live
+    if (filename && currentWorkspaceId) {
+        const openTab = openTabs.find(t => t.id === filename);
+        if (openTab) {
+            const fileType = type === 'ai_step' ? 'ai-step' : 'test';
+            const apiPath = fileType === 'ai-step'
+                ? `/api/ai-steps/${filename}`
+                : `/api/workspaces/${currentWorkspaceId}/tests/${filename}`;
+            authFetch(apiPath)
+                .then(res => res.json())
+                .then(freshData => {
+                    if (freshData && freshData.code !== undefined) {
+                        testCache[filename] = freshData;
+                        openTab.code = freshData.code;
+                        // Update CodeMirror immediately if this tab is active
+                        if (activeTabId === filename) {
+                            lastSavedCode = freshData.code;
+                            setPlaywrightCode(freshData.code);
+                        }
+                    }
+                })
+                .catch(err => console.error('Failed to refresh tab after file_updated:', err));
+        }
+    }
+});
+
+socket.on('propose_change', (data) => {
+    chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
+    const { filename, type, old_content, new_content, workspace_id } = data;
+    const isSteps = type === 'ai_step';
+    pendingCodeSuggestion = {
+        code: new_content,
+        currentCode: old_content,
+        explanation: `Review AI-proposed changes to ${filename}`,
+        targetTabId: filename,
+        contentType: isSteps ? 'steps' : 'code',
+        agentPending: true,
+        filename,
+        fileType: type,
+        workspaceId: workspace_id,
+    };
+    showCodePreview();
 });
 
 // ========================================
@@ -3704,7 +3767,7 @@ document.addEventListener('keydown', (e) => {
 clearChatBtn.addEventListener('click', () => {
     if (confirm('Clear all chat messages?')) {
         chatMessages.innerHTML = '';
-        socket.emit('clear_chat');
+        socket.emit('clear_chat', { workspace_id: currentWorkspaceId });
         appendChatMessage('system', 'Chat history cleared');
     }
 });
@@ -3946,6 +4009,7 @@ async function handleLogin(event) {
 
             currentUser = data.user;
             hideAuthModals();
+            showAppOverlay('Loading workspace…');
             addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
 
             // Reconnect socket with the new authenticated token
@@ -3977,6 +4041,8 @@ async function handleLogin(event) {
             if (openTabs.length === 0) {
                 openDashboardTab();
             }
+
+            hideAppOverlay();
         } else {
             loginError.textContent = data.error || 'Login failed';
             loginError.style.display = 'block';
@@ -3985,6 +4051,7 @@ async function handleLogin(event) {
         console.error('Login error:', error);
         loginError.textContent = 'Login failed. Please try again.';
         loginError.style.display = 'block';
+        hideAppOverlay();
     } finally {
         btn.disabled = false;
         btnText.style.display = '';
@@ -4029,6 +4096,7 @@ async function handleRegister(event) {
 
             currentUser = data.user;
             hideAuthModals();
+            showAppOverlay('Setting up workspace…');
             addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
 
             // Connect socket with the new authenticated token
@@ -4060,6 +4128,8 @@ async function handleRegister(event) {
             if (openTabs.length === 0) {
                 openDashboardTab();
             }
+
+            hideAppOverlay();
         } else {
             registerError.textContent = data.error || 'Registration failed';
             registerError.style.display = 'block';
@@ -4068,6 +4138,7 @@ async function handleRegister(event) {
         console.error('Registration error:', error);
         registerError.textContent = 'Registration failed. Please try again.';
         registerError.style.display = 'block';
+        hideAppOverlay();
     } finally {
         btn.disabled = false;
         btnText.style.display = '';
@@ -4291,6 +4362,10 @@ async function createWorkspace(event) {
     const name = document.getElementById('workspace-name').value.trim();
     const type = document.getElementById('workspace-type').value;
 
+    const submitBtn = document.getElementById('create-workspace-btn');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating…';
+
     try {
         const response = await authFetch('/api/workspaces', {
             method: 'POST',
@@ -4314,10 +4389,8 @@ async function createWorkspace(event) {
 
             addLogEntry('info', `Created workspace: ${name}`);
 
-            // Reload workspaces
+            // Reload workspaces then switch (tabs are closed inside switchWorkspace)
             await loadWorkspaces();
-
-            // Switch to new workspace
             await switchWorkspace(data.workspace.id);
         } else {
             newWorkspaceError.textContent = data.error || 'Failed to create workspace';
@@ -4327,6 +4400,9 @@ async function createWorkspace(event) {
         console.error('Failed to create workspace:', error);
         newWorkspaceError.textContent = 'Failed to create workspace';
         newWorkspaceError.style.display = 'block';
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Create';
     }
 }
 
@@ -4443,6 +4519,8 @@ function applyTheme(themeName) {
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.theme === themeName);
     });
+    // Persist in cookie so the server can inject it on next page load (login page etc.)
+    document.cookie = `theme=${themeName}; path=/; max-age=31536000; SameSite=Lax`;
     // Sync the native macOS title bar when running inside PyWebView
     const tb = THEME_TITLEBAR[themeName] || THEME_TITLEBAR.mocha;
     if (window.pywebview && window.pywebview.api) {

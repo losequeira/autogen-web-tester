@@ -49,7 +49,7 @@ class WorkspaceAgent:
                     "properties": {
                         "filename": {
                             "type": "string",
-                            "description": "The filename of the test (e.g. 'my_test.json')",
+                            "description": "The filename of the test (e.g. 'my_test.py')",
                         },
                     },
                     "required": ["filename"],
@@ -186,6 +186,13 @@ Available tools:
 - create_test — create a new Playwright Python test
 - create_ai_step — create a new AI steps file (natural language)
 - update_test / update_ai_step — edit existing files
+
+CRITICAL RULES — follow these exactly:
+1. When asked to fix, modify, or update an existing test/AI step: call read_test or read_ai_step first to see the current content, then call update_test or update_ai_step with the complete updated file. NEVER just show the code in text — always write it via the tool.
+2. When asked to create a new test or AI step: call create_test or create_ai_step directly. Do not describe what you would write — just write it.
+3. Only respond with plain text after all tool calls are done. Keep the final reply short: confirm what was done and highlight key changes.
+4. When update_test or update_ai_step is called, the change is NOT saved immediately — a diff is shown to the user for review. After the tool call, tell the user to review the proposed diff and accept or reject it.
+5. When the user pastes an error/traceback: the file paths in the traceback (e.g. "web_ui.py", "<string>") are SYSTEM internals, NOT workspace test files. Use list_tests to find the actual test that caused the error, then fix it.
 
 When generating Playwright test code always use this structure:
 ```python
@@ -346,20 +353,32 @@ Be concise and helpful. Use tools proactively when needed to fulfil requests."""
             elif tool_name == "update_test":
                 filename = tool_args["filename"]
                 code = tool_args["code"]
-                result = db.update_test(workspace_id, filename, code=code)
-                if not result:
+                current = db.get_test(workspace_id, filename)
+                if not current:
                     return f"Test '{filename}' not found."
-                emit_fn("file_updated", {"type": "test", "filename": filename})
-                return f"Test '{filename}' updated successfully."
+                emit_fn("propose_change", {
+                    "filename": filename,
+                    "type": "test",
+                    "old_content": current.get("code", ""),
+                    "new_content": code,
+                    "workspace_id": workspace_id,
+                })
+                return f"Change proposed for '{filename}'. The diff is now shown to the user for review."
 
             elif tool_name == "update_ai_step":
                 filename = tool_args["filename"]
                 steps = tool_args["steps"]
-                result = db.update_ai_step(workspace_id, filename, steps=steps)
-                if not result:
+                current = db.get_ai_step(workspace_id, filename)
+                if not current:
                     return f"AI step file '{filename}' not found."
-                emit_fn("file_updated", {"type": "ai_step", "filename": filename})
-                return f"AI step file '{filename}' updated successfully."
+                emit_fn("propose_change", {
+                    "filename": filename,
+                    "type": "ai_step",
+                    "old_content": current.get("steps", ""),
+                    "new_content": steps,
+                    "workspace_id": workspace_id,
+                })
+                return f"Change proposed for '{filename}'. The diff is now shown to the user for review."
 
             else:
                 return f"Unknown tool: {tool_name}"
