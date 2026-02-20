@@ -1,5 +1,10 @@
 // AutoGen Web Tester - Frontend JavaScript
 
+// Configure marked.js for safe, clean markdown rendering
+if (typeof marked !== 'undefined') {
+    marked.setOptions({ breaks: true, gfm: true });
+}
+
 // ========== JWT TOKEN MANAGEMENT ==========
 let authToken = localStorage.getItem('access_token') || null;
 let refreshToken = localStorage.getItem('refresh_token') || null;
@@ -179,6 +184,10 @@ const toggleBrowserBtn = document.getElementById('toggle-browser');
 const closeBrowserSidebarBtn = document.getElementById('close-browser-sidebar');
 const browserSidebar = document.getElementById('browser-sidebar');
 const stopTestBtn = document.getElementById('stop-test-btn');
+const stopRecordingBtn = document.getElementById('stop-recording-btn');
+const recorderUrlBar = document.getElementById('recorder-url-bar');
+const recorderUrlInput = document.getElementById('recorder-url-input');
+const browserScreenshotContainer = document.querySelector('.browser-screenshot-container');
 
 // Output panel elements
 const outputPanel = document.getElementById('output-panel');
@@ -221,6 +230,7 @@ const hasFileExplorer = fileExplorer && fileList && editorTabsContainer && newTe
 
 let currentEditingTest = null;  // Track if we're editing an existing test
 let currentRecordingId = null;  // Track active recording
+let recorderViewport = { width: 1280, height: 720 };  // Actual browser viewport for coordinate scaling
 let pendingCodegenTest = null;  // Track test info from codegen
 let currentEditingAiStep = null;  // Track if we're editing an existing AI step
 let currentRunningTestFilename = null;  // Track which saved test is currently running
@@ -329,6 +339,11 @@ socket.on('screenshot', (data) => {
 
     // Update browser screenshot (JPEG format for faster loading)
     browserScreenshot.src = `data:image/jpeg;base64,${data.image}`;
+
+    // Update recorder URL bar with current page URL
+    if (data.recorder_id && recorderUrlInput && document.activeElement !== recorderUrlInput) {
+        recorderUrlInput.value = data.url || '';
+    }
 
     // Update timestamp
     const timestamp = new Date(data.timestamp).toLocaleTimeString();
@@ -636,10 +651,20 @@ socket.on('ai_step_complete_with_code', (data) => {
 
 socket.on('codegen_status', (data) => {
     if (data.status === 'recording') {
+        currentRecordingId = data.recording_id;
+        if (data.viewport) recorderViewport = data.viewport;
+
         browserStatus.textContent = 'Recording';
         browserStatus.classList.add('recording');
-        browserStatus.style.background = 'var(--ctp-mauve)';
+        browserStatus.style.background = 'var(--ctp-red)';
         addLogEntry('info', data.message, '🎥 Recording in progress...');
+
+        // Show browser sidebar in interactive recording mode
+        if (browserSidebar) browserSidebar.classList.add('active');
+        if (stopRecordingBtn) stopRecordingBtn.style.display = 'inline-flex';
+        if (recorderUrlBar) recorderUrlBar.style.display = 'flex';
+        if (browserScreenshotContainer) browserScreenshotContainer.classList.add('recording-mode');
+        if (recorderUrlInput && data.url) recorderUrlInput.value = data.url || '';
     }
 });
 
@@ -648,6 +673,11 @@ socket.on('codegen_complete', (data) => {
     browserStatus.textContent = 'Recording Complete';
     browserStatus.classList.remove('recording');
     browserStatus.style.background = 'var(--ctp-green)';
+
+    // Exit recording mode
+    if (stopRecordingBtn) stopRecordingBtn.style.display = 'none';
+    if (recorderUrlBar) recorderUrlBar.style.display = 'none';
+    if (browserScreenshotContainer) browserScreenshotContainer.classList.remove('recording-mode');
 
     // Display generated code
     setPlaywrightCode(data.code);
@@ -671,11 +701,14 @@ socket.on('codegen_error', (data) => {
     currentRecordingId = null;
     browserStatus.textContent = 'Recording Error';
     browserStatus.classList.remove('recording');
-    browserStatus.style.background = 'var(--ctp-red)';
+    browserStatus.style.background = 'var(--ctp-surface2)';
+
+    // Exit recording mode
+    if (stopRecordingBtn) stopRecordingBtn.style.display = 'none';
+    if (recorderUrlBar) recorderUrlBar.style.display = 'none';
+    if (browserScreenshotContainer) browserScreenshotContainer.classList.remove('recording-mode');
 
     addLogEntry('error', `❌ Recording failed: ${data.message}`, '❌ Recording failed');
-
-    alert(`Recording failed:\n${data.message}`);
 });
 
 // UI Event Handlers
@@ -686,9 +719,26 @@ socket.on('codegen_error', (data) => {
 // Load Example button removed - use AI Steps section instead
 
 clearLogBtn.addEventListener('click', () => {
-    humanLogContainer.innerHTML = '';
-    technicalLogContainer.innerHTML = '';
+    humanLogContainer.replaceChildren();
+    technicalLogContainer.replaceChildren();
     addLogEntry('info', 'Log cleared');
+});
+
+const copyLogBtn = document.getElementById('copy-log');
+copyLogBtn.addEventListener('click', () => {
+    const activeContainer = humanLogContainer.classList.contains('active')
+        ? humanLogContainer
+        : technicalLogContainer;
+    const lines = [...activeContainer.querySelectorAll('.log-entry')].map(entry => {
+        const ts = entry.querySelector('.timestamp')?.textContent?.trim() || '';
+        const msg = entry.querySelector('.message')?.textContent?.trim() || '';
+        return ts ? `[${ts}] ${msg}` : msg;
+    });
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+        const orig = copyLogBtn.textContent;
+        copyLogBtn.textContent = '✓';
+        setTimeout(() => { copyLogBtn.textContent = orig; }, 1500);
+    });
 });
 
 // Stop test button handler
@@ -1618,6 +1668,86 @@ if (runAllTestsBtn) {
     runAllTestsBtn.addEventListener('click', () => {
         if (confirm('Run all saved tests in parallel?')) {
             runAllTests();
+        }
+    });
+}
+
+// Record Test Button — starts embedded in-app recorder
+const recordTestBtn = document.getElementById('record-test-btn');
+if (recordTestBtn) {
+    recordTestBtn.addEventListener('click', async () => {
+        if (currentRecordingId) {
+            alert('A recording is already in progress.');
+            return;
+        }
+        const url = prompt('Enter the URL to record (e.g. https://example.com):');
+        if (!url) return;
+        const name = prompt('Enter a name for this test:') || 'Recorded Test';
+
+        try {
+            const res = await authFetch('/api/start-codegen', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url, name }),
+            });
+            const data = await res.json();
+            if (data.error) {
+                alert('Failed to start recording: ' + data.error);
+                return;
+            }
+            currentRecordingId = data.recording_id;
+            addLogEntry('info', `Starting recording for ${url}...`, '🎥 Starting recording...');
+        } catch (err) {
+            alert('Failed to start recording: ' + err);
+        }
+    });
+}
+
+// Stop Recording Button
+if (stopRecordingBtn) {
+    stopRecordingBtn.addEventListener('click', () => {
+        if (currentRecordingId) {
+            socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'stop' });
+        }
+    });
+}
+
+// Recorder URL bar — navigate on Enter
+if (recorderUrlInput) {
+    recorderUrlInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && currentRecordingId) {
+            let url = recorderUrlInput.value.trim();
+            if (url && !url.startsWith('http')) url = 'https://' + url;
+            socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'navigate', url });
+        }
+    });
+}
+
+// Click on browser screenshot during recording — relay as mouse click to the recorder
+if (browserScreenshot) {
+    browserScreenshot.addEventListener('click', (e) => {
+        if (!currentRecordingId || !browserScreenshotContainer?.classList.contains('recording-mode')) return;
+        browserScreenshot.focus();
+        const rect = browserScreenshot.getBoundingClientRect();
+        const xRatio = (e.clientX - rect.left) / rect.width;
+        const yRatio = (e.clientY - rect.top) / rect.height;
+        const x = Math.round(xRatio * recorderViewport.width);
+        const y = Math.round(yRatio * recorderViewport.height);
+        socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'click', x, y });
+    });
+
+    // Type into the recorder via keyboard while browser screenshot is focused in recording mode
+    browserScreenshot.addEventListener('keydown', (e) => {
+        if (!currentRecordingId || !browserScreenshotContainer?.classList.contains('recording-mode')) return;
+        if (e.key.length === 1) {
+            e.preventDefault();
+            socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'type', text: e.key });
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'type', text: '\n' });
+        } else if (e.key === 'Backspace') {
+            e.preventDefault();
+            socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'key', key: 'Backspace' });
         }
     });
 }
@@ -2940,19 +3070,19 @@ function appendChatMessage(type, content, isCode = false) {
 
         // Add code header
         const codeHeader = document.createElement('div');
-        codeHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--ctp-surface0); border-bottom: 1px solid var(--ctp-base);';
-        codeHeader.innerHTML = '<span style="font-size: 11px; color: var(--ctp-overlay1); text-transform: uppercase; letter-spacing: 0.5px;">Python</span>';
+        codeHeader.className = 'chat-code-header';
+        const langLabel = document.createElement('span');
+        langLabel.className = 'chat-code-lang';
+        langLabel.textContent = 'Python';
+        codeHeader.appendChild(langLabel);
 
-        // Add copy button
         const copyBtn = document.createElement('button');
-        copyBtn.innerHTML = '📋';
-        copyBtn.style.cssText = 'background: transparent; border: none; color: var(--ctp-overlay1); cursor: pointer; padding: 2px 6px; border-radius: 3px; font-size: 12px;';
-        copyBtn.onmouseover = () => copyBtn.style.background = 'var(--ctp-surface1)';
-        copyBtn.onmouseout = () => copyBtn.style.background = 'transparent';
+        copyBtn.className = 'chat-code-btn';
+        copyBtn.textContent = '📋 Copy';
         copyBtn.onclick = () => {
             navigator.clipboard.writeText(content);
-            copyBtn.innerHTML = '✓';
-            setTimeout(() => copyBtn.innerHTML = '📋', 2000);
+            copyBtn.textContent = '✓';
+            setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 2000);
         };
         codeHeader.appendChild(copyBtn);
         messageDiv.appendChild(codeHeader);
@@ -2963,6 +3093,66 @@ function appendChatMessage(type, content, isCode = false) {
         code.textContent = content;
         codeBlock.appendChild(code);
         messageDiv.appendChild(codeBlock);
+
+    } else if (type === 'ai' && typeof marked !== 'undefined') {
+        // Render markdown for AI messages
+        messageDiv.innerHTML = marked.parse(content);
+
+        // Enhance each code block with copy + apply buttons
+        messageDiv.querySelectorAll('pre code').forEach((codeEl) => {
+            const pre = codeEl.parentElement;
+            const codeContent = codeEl.textContent;
+            const lang = [...codeEl.classList]
+                .find(c => c.startsWith('language-'))
+                ?.replace('language-', '') || '';
+
+            const header = document.createElement('div');
+            header.className = 'chat-code-header';
+
+            const langLabel = document.createElement('span');
+            langLabel.className = 'chat-code-lang';
+            langLabel.textContent = lang || 'code';
+            header.appendChild(langLabel);
+
+            const btnGroup = document.createElement('div');
+            btnGroup.style.display = 'flex';
+            btnGroup.style.gap = '4px';
+
+            // Apply to editor button (Python code only)
+            if (lang === 'python' || (!lang && codeContent.includes('async_playwright'))) {
+                const applyBtn = document.createElement('button');
+                applyBtn.className = 'chat-code-btn apply';
+                applyBtn.textContent = '⚡ Apply';
+                applyBtn.title = 'Apply code to active editor tab';
+                applyBtn.onclick = () => {
+                    const currentCode = activeTabId ? getPlaywrightCode() : '';
+                    pendingCodeSuggestion = {
+                        code: codeContent,
+                        explanation: 'AI-suggested code from chat',
+                        currentCode,
+                        targetTabId: activeTabId,
+                        contentType: 'code',
+                    };
+                    showCodePreview();
+                };
+                btnGroup.appendChild(applyBtn);
+            }
+
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'chat-code-btn';
+            copyBtn.textContent = '📋';
+            copyBtn.title = 'Copy code';
+            copyBtn.onclick = () => {
+                navigator.clipboard.writeText(codeContent);
+                copyBtn.textContent = '✓';
+                setTimeout(() => { copyBtn.textContent = '📋'; }, 2000);
+            };
+            btnGroup.appendChild(copyBtn);
+
+            header.appendChild(btnGroup);
+            pre.insertBefore(header, codeEl);
+        });
+
     } else {
         const contentSpan = document.createElement('span');
         contentSpan.textContent = content;
@@ -2970,11 +3160,7 @@ function appendChatMessage(type, content, isCode = false) {
     }
 
     chatMessages.appendChild(messageDiv);
-    // Smooth scroll to bottom
-    chatMessages.scrollTo({
-        top: chatMessages.scrollHeight,
-        behavior: 'smooth'
-    });
+    chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
 }
 
 function appendChatMessageWithImage(type, content, imageSrc) {
