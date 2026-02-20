@@ -866,9 +866,6 @@ function runSavedTest(filename, name) {
         }
     }
 
-    // Automatically open output panel to show logs
-    openOutputPanel();
-
     socket.emit('run_saved_test', {
         filename,
         workspaceId: currentWorkspaceId
@@ -1948,7 +1945,6 @@ function runAiStep(stepId, filename, name) {
             toggleBrowserBtn.classList.add('active');
         }
     }
-    openOutputPanel();
 
     // Emit run AI step event - use database ID for unambiguous lookup
     socket.emit('run_ai_step', {
