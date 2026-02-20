@@ -3758,8 +3758,6 @@ async function switchWorkspace(workspaceId) {
         activeTabId = null;
         lastSavedCode = '';
         setPlaywrightCode('');
-        if (editorContent) editorContent.classList.add('empty');
-        hideDashboardContent();
         renderTabs();
         saveTabsState();
 
@@ -3769,12 +3767,14 @@ async function switchWorkspace(workspaceId) {
 
         await loadWorkspaceDetails();
 
-        // Reload file lists and dashboard for new workspace
+        // Reload file lists for new workspace
         if (hasFileExplorer) {
             loadFileExplorer();
             loadAiSteps();
         }
-        loadDashboardStats();
+
+        // Re-open dashboard tab so the main area shows workspace stats (not "No file open")
+        openDashboardTab();
 
         addLogEntry('info', `Switched to workspace: ${currentWorkspace.name}`);
     } finally {
