@@ -45,6 +45,14 @@ def save_artifact_dir(local_dir: Path, workspace_id: int, test_name: str) -> dic
         result["har_path"] = f"{workspace_id}/{test_name}/network.har"
         print(f"Saved HAR: {dest}")
 
+    trace_files = list(local_dir.glob("trace.zip"))
+    if trace_files:
+        dest = dest_dir / "trace.zip"
+        dest.unlink(missing_ok=True)
+        shutil.move(str(trace_files[0]), str(dest))
+        result["trace_path"] = f"{workspace_id}/{test_name}/trace.zip"
+        print(f"Saved trace: {dest}")
+
     return result
 
 

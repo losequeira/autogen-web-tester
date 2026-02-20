@@ -1021,15 +1021,45 @@ body {
     opacity: 1;
 }
 
-/* View Recording Button in File Explorer */
-.file-item-action[data-action="view-recording"] {
-    font-size: 14px;
-    opacity: 0.8;
+/* File Tree Node */
+.file-tree-node { display: flex; flex-direction: column; }
+
+.file-tree-expand {
+    width: 14px;
+    flex-shrink: 0;
+    font-size: 9px;
+    color: var(--ctp-overlay1);
+    transition: transform 0.15s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
-.file-item-action[data-action="view-recording"]:hover {
-    opacity: 1;
-    transform: scale(1.1);
+.file-tree-node.expanded .file-tree-expand { transform: rotate(90deg); }
+
+.file-tree-children { display: none; padding-left: 28px; }
+.file-tree-node.expanded .file-tree-children { display: block; }
+
+.file-tree-child {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 8px 4px 4px;
+    font-size: 12px;
+    color: var(--ctp-subtext1);
+    cursor: pointer;
+    border-radius: 5px;
+    user-select: none;
+}
+
+.file-tree-child:hover { background: var(--ctp-surface0); color: var(--ctp-text); }
+.file-tree-child.active { color: var(--ctp-accent); background: var(--ctp-surface0); cursor: default; }
+.file-tree-child.active:hover { color: var(--ctp-accent); background: var(--ctp-surface0); }
+
+/* Media panel fills editor area */
+#media-panel {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
 }
 
 /* Theme Picker */

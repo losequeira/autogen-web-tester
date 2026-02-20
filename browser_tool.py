@@ -58,6 +58,9 @@ class BrowserTool:
             self.page = await self.browser.new_page()
             self.context = self.page.context
 
+        if _config.ENABLE_TRACE_RECORDING and self.record_video_dir:
+            await self.context.tracing.start(screenshots=True, snapshots=True)
+
         self.page.set_default_timeout(self.timeout)
         self.original_page = self.page
         return self
@@ -75,6 +78,16 @@ class BrowserTool:
         if self.original_page:
             try:
                 await self.original_page.close()
+            except Exception:
+                pass
+
+        # Stop trace recording before closing context
+        import config as _config
+        from pathlib import Path
+        if _config.ENABLE_TRACE_RECORDING and self.record_video_dir:
+            try:
+                trace_path = Path(self.record_video_dir) / "trace.zip"
+                await self.context.tracing.stop(path=str(trace_path))
             except Exception:
                 pass
 

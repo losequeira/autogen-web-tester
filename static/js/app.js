@@ -1010,7 +1010,7 @@ async function runAllTests() {
 }
 
 // Tab Management Functions
-function openTab(filename, name, code, fileType = 'test') {
+function openTab(filename, name, code, fileType = 'test', meta = null) {
     // Check if tab is already open
     const existingTab = openTabs.find(tab => tab.id === filename);
     if (existingTab) {
@@ -1024,7 +1024,8 @@ function openTab(filename, name, code, fileType = 'test') {
         name: name,
         code: code,
         isDirty: false,
-        fileType: fileType  // 'test' or 'ai-step'
+        fileType: fileType,  // 'test', 'ai-step', 'recording', or 'trace'
+        meta: meta           // { videoUrl, info } for recording; { viewerUrl } for trace
     });
 
     // Hide welcome page before switching to tab
@@ -1041,11 +1042,20 @@ function closeTab(filename) {
 
     const tab = openTabs[tabIndex];
 
-    // Check if dirty (unsaved changes)
-    if (tab.isDirty) {
+    // Check if dirty (unsaved changes) — skip for media tabs
+    if (tab.isDirty && tab.fileType !== 'recording' && tab.fileType !== 'trace') {
         if (!confirm(`Close ${tab.name}?\nYou have unsaved changes.`)) {
             return;
         }
+    }
+
+    // Clear media resources when closing media tabs to stop playback
+    if (tab.fileType === 'recording') {
+        const vid = document.getElementById('media-panel-video');
+        if (vid) { vid.pause(); vid.src = ''; }
+    } else if (tab.fileType === 'trace') {
+        const iframeEl = document.getElementById('media-panel-trace-iframe');
+        if (iframeEl) iframeEl.src = '';
     }
 
     // Remove tab
@@ -1061,8 +1071,10 @@ function closeTab(filename) {
             activeTabId = null;
             setPlaywrightCode('');
             if (editorContent) editorContent.classList.add('empty');
-            // Hide dashboard content if it was showing
+            // Hide dashboard and media panel
             hideDashboardContent();
+            const mediaPanel = document.getElementById('media-panel');
+            if (mediaPanel) mediaPanel.style.display = 'none';
         }
     }
 
@@ -1076,10 +1088,39 @@ function switchToTab(filename) {
 
     activeTabId = filename;
 
-    // Handle dashboard tab specially
+    const mediaPanel = document.getElementById('media-panel');
+    const mediaPanelRecording = document.getElementById('media-panel-recording');
+    const mediaPanelTrace = document.getElementById('media-panel-trace');
+
     if (tab.fileType === 'dashboard') {
+        if (mediaPanel) mediaPanel.style.display = 'none';
         showDashboardContent();
+    } else if (tab.fileType === 'recording') {
+        hideDashboardContent();
+        if (codemirrorEditor) codemirrorEditor.style.display = 'none';
+        if (mediaPanel) mediaPanel.style.display = 'flex';
+        if (mediaPanelRecording) mediaPanelRecording.style.display = 'flex';
+        if (mediaPanelTrace) mediaPanelTrace.style.display = 'none';
+        const vid = document.getElementById('media-panel-video');
+        if (vid) {
+            vid.src = tab.meta?.videoUrl || '';
+            vid.oncanplay = () => { vid.play().catch(() => {}); };
+        }
+        const infoEl = document.getElementById('media-panel-video-info');
+        if (infoEl) infoEl.textContent = tab.meta?.info || '';
+        if (editorContent) editorContent.classList.remove('empty');
+    } else if (tab.fileType === 'trace') {
+        hideDashboardContent();
+        if (codemirrorEditor) codemirrorEditor.style.display = 'none';
+        if (mediaPanel) mediaPanel.style.display = 'block';
+        if (mediaPanelRecording) mediaPanelRecording.style.display = 'none';
+        if (mediaPanelTrace) mediaPanelTrace.style.display = 'block';
+        const iframeEl = document.getElementById('media-panel-trace-iframe');
+        if (iframeEl) iframeEl.src = tab.meta?.viewerUrl || '';
+        if (editorContent) editorContent.classList.remove('empty');
     } else {
+        // Hide media panel when switching to code/ai-step/dashboard tabs
+        if (mediaPanel) mediaPanel.style.display = 'none';
         // Hide dashboard content if switching away from it
         hideDashboardContent();
 
@@ -1109,10 +1150,12 @@ function saveTabsState() {
             // Filter out temporary tabs (new_, generated_, chat_) but KEEP dashboard
             openTabs: openTabs
                 .filter(tab => {
-                    // Exclude temporary tabs
+                    // Exclude temporary and media tabs
                     if (tab.id.startsWith('new_')) return false;
                     if (tab.id.startsWith('generated_')) return false;
                     if (tab.id.startsWith('chat_')) return false;
+                    if (tab.id.startsWith('__recording__:')) return false;
+                    if (tab.id.startsWith('__trace__:')) return false;
                     return true;
                 })
                 .map(tab => ({
@@ -1370,7 +1413,7 @@ async function fetchTestStatistics() {
 function updateFormatBtnVisibility() {
     if (!formatCodeBtn) return;
     const activeTab = openTabs.find(t => t.id === activeTabId);
-    const hasFile = activeTab && activeTab.fileType !== 'dashboard';
+    const hasFile = activeTab && !['dashboard', 'recording', 'trace'].includes(activeTab.fileType);
     formatCodeBtn.style.display = hasFile ? '' : 'none';
 }
 
@@ -1393,7 +1436,10 @@ function renderTabs() {
 
         const icon = tab.fileType === 'dashboard'
             ? '<i class="lni lni-bar-chart-4 tab-icon-colored"></i>'
-            : (tab.fileType === 'ai-step' ? '<i class="lni lni-pencil-1"></i>' : '<i class="lni lni-python"></i>');
+            : tab.fileType === 'ai-step' ? '<i class="lni lni-pencil-1"></i>'
+            : tab.fileType === 'recording' ? '<i class="lni lni-camera-movie-1"></i>'
+            : tab.fileType === 'trace' ? '<i class="lni lni-layers"></i>'
+            : '<i class="lni lni-python"></i>';
         const iconHtml = `<span class="editor-tab-icon">${icon}</span>`;
 
         const displayName = getDisplayName(tab.name, tab.fileType);
@@ -1425,6 +1471,18 @@ function updateFileListActiveState() {
     document.querySelectorAll('.file-item').forEach(item => {
         const filename = item.dataset.filename;
         if (filename === activeTabId) {
+            item.classList.add('active');
+        } else {
+            item.classList.remove('active');
+        }
+    });
+
+    // Highlight active child item (recording/trace tab)
+    document.querySelectorAll('.file-tree-child').forEach(item => {
+        const action = item.dataset.childAction;
+        const filename = item.dataset.filename;
+        const tabId = action === 'recording' ? `__recording__:${filename}` : `__trace__:${filename}`;
+        if (tabId === activeTabId) {
             item.classList.add('active');
         } else {
             item.classList.remove('active');
@@ -1474,6 +1532,16 @@ function loadFileExplorer() {
             }
 
             tests.forEach(test => {
+                const hasRecording = test.artifacts?.some(a => a.video_url || (a.video_path && a.video_path !== 'null'));
+                const hasTrace = test.artifacts?.some(a => a.trace_path);
+                const hasChildren = hasRecording || hasTrace;
+
+                // Wrapper tree node
+                const nodeEl = document.createElement('div');
+                nodeEl.className = 'file-tree-node';
+                nodeEl.dataset.filename = test.filename;
+
+                // Main file item row
                 const fileItem = document.createElement('div');
                 fileItem.className = 'file-item';
                 fileItem.dataset.filename = test.filename;
@@ -1490,15 +1558,10 @@ function loadFileExplorer() {
                     statusIcon = '<span class="test-status test-status-unknown" title="Never run"><i class="lni lni-question-mark-circle"></i></span>';
                 }
 
-                // View recording button if valid artifacts exist
-                let viewRecordingBtn = '';
-                if (test.artifacts && test.artifacts.length > 0) {
-                    // Check if any artifacts have valid video paths
-                    const validArtifacts = test.artifacts.filter(a => a.video_path && a.video_path !== 'null');
-                    if (validArtifacts.length > 0) {
-                        viewRecordingBtn = `<button class="file-item-action" data-action="view-recording" title="View Recording (${validArtifacts.length})"><i class="lni lni-camera-movie-1"></i></button>`;
-                    }
-                }
+                // Expand arrow (invisible placeholder when no children)
+                const expandArrow = hasChildren
+                    ? '<span class="file-tree-expand">&#9658;</span>'
+                    : '<span class="file-tree-expand" style="visibility:hidden;">&#9658;</span>';
 
                 // Show stop button if this test is currently running, otherwise show run button
                 let runOrStopBtn = '';
@@ -1509,18 +1572,51 @@ function loadFileExplorer() {
                 }
 
                 const testDisplayName = getDisplayName(test.name, 'test');
+                // All interpolated values are either hardcoded HTML or sanitized via escapeHtml()
                 fileItem.innerHTML = `
+                    ${expandArrow}
                     ${statusIcon}
                     <span class="file-item-icon">${sourceIcon}</span>
                     <span class="file-item-name">${escapeHtml(testDisplayName)}</span>
                     <div class="file-item-actions">
-                        ${viewRecordingBtn}
                         ${runOrStopBtn}
                         <button class="file-item-action" data-action="delete" title="Delete"><i class="lni lni-trash-3"></i></button>
                     </div>
                 `;
 
-                // Click to open
+                // Children container (Recording / Trace)
+                const childrenEl = document.createElement('div');
+                childrenEl.className = 'file-tree-children';
+
+                if (hasRecording) {
+                    const recordingChild = document.createElement('div');
+                    recordingChild.className = 'file-tree-child';
+                    recordingChild.dataset.childAction = 'recording';
+                    recordingChild.dataset.filename = test.filename;
+                    // Hardcoded icon + text — no user content
+                    recordingChild.innerHTML = '<i class="lni lni-camera-movie-1"></i> Recording';
+                    recordingChild.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        openRecordingTab(test.filename, test.name);
+                    });
+                    childrenEl.appendChild(recordingChild);
+                }
+
+                if (hasTrace) {
+                    const traceChild = document.createElement('div');
+                    traceChild.className = 'file-tree-child';
+                    traceChild.dataset.childAction = 'trace';
+                    traceChild.dataset.filename = test.filename;
+                    // Hardcoded icon + text — no user content
+                    traceChild.innerHTML = '<i class="lni lni-layers"></i> Trace';
+                    traceChild.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        openTraceTab(test.filename, test.name);
+                    });
+                    childrenEl.appendChild(traceChild);
+                }
+
+                // Click handler for file item row
                 fileItem.addEventListener('click', (e) => {
                     const action = e.target.closest('[data-action]')?.dataset.action;
                     if (action === 'delete') {
@@ -1530,24 +1626,20 @@ function loadFileExplorer() {
                         runSavedTest(test.filename, test.name);
                     } else if (action === 'stop') {
                         e.stopPropagation();
-                        if (isStopRequested) {
-                            return; // Prevent double-click
-                        }
+                        if (isStopRequested) return;
                         if (confirm('Are you sure you want to stop the running test?')) {
                             isStopRequested = true;
                             socket.emit('stop_test');
                             addLogEntry('info', '⏹ Stop request sent to server');
-                            // Update button immediately
                             if (stopTestBtn) {
                                 stopTestBtn.disabled = true;
                                 stopTestBtn.textContent = 'STOPPING...';
                                 stopTestBtn.title = 'Stopping test...';
                             }
                         }
-                    } else if (action === 'view-recording') {
-                        e.stopPropagation();
-                        showVideoViewerModal(test.filename, test.name);
-                    } else {
+                    } else if (e.target.closest('.file-tree-expand') && hasChildren) {
+                        nodeEl.classList.toggle('expanded');
+                    } else if (!e.target.closest('.file-item-actions') && !e.target.closest('.file-tree-expand')) {
                         openFileFromExplorer(test.filename, test.name);
                     }
                 });
@@ -1557,7 +1649,9 @@ function loadFileExplorer() {
                     showContextMenu(e.clientX, e.clientY, { filename: test.filename, name: test.name, type: 'test' });
                 });
 
-                fileList.appendChild(fileItem);
+                nodeEl.appendChild(fileItem);
+                nodeEl.appendChild(childrenEl);
+                fileList.appendChild(nodeEl);
             });
 
             updateFileListActiveState();
@@ -1586,6 +1680,28 @@ function openFileFromExplorer(filename, name) {
         .catch(err => {
             alert('Failed to load test: ' + err);
         });
+}
+
+function openRecordingTab(filename, testName) {
+    const tabId = `__recording__:${filename}`;
+    if (openTabs.find(t => t.id === tabId)) { switchToTab(tabId); return; }
+    const artifacts = testCache[filename]?.artifacts || [];
+    const latest = artifacts.find(a => a.video_path && a.video_path !== 'null');
+    if (!latest) return;
+    const videoUrl = `/api/video/${latest.video_path}`;
+    const info = [latest.video_size_mb ? `${latest.video_size_mb} MB` : '', latest.status || ''].filter(Boolean).join(' · ');
+    openTab(tabId, `${testName} — Recording`, null, 'recording', { videoUrl, info });
+}
+
+function openTraceTab(filename, testName) {
+    const tabId = `__trace__:${filename}`;
+    if (openTabs.find(t => t.id === tabId)) { switchToTab(tabId); return; }
+    const artifacts = testCache[filename]?.artifacts || [];
+    const latest = artifacts.find(a => a.trace_path);
+    if (!latest) return;
+    const traceUrl = `${window.location.origin}/api/trace/${latest.trace_path}`;
+    const viewerUrl = `/trace-viewer/?trace=${encodeURIComponent(traceUrl)}`;
+    openTab(tabId, `${testName} — Trace`, null, 'trace', { viewerUrl });
 }
 
 function deleteFileFromExplorer(filename, name) {
@@ -2382,6 +2498,8 @@ async function showVideoViewerModal(filename, testName) {
     const timestampElem = document.getElementById('video-viewer-timestamp');
     const sizeElem = document.getElementById('video-viewer-size');
     const downloadBtn = document.getElementById('video-viewer-download-btn');
+    const traceBtn = document.getElementById('video-viewer-trace-btn');
+    traceBtn.style.display = 'none';
 
     // Show modal immediately with loading state
     title.textContent = '';
@@ -2440,6 +2558,18 @@ async function showVideoViewerModal(filename, testName) {
             a.download = latestArtifact.video_path.split('/').pop();
             a.click();
         };
+
+        if (latestArtifact.trace_path) {
+            traceBtn.style.display = 'inline-block';
+            traceBtn.onclick = () => {
+                const traceUrl = `${window.location.origin}/api/trace/${latestArtifact.trace_path}`;
+                const viewerUrl = `/trace-viewer/?trace=${encodeURIComponent(traceUrl)}`;
+                document.getElementById('trace-viewer-iframe').src = viewerUrl;
+                document.getElementById('trace-viewer-modal').style.display = 'flex';
+            };
+        } else {
+            traceBtn.style.display = 'none';
+        }
     } catch (err) {
         console.error('Error loading artifacts:', err);
         loading.style.display = 'none';
@@ -2553,6 +2683,16 @@ if (closeVideoViewerBtn) {
     });
 }
 
+// Trace Viewer Modal Close Handler
+const traceViewerModal = document.getElementById('trace-viewer-modal');
+const closeTraceViewerBtn = document.getElementById('close-trace-viewer');
+if (closeTraceViewerBtn) {
+    closeTraceViewerBtn.addEventListener('click', () => {
+        traceViewerModal.style.display = 'none';
+        document.getElementById('trace-viewer-iframe').src = '';
+    });
+}
+
 // Modal click handlers
 window.addEventListener('click', (event) => {
     if (event.target === aiStepModal) {
@@ -2567,6 +2707,10 @@ window.addEventListener('click', (event) => {
             videoPlayer.pause();
         }
         videoViewerModal.style.display = 'none';
+    }
+    if (event.target === traceViewerModal) {
+        traceViewerModal.style.display = 'none';
+        document.getElementById('trace-viewer-iframe').src = '';
     }
 });
 

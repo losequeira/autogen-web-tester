@@ -203,6 +203,15 @@
                     <!-- Editor Content -->
                     <div class="editor-content">
                         <div id="codemirror-editor"></div>
+                        <div id="media-panel" style="display:none;flex:1;overflow:hidden;position:relative;background:var(--ctp-base);width:100%;height:100%;">
+                            <div id="media-panel-recording" style="display:none;width:100%;height:100%;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;box-sizing:border-box;">
+                                <video id="media-panel-video" controls style="max-width:100%;max-height:calc(100% - 80px);border-radius:8px;background:#000;"></video>
+                                <p id="media-panel-video-info" style="color:var(--ctp-subtext1);font-size:12px;margin:0;"></p>
+                            </div>
+                            <div id="media-panel-trace" style="display:none;width:100%;height:100%;">
+                                <iframe id="media-panel-trace-iframe" style="width:100%;height:100%;border:none;background:#1e1e1e;" allowfullscreen></iframe>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Dashboard View -->
@@ -464,6 +473,7 @@
                 <div class="modal-header">
                     <h2 id="video-viewer-title"><i class="lni lni-camera-movie-1"></i> Test Recording</h2>
                     <div style="display:flex;align-items:center;gap:8px;">
+                        <button id="video-viewer-trace-btn" class="btn btn-secondary" style="display:none;">View Trace</button>
                         <button id="video-viewer-download-btn" title="Download video" style="display:none;"><i class="lni lni-download-1"></i></button>
                         <span class="close-video-viewer">&times;</span>
                     </div>
@@ -498,6 +508,15 @@
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- Trace Viewer Modal -->
+        <div id="trace-viewer-modal" style="display:none;position:fixed;z-index:2000;left:0;top:0;width:100vw;height:100vh;background:var(--ctp-base);flex-direction:column;">
+            <div style="padding:8px 16px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;background:var(--ctp-mantle);border-bottom:1px solid var(--ctp-surface0);">
+                <h2 style="margin:0;font-size:15px;color:var(--ctp-text);"><i class="lni lni-layers"></i> Trace Viewer</h2>
+                <span id="close-trace-viewer" style="cursor:pointer;font-size:22px;line-height:1;color:var(--ctp-subtext1);">&times;</span>
+            </div>
+            <iframe id="trace-viewer-iframe" style="flex:1;border:none;width:100%;height:calc(100vh - 41px);background:#1e1e1e;" allowfullscreen></iframe>
         </div>
 
     <!-- Stop & Close Browser Modal -->

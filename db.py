@@ -249,7 +249,7 @@ def update_member_role(workspace_id: int, user_id: str, role: str) -> dict | Non
 
 def get_tests(workspace_id: int) -> list[dict]:
     resp = _sb().table('tests').select(
-        '*, test_artifacts(timestamp, video_path, video_size_mb, har_path, status)'
+        '*, test_artifacts(timestamp, video_path, video_size_mb, har_path, trace_path, status)'
     ).eq('workspace_id', workspace_id).order('created_at', desc=True).execute()
 
     results = []
@@ -270,7 +270,7 @@ def get_tests(workspace_id: int) -> list[dict]:
 
 def get_test(workspace_id: int, filename: str) -> dict | None:
     resp = _sb().table('tests').select(
-        '*, test_artifacts(timestamp, video_path, video_size_mb, har_path, status)'
+        '*, test_artifacts(timestamp, video_path, video_size_mb, har_path, trace_path, status)'
     ).eq('workspace_id', workspace_id).eq('filename', filename).execute()
 
     if not resp.data:
@@ -359,7 +359,7 @@ def get_test_artifacts(workspace_id: int, filename: str) -> list[dict] | None:
 
     test_id = test_resp.data[0]['id']
     resp = _sb().table('test_artifacts').select(
-        'timestamp, video_path, video_size_mb, har_path, status'
+        'timestamp, video_path, video_size_mb, har_path, trace_path, status'
     ).eq('test_id', test_id).order('created_at', desc=True).execute()
 
     return resp.data or []
@@ -435,6 +435,7 @@ def add_test_artifact(workspace_id: int, filename: str, artifact_dir: Path, stat
         'video_path': storage_paths.get('video_path'),
         'video_size_mb': round(video_size_mb, 2),
         'har_path': storage_paths.get('har_path'),
+        'trace_path': storage_paths.get('trace_path'),
         'status': status,
     }).execute()
 

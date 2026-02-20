@@ -27,6 +27,12 @@ from code_agent import CodeGenerationAgent
 import config
 from config import Config
 
+# Playwright trace viewer static assets (bundled with the playwright package)
+import playwright as _playwright_pkg
+_TRACE_VIEWER_DIR = (
+    Path(_playwright_pkg.__file__).parent / 'driver' / 'package' / 'lib' / 'vite' / 'traceViewer'
+)
+
 # Import multi-user modules
 import db
 from auth import init_auth, login_required, get_current_user
@@ -1305,6 +1311,11 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                     except Exception:
                         pass
                 if self._default_context:
+                    if config.ENABLE_TRACE_RECORDING and video_dir:
+                        try:
+                            await self._default_context.tracing.stop(path=f"{video_dir}/trace.zip")
+                        except Exception:
+                            pass
                     try:
                         await self._default_context.close()
                     except Exception:
@@ -1367,6 +1378,8 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                         'record_har_path': f"{video_dir}/network.har",
                     }
                     raw_context = await browser.new_context(**context_options)
+                    if config.ENABLE_TRACE_RECORDING:
+                        await raw_context.tracing.start(screenshots=True, snapshots=True)
                     default_context = ContextWrapper(raw_context)
 
                 wrapped_browser = BrowserWrapper(browser, default_context, owns_browser=owns)
@@ -1847,6 +1860,8 @@ def get_workspace_test_artifacts(workspace_id, filename):
         for a in artifacts:
             if a.get('video_path'):
                 a['video_url'] = f"/api/video/{a['video_path']}"
+            if a.get('trace_path'):
+                a['trace_url'] = f"/api/trace/{a['trace_path']}"
         return jsonify(artifacts), 200
     except Exception as e:
         print(f"Error getting test artifacts: {e}")
@@ -2197,6 +2212,36 @@ def update_ai_step_markdown(filename):
 def serve_artifact(filepath):
     """Return the local video URL for a test artifact."""
     return jsonify({'url': f'/api/video/{filepath}'}), 200
+
+
+@app.route('/api/trace/<path:filepath>')
+def serve_trace(filepath):
+    """Serve a Playwright trace.zip file from ~/.autogen/artifacts/."""
+    from flask import send_file
+    from config import Config
+
+    base = Config.ARTIFACTS_DIR.resolve()
+    full_path = (base / filepath).resolve()
+    if not str(full_path).startswith(str(base)):
+        return jsonify({'error': 'Forbidden'}), 403
+    if not full_path.exists():
+        return jsonify({'error': 'Trace not found'}), 404
+    return send_file(full_path, mimetype='application/zip')
+
+
+@app.route('/trace-viewer/')
+@app.route('/trace-viewer')
+def trace_viewer_index():
+    """Serve the Playwright trace viewer index page."""
+    from flask import send_from_directory
+    return send_from_directory(str(_TRACE_VIEWER_DIR), 'index.html')
+
+
+@app.route('/trace-viewer/<path:filepath>')
+def trace_viewer_static(filepath):
+    """Serve Playwright trace viewer static assets from the bundled package."""
+    from flask import send_from_directory
+    return send_from_directory(str(_TRACE_VIEWER_DIR), filepath)
 
 
 @app.route('/api/video/<path:filepath>')
@@ -2604,6 +2649,8 @@ def handle_connect():
         print(f"Socket auth error: {e}")
         emit('log', {'type': 'error', 'message': 'Authentication required'})
         return False
+
+
 
 
 if __name__ == '__main__':

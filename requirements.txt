@@ -26,5 +26,8 @@ Flask-WTF~=1.2.1  # CSRF protection
 Flask-Limiter~=3.5.0  # Rate limiting
 supabase~=2.0
 
+# Encrypted local session persistence
+cryptography>=41.0.0
+
 # Code formatting
 black~=24.1.0

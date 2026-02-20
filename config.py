@@ -31,7 +31,7 @@ KEEP_LAST_N_VIDEOS = int(os.getenv("KEEP_LAST_N_VIDEOS", "10"))  # Per test
 
 # Artifact Settings
 ENABLE_HAR_RECORDING = os.getenv("ENABLE_HAR_RECORDING", "true").lower() == "true"
-ENABLE_TRACE_RECORDING = os.getenv("ENABLE_TRACE_RECORDING", "false").lower() == "true"
+ENABLE_TRACE_RECORDING = os.getenv("ENABLE_TRACE_RECORDING", "true").lower() == "true"
 MAX_ARTIFACT_SIZE_MB = int(os.getenv("MAX_ARTIFACT_SIZE_MB", "500"))  # Fail if exceeds
 
 # Local auto-login (single-user Mac app — skip login screen)

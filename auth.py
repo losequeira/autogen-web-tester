@@ -237,6 +237,13 @@ def login():
         if not session:
             return jsonify({'error': 'Invalid username or password'}), 401
 
+        import token_store
+        token_store.save_tokens(
+            session.access_token,
+            session.refresh_token,
+            str(auth_response.user.id),
+        )
+
         # Get workspaces
         workspaces = db.get_workspaces_for_user(user['id'])
 
@@ -255,30 +262,29 @@ def login():
 
 @auth_bp.route('/auto-login', methods=['POST'])
 def auto_login():
-    """Auto-login using LOCAL_USERNAME / LOCAL_PASSWORD from .env (local Mac app only)."""
-    import config as _config
-    username = _config.LOCAL_USERNAME
-    password = _config.LOCAL_PASSWORD
-    if not username or not password:
-        return jsonify({'error': 'No local credentials configured'}), 404
+    """Auto-login using the encrypted local session (~/.autogen/session.enc)."""
+    import token_store
+    saved = token_store.load_tokens()
+    if not saved or not saved.get('refresh_token'):
+        return jsonify({'error': 'No saved session'}), 404
 
     try:
-        user = db.get_user_by_username(username)
-        if not user or not user.get('is_active'):
-            return jsonify({'error': 'User not found or disabled'}), 401
-
         sb = get_supabase_client()
-        auth_response = sb.auth.sign_in_with_password({
-            'email': user['email'],
-            'password': password,
-        })
-        session = auth_response.session
+        refreshed = sb.auth.refresh_session(saved['refresh_token'])
+        session = refreshed.session
         if not session:
-            return jsonify({'error': 'Auto-login failed'}), 401
+            token_store.clear_tokens()
+            return jsonify({'error': 'Session expired'}), 401
 
-        workspaces = db.get_workspaces_for_user(user['id'])
+        user = db.get_user_by_id(str(refreshed.user.id))
+        token_store.save_tokens(
+            session.access_token,
+            session.refresh_token,
+            str(refreshed.user.id),
+        )
+        workspaces = db.get_workspaces_for_user(str(refreshed.user.id))
         return jsonify({
-            'message': 'Auto-login successful',
+            'message': 'Session restored',
             'user': user,
             'workspaces': workspaces,
             'access_token': session.access_token,
@@ -287,16 +293,19 @@ def auto_login():
 
     except Exception as e:
         print(f"Auto-login error: {e}")
-        return jsonify({'error': 'Auto-login failed'}), 401
+        token_store.clear_tokens()
+        return jsonify({'error': 'Session expired'}), 401
 
 
 @auth_bp.route('/logout', methods=['POST'])
 @login_required
 def logout():
-    """Logout — evict the current token from the server cache."""
+    """Logout — evict the current token from the server cache and clear saved session."""
     token = _extract_bearer_token()
     if token:
         _user_cache.pop(token, None)
+    import token_store
+    token_store.clear_tokens()
     return jsonify({'message': 'Logout successful'}), 200
 
 
