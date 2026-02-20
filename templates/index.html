@@ -223,32 +223,32 @@
                             </div>
                         </div>
 
-                        <div class="dashboard-stats">
+                        <div class="dashboard-stats" id="dashboard-stats">
                             <div class="stat-card stat-primary">
                                 <div class="stat-icon">📝</div>
                                 <div class="stat-content">
-                                    <div class="stat-value" id="dashboard-saved-tests">0</div>
+                                    <div class="stat-value" id="dashboard-saved-tests"><span class="stat-skeleton"></span></div>
                                     <div class="stat-label">SAVED TESTS</div>
                                 </div>
                             </div>
                             <div class="stat-card stat-success">
                                 <div class="stat-icon">✓</div>
                                 <div class="stat-content">
-                                    <div class="stat-value" id="dashboard-passed">0</div>
+                                    <div class="stat-value" id="dashboard-passed"><span class="stat-skeleton"></span></div>
                                     <div class="stat-label">PASSED</div>
                                 </div>
                             </div>
                             <div class="stat-card stat-error">
                                 <div class="stat-icon">✗</div>
                                 <div class="stat-content">
-                                    <div class="stat-value" id="dashboard-failed">0</div>
+                                    <div class="stat-value" id="dashboard-failed"><span class="stat-skeleton"></span></div>
                                     <div class="stat-label">FAILED</div>
                                 </div>
                             </div>
                             <div class="stat-card stat-info">
                                 <div class="stat-icon">🤖</div>
                                 <div class="stat-content">
-                                    <div class="stat-value" id="dashboard-ai-steps">0</div>
+                                    <div class="stat-value" id="dashboard-ai-steps"><span class="stat-skeleton"></span></div>
                                     <div class="stat-label">AI STEPS</div>
                                 </div>
                             </div>
@@ -257,7 +257,10 @@
                         <div class="dashboard-recordings">
                             <h2>📹 Recent Recordings</h2>
                             <div id="recordings-gallery" class="recordings-gallery">
-                                <!-- Video thumbnails will be loaded here -->
+                                <!-- Skeleton cards shown while loading -->
+                                <div class="recording-card skeleton-card" id="recordings-skeleton-1"></div>
+                                <div class="recording-card skeleton-card" id="recordings-skeleton-2"></div>
+                                <div class="recording-card skeleton-card" id="recordings-skeleton-3"></div>
                             </div>
                             <div id="no-recordings-message" class="no-recordings-message" style="display: none;">
                                 <p>No test recordings available yet</p>
@@ -314,10 +317,11 @@
             <div id="output-panel" class="output-panel">
                 <div class="output-panel-header">
                     <div class="output-panel-title">
-                        <button id="toggle-output" class="output-toggle-btn">
-                            <span class="output-toggle-icon">▼</span>
+                        <button id="toggle-output" class="output-toggle-btn" title="Expand / Collapse">
+                            <span class="output-toggle-icon">▲</span>
                             <span class="output-title-text">OUTPUT</span>
                         </button>
+                        <span id="output-preview-text" class="output-preview-text"></span>
                     </div>
                     <div class="output-panel-actions">
                         <div class="log-tabs">
@@ -460,10 +464,20 @@
                         <p style="color: var(--ctp-subtext0); font-size: 13px;">Loading recording...</p>
                     </div>
                     <div id="video-viewer-container" style="display: none;">
-                        <video id="video-viewer-player" controls>
-                            <source id="video-viewer-source" type="video/webm">
-                            Your browser does not support video playback.
-                        </video>
+                        <div class="video-wrapper" id="video-wrapper">
+                            <video id="video-viewer-player">
+                                <source id="video-viewer-source" type="video/webm">
+                                Your browser does not support video playback.
+                            </video>
+                            <div class="vc-controls" id="vc-controls">
+                                <button class="vc-btn" id="vc-play-btn" title="Play / Pause">▶</button>
+                                <span class="vc-time-display" id="vc-current-time">0:00</span>
+                                <div class="vc-seek-container">
+                                    <input type="range" class="vc-seek-bar" id="vc-seek-bar" min="0" max="100" step="0.1" value="0">
+                                </div>
+                                <span class="vc-time-display" id="vc-duration-time">0:00</span>
+                            </div>
+                        </div>
                         <div class="video-viewer-info">
                             <p id="video-viewer-timestamp" style="color: var(--ctp-overlay1); font-size: 13px; margin-top: 12px;"></p>
                             <p id="video-viewer-size" style="color: var(--ctp-overlay1); font-size: 13px;"></p>

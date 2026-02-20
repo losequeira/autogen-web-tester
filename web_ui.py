@@ -28,16 +28,8 @@ import config
 from config import Config
 
 # Import multi-user modules
-<<<<<<< ours
 import db
 from auth import init_auth, login_required, get_current_user
-||||||| ancestor
-from models import init_db, get_db_session, close_db_session, Test, TestSource, Workspace
-from auth import init_auth
-=======
-import db
-from auth import init_auth
->>>>>>> theirs
 from decorators import workspace_access_required, workspace_owner_required
 
 app = Flask(__name__)
@@ -53,16 +45,21 @@ init_auth(app)
 
 
 # ========== WORKSPACE HELPER FUNCTIONS ==========
-# (Workspace paths removed — artifacts now stored in Supabase Storage)
+# (Workspace paths removed — artifacts stored locally in ~/.autogen/artifacts/)
 # ========== END WORKSPACE HELPER FUNCTIONS ==========
 
 # Initialize code generation agent
 code_agent = CodeGenerationAgent(api_key=config.OPENAI_API_KEY)
 
+# Initialize workspace agent (tool-calling agent for file management)
+from workspace_agent import WorkspaceAgent
+workspace_agent = WorkspaceAgent()
+
 # Store active browser session and task
 active_browser = None
 active_task = None
 stop_requested = False
+active_loop = None   # Event loop of the currently running test (for hard stop)
 
 # Track current AI step execution for code generation prompt
 current_ai_step = None  # {'filename': '...', 'name': '...'}
@@ -650,7 +647,7 @@ async def run_test_async(task: str, test_filename: str = None, workspace_id: int
         from pathlib import Path
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        # Use a temp directory for Playwright recording (uploaded to Supabase Storage later)
+        # Use a temp directory for Playwright recording (moved to ~/.autogen/artifacts/ after run)
         artifact_dir = Path(tempfile.mkdtemp(prefix='awt_')) / timestamp
         artifact_dir.mkdir(parents=True, exist_ok=True)
         video_dir = str(artifact_dir)
@@ -1025,18 +1022,19 @@ These rules apply to ALL tasks. Users will give you natural language instruction
 
 def run_test_sync(task: str, test_filename: str = None, workspace_id: int = None):
     """Wrapper to run async test in sync context."""
+    global active_loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    active_loop = loop
     try:
         loop.run_until_complete(run_test_async(task, test_filename, workspace_id))
     finally:
+        active_loop = None
         # Properly shutdown the event loop to avoid crashes
         try:
-            # Cancel all pending tasks
             pending = asyncio.all_tasks(loop)
             for task in pending:
                 task.cancel()
-            # Run loop until all tasks are cancelled
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         except Exception:
             pass
@@ -1081,11 +1079,12 @@ def run_playwright_code(code: str):
 
 def run_playwright_code_with_streaming(code: str, filename: str = None, workspace_id: int = None):
     """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
-    global stop_requested
+    global stop_requested, active_loop
     stop_requested = False  # Reset stop flag at the start of execution
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    active_loop = loop
 
     # Create artifacts directory for this test run if filename provided
     artifact_dir = None
@@ -1097,7 +1096,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        # Use a temp directory for Playwright recording (uploaded to Supabase Storage later)
+        # Use a temp directory for Playwright recording (moved to ~/.autogen/artifacts/ after run)
         artifact_dir = Path(tempfile.mkdtemp(prefix='awt_')) / timestamp
         artifact_dir.mkdir(parents=True, exist_ok=True)
         video_dir = str(artifact_dir)
@@ -1277,7 +1276,8 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 if video_dir and 'record_video_dir' not in kwargs:
                     print(f"📹 Adding video recording to user-created context: {video_dir}")
                     kwargs['record_video_dir'] = video_dir
-                    kwargs['record_video_size'] = {"width": 1280, "height": 720}
+                    kwargs['record_video_size'] = {'width': config.VIDEO_SIZE_WIDTH, 'height': config.VIDEO_SIZE_HEIGHT}
+                    kwargs.setdefault('viewport', {'width': config.VIDEO_SIZE_WIDTH, 'height': config.VIDEO_SIZE_HEIGHT})
                     # Also add HAR recording if not present
                     if 'record_har_path' not in kwargs:
                         kwargs['record_har_path'] = f"{video_dir}/network.har"
@@ -1352,10 +1352,10 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                     print(f"📹 Creating browser context with video recording to: {video_dir}")
                     context_options = {
                         'record_video_dir': video_dir,
-                        'record_video_size': {"width": 1280, "height": 720}
+                        'record_video_size': {'width': config.VIDEO_SIZE_WIDTH, 'height': config.VIDEO_SIZE_HEIGHT},
+                        'viewport': {'width': config.VIDEO_SIZE_WIDTH, 'height': config.VIDEO_SIZE_HEIGHT},
+                        'record_har_path': f"{video_dir}/network.har",
                     }
-                    # Also record HAR file for network activity
-                    context_options['record_har_path'] = f"{video_dir}/network.har"
                     raw_context = await browser.new_context(**context_options)
                     default_context = ContextWrapper(raw_context)
 
@@ -1388,19 +1388,12 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
 
         try:
             nonlocal test_status
-            # Remove the playwright import line and asyncio.run() from user's code
-            # so we can provide our wrapped version
-            modified_code = code.replace('asyncio.run(run())', '')
-
-            # Remove common import patterns
-            import_patterns = [
-                'from playwright.async_api import async_playwright\n',
-                'from playwright.async_api import async_playwright, Playwright\n',
-                'from playwright.async_api import Playwright, async_playwright\n',
-                'import asyncio\n',
-            ]
-            for pattern in import_patterns:
-                modified_code = modified_code.replace(pattern, '')
+            # Remove asyncio.run(...) call and all playwright/asyncio imports
+            # using regex so any variation of the import line is handled
+            modified_code = re.sub(r'asyncio\.run\(\s*\w+\(\)\s*\)', '', code)
+            modified_code = re.sub(r'^from playwright\.[^\n]*\n?', '', modified_code, flags=re.MULTILINE)
+            modified_code = re.sub(r'^import playwright[^\n]*\n?', '', modified_code, flags=re.MULTILINE)
+            modified_code = re.sub(r'^import asyncio\n?', '', modified_code, flags=re.MULTILINE)
 
             # Log the modified code for debugging
             print("=" * 50)
@@ -1471,6 +1464,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
         socketio.emit('test_complete', {'status': 'error'})
     finally:
+        active_loop = None
         try:
             pending = asyncio.all_tasks(loop)
             for task in pending:
@@ -1489,7 +1483,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
     if artifact_dir and filename:
         try:
             import time
-            time.sleep(2)  # Give browser time to finalize the video file
+            time.sleep(5)  # Give browser time to finalize the video file
             print(f"📼 Saving artifacts: filename={filename}, workspace_id={workspace_id}, status={test_status}, dir={artifact_dir}")
             # List all files in artifact dir for debugging
             all_files = list(artifact_dir.iterdir()) if artifact_dir.exists() else []
@@ -1842,29 +1836,31 @@ def delete_workspace_test(workspace_id, filename):
 @login_required
 @workspace_access_required(permission='read')
 def get_workspace_test_artifacts(workspace_id, filename):
-    """Get list of artifacts for a test in a workspace, with signed video URLs."""
-    from storage import get_signed_url
+    """Get list of artifacts for a test in a workspace, with local video URLs."""
     try:
         artifacts = db.get_test_artifacts(workspace_id, filename)
         if artifacts is None:
             return jsonify({'error': 'Test not found'}), 404
-<<<<<<< ours
-        # Inline signed URLs so the client doesn't need a second round trip
         for a in artifacts:
             if a.get('video_path'):
-                a['video_url'] = get_signed_url(a['video_path'])
-||||||| ancestor
-
-        with open(filepath, 'r') as f:
-            test_data = json.load(f)
-
-        artifacts = test_data.get('artifacts', [])
-=======
->>>>>>> theirs
+                a['video_url'] = f"/api/video/{a['video_path']}"
         return jsonify(artifacts), 200
     except Exception as e:
         print(f"Error getting test artifacts: {e}")
         return jsonify({'error': 'Failed to load artifacts'}), 500
+
+
+@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>/artifacts', methods=['DELETE'])
+@login_required
+@workspace_access_required(permission='write')
+def delete_workspace_test_artifacts(workspace_id, filename):
+    """Delete all artifacts (DB rows + local files) for a test."""
+    try:
+        db.delete_test_artifacts(workspace_id, filename)
+        return jsonify({'ok': True}), 200
+    except Exception as e:
+        print(f"Error deleting artifacts: {e}")
+        return jsonify({'error': 'Failed to delete artifacts'}), 500
 
 
 @app.route('/api/workspaces/<int:workspace_id>/ai-steps', methods=['GET'])
@@ -1994,7 +1990,6 @@ def get_saved_tests():
     return jsonify(tests)
 
 
-<<<<<<< ours
 @app.route('/api/recent-recordings')
 @login_required
 def get_recent_recordings():
@@ -2006,20 +2001,6 @@ def get_recent_recordings():
     return jsonify(recordings)
 
 
-||||||| ancestor
-=======
-@app.route('/api/recent-recordings')
-@login_required
-def get_recent_recordings():
-    """Get recent video recordings for the current workspace."""
-    ws_id = _get_workspace_id()
-    if not ws_id:
-        return jsonify([])
-    recordings = data_access.get_recent_recordings(ws_id)
-    return jsonify(recordings)
-
-
->>>>>>> theirs
 @app.route('/api/saved-tests/<filename>', methods=['GET'])
 @login_required
 def get_saved_test(filename):
@@ -2211,16 +2192,28 @@ def update_ai_step_markdown(filename):
 @app.route('/api/artifacts/<path:filepath>')
 @login_required
 def serve_artifact(filepath):
-    """Return a signed URL for a test artifact in Supabase Storage."""
-    from storage import get_signed_url
+    """Return the local video URL for a test artifact."""
+    return jsonify({'url': f'/api/video/{filepath}'}), 200
 
-    print(f"[serve_artifact] filepath={filepath}")
-    signed_url = get_signed_url(filepath)
-    print(f"[serve_artifact] signed_url={'OK' if signed_url else 'None'}")
-    if not signed_url:
+
+@app.route('/api/video/<path:filepath>')
+def stream_video(filepath):
+    """Stream a local artifact file (video or HAR) from ~/.autogen/artifacts/.
+
+    No auth header needed — the browser <video> element fetches this directly.
+    Path-traversal is prevented by checking the resolved path stays inside ARTIFACTS_DIR.
+    """
+    from flask import send_file
+    from config import Config
+
+    base = Config.ARTIFACTS_DIR.resolve()
+    full_path = (base / filepath).resolve()
+    # Prevent path traversal outside the artifacts directory
+    if not str(full_path).startswith(str(base)):
+        return jsonify({'error': 'Forbidden'}), 403
+    if not full_path.exists():
         return jsonify({'error': 'Artifact not found'}), 404
-
-    return jsonify({'url': signed_url}), 200
+    return send_file(full_path)
 
 
 @app.route('/api/saved-tests/<filename>/artifacts')
@@ -2289,10 +2282,23 @@ def handle_run_test(data):
 
 @socketio.on('stop_test')
 def handle_stop_test():
-    """Handle test stop request."""
-    global stop_requested
+    """Hard-stop the running test by cancelling all asyncio tasks immediately."""
+    global stop_requested, active_loop
     stop_requested = True
-    emit('log', {'type': 'info', 'message': 'Stop request received, stopping test...'})
+
+    loop = active_loop
+    if loop and not loop.is_closed():
+        # Schedule cancellation of every task on the running loop from this thread.
+        # call_soon_threadsafe is safe to call from any thread and wakes the loop
+        # immediately, causing CancelledError to be raised inside whatever is awaited.
+        def _cancel_all():
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+
+        loop.call_soon_threadsafe(_cancel_all)
+        emit('log', {'type': 'info', 'message': '⏹ Test stopped'})
+    else:
+        emit('log', {'type': 'info', 'message': '⏹ Stop requested (no active test)'})
 
 
 @socketio.on('run_playwright_code')
@@ -2482,35 +2488,54 @@ def handle_run_ai_step(data):
 @socketio.on('chat_message')
 def handle_chat_message(data):
     """Handle chat message from AI Chat tab."""
-    message = data.get('message')
+    message = data.get('message', '')
     existing_code = data.get('existing_code')
-    image = data.get('image')  # Base64 encoded image
-    file_type = data.get('file_type', 'unknown')  # Get file type for context-aware assistance
+    image = data.get('image')
+    workspace_id = data.get('workspace_id')
+    user_id = data.get('user_id')
 
     if not message and not image:
         emit('chat_error', {'message': 'No message or image provided'})
         return
 
-    # Run in background to avoid blocking
-    socketio.start_background_task(handle_code_chat, message, existing_code, image, file_type)
+    if workspace_id and user_id:
+        # Use workspace agent with full tool access
+        socketio.start_background_task(
+            _run_workspace_agent, message, existing_code, image, workspace_id, user_id
+        )
+    else:
+        # Fallback: no workspace context, use simple code agent
+        file_type = data.get('file_type', 'unknown')
+        socketio.start_background_task(handle_code_chat, message, existing_code, image, file_type)
+
+
+def _run_workspace_agent(message, existing_code, image, workspace_id, user_id):
+    """Background task: run workspace agent with tool-calling loop."""
+    try:
+        workspace_agent.run(
+            message=message,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            emit_fn=socketio.emit,
+            image=image,
+            existing_code=existing_code,
+        )
+    except Exception as e:
+        socketio.emit('chat_error', {'message': str(e)})
 
 
 def handle_code_chat(message, existing_code, image=None, file_type='unknown'):
-    """Background task to handle code generation chat."""
+    """Background task to handle code generation chat (fallback, no workspace)."""
     try:
-        # Generate response using code agent (with optional image and file type)
         result = code_agent.generate_response(message, existing_code, image, file_type)
 
-        # Emit AI response
         socketio.emit('chat_response', {
             'role': 'ai',
             'message': result['message'],
             'timestamp': datetime.now().isoformat()
         })
 
-        # Emit generated code or content (steps) if available
         if result.get('code'):
-            # For test files - send code
             socketio.emit('code_suggestion', {
                 'code': result['code'],
                 'explanation': result.get('explanation', ''),
@@ -2518,9 +2543,8 @@ def handle_code_chat(message, existing_code, image=None, file_type='unknown'):
                 'content_type': 'code'
             })
         elif result.get('content'):
-            # For AI steps files - send steps content
             socketio.emit('code_suggestion', {
-                'code': result['content'],  # Using 'code' field for compatibility with frontend
+                'code': result['content'],
                 'explanation': result.get('explanation', ''),
                 'action': 'suggest',
                 'content_type': 'steps'
@@ -2531,9 +2555,13 @@ def handle_code_chat(message, existing_code, image=None, file_type='unknown'):
 
 
 @socketio.on('clear_chat')
-def handle_clear_chat():
+def handle_clear_chat(data=None):
     """Handle chat history clear request."""
-    code_agent.clear_history()
+    workspace_id = (data or {}).get('workspace_id')
+    if workspace_id:
+        workspace_agent.clear_history(workspace_id)
+    else:
+        code_agent.clear_history()
     emit('log', {'type': 'info', 'message': 'Chat history cleared'})
 
 

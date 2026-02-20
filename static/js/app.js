@@ -79,6 +79,9 @@ const socket = io({ query: { token: authToken || '' } });
 let currentUser = null;
 let currentWorkspaceId = null;
 
+// Cache of tests keyed by filename, populated when the file explorer loads
+let testCache = {};
+
 // ========== USER PREFERENCES SYNC ==========
 // Debounce timer for batching preference saves to DB
 let _prefSaveTimer = null;
@@ -1447,10 +1450,15 @@ function loadFileExplorer() {
         return;
     }
 
+    fileList.innerHTML = '<div class="file-list-loading"><span class="file-list-spinner"></span>Loading tests…</div>';
+
     authFetch(`/api/workspaces/${currentWorkspaceId}/tests`)
         .then(res => res.json())
         .then(data => {
             const tests = data.tests || [];
+            // Cache tests by filename so openFileFromExplorer can skip the extra round-trip
+            testCache = {};
+            tests.forEach(t => { testCache[t.filename] = t; });
             fileList.innerHTML = '';
 
             if (tests.length === 0) {
@@ -1546,10 +1554,18 @@ function loadFileExplorer() {
 }
 
 function openFileFromExplorer(filename, name) {
+    const cached = testCache[filename];
+    if (cached && cached.code) {
+        openTab(filename, name, cached.code);
+        return;
+    }
+
+    // Fallback: fetch from server if cache is cold
     authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`)
         .then(res => res.json())
         .then(data => {
             if (data && data.code) {
+                testCache[filename] = data;
                 openTab(filename, name, data.code);
             }
         })
@@ -1829,34 +1845,44 @@ function hideDashboardContent() {
     if (dashboardView) dashboardView.style.display = 'none';
 }
 
+function _setStatValue(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
 async function loadDashboardStats() {
+    if (!currentWorkspaceId) return;
+
+    // Show skeletons
+    ['dashboard-saved-tests', 'dashboard-passed', 'dashboard-failed', 'dashboard-ai-steps'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '<span class="stat-skeleton"></span>';
+    });
+
     try {
-        if (!currentWorkspaceId) return;
-
-        // Fetch saved tests for current workspace
-        const testsResponse = await authFetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
+        const [testsResponse, aiStepsResponse] = await Promise.all([
+            authFetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`),
+            authFetch(`/api/ai-steps?workspace_id=${currentWorkspaceId}`),
+        ]);
         const tests = await testsResponse.json();
-
-        // Fetch AI steps for current workspace
-        const aiStepsResponse = await authFetch(`/api/ai-steps?workspace_id=${currentWorkspaceId}`);
         const aiSteps = await aiStepsResponse.json();
 
-        // Calculate statistics
         const totalTests = tests.length;
         const passedTests = tests.filter(t => t.last_run_status === 'success').length;
         const failedTests = tests.filter(t => t.last_run_status === 'error').length;
         const totalAiSteps = aiSteps.length;
 
-        // Update dashboard stats
-        document.getElementById('dashboard-saved-tests').textContent = totalTests;
-        document.getElementById('dashboard-passed').textContent = passedTests;
-        document.getElementById('dashboard-failed').textContent = failedTests;
-        document.getElementById('dashboard-ai-steps').textContent = totalAiSteps;
+        _setStatValue('dashboard-saved-tests', totalTests);
+        _setStatValue('dashboard-passed', passedTests);
+        _setStatValue('dashboard-failed', failedTests);
+        _setStatValue('dashboard-ai-steps', totalAiSteps);
 
-        // Load recordings gallery from DB
         await loadRecordingsGallery();
     } catch (error) {
         console.error('Error loading dashboard stats:', error);
+        ['dashboard-saved-tests', 'dashboard-passed', 'dashboard-failed', 'dashboard-ai-steps'].forEach(id => {
+            _setStatValue(id, '–');
+        });
     }
 }
 
@@ -1865,6 +1891,15 @@ async function loadRecordingsGallery() {
     const noRecordingsMessage = document.getElementById('no-recordings-message');
 
     if (!recordingsGallery) return;
+
+    // Show skeleton cards while fetching
+    recordingsGallery.style.display = 'grid';
+    noRecordingsMessage.style.display = 'none';
+    recordingsGallery.innerHTML = `
+        <div class="recording-card skeleton-card"></div>
+        <div class="recording-card skeleton-card"></div>
+        <div class="recording-card skeleton-card"></div>
+    `;
 
     try {
         const response = await authFetch(`/api/recent-recordings?workspace_id=${currentWorkspaceId}`);
@@ -1887,6 +1922,7 @@ async function loadRecordingsGallery() {
         });
     } catch (error) {
         console.error('Error loading recordings:', error);
+        recordingsGallery.innerHTML = '';
     }
 }
 
@@ -1897,28 +1933,80 @@ function createRecordingCard(recording) {
     const statusClass = recording.status === 'success' || recording.status === 'passed' ? 'passed' : 'failed';
     const statusText = recording.status === 'success' || recording.status === 'passed' ? 'PASSED' : 'FAILED';
 
-    // Format timestamp
     const timestamp = recording.timestamp.replace(/_/g, ' ').replace(/-/g, ':');
 
-    card.innerHTML = `
-        <div class="recording-thumbnail">
-            <div class="recording-placeholder">🎬</div>
-            <div class="recording-play-overlay">
-                <div class="recording-play-icon">▶</div>
-            </div>
-        </div>
-        <div class="recording-info">
-            <div class="recording-name" title="${escapeHtml(recording.test_name)}">${escapeHtml(recording.test_name)}</div>
-            <div class="recording-meta">
-                <span class="recording-status ${statusClass}">${statusText}</span>
-                <span class="recording-timestamp">${timestamp}</span>
-            </div>
-        </div>
-    `;
+    // Thumbnail
+    const thumbnail = document.createElement('div');
+    thumbnail.className = 'recording-thumbnail';
+    thumbnail.innerHTML = '<div class="recording-placeholder">🎬</div><div class="recording-play-overlay"><div class="recording-play-icon">▶</div></div>';
 
-    // Click handler to open video viewer modal
+    // Info
+    const info = document.createElement('div');
+    info.className = 'recording-info';
+    const name = document.createElement('div');
+    name.className = 'recording-name';
+    name.title = recording.test_name;
+    name.textContent = recording.test_name;
+    const meta = document.createElement('div');
+    meta.className = 'recording-meta';
+    const statusSpan = document.createElement('span');
+    statusSpan.className = `recording-status ${statusClass}`;
+    statusSpan.textContent = statusText;
+    const tsSpan = document.createElement('span');
+    tsSpan.className = 'recording-timestamp';
+    tsSpan.textContent = timestamp;
+    meta.append(statusSpan, tsSpan);
+    info.append(name, meta);
+
+    // Delete button
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'recording-delete-btn';
+    deleteBtn.title = 'Delete recording';
+    deleteBtn.textContent = '✕';
+
+    card.append(thumbnail, info, deleteBtn);
+
     card.addEventListener('click', () => {
         showVideoViewerModal(recording.test_filename, recording.test_name);
+    });
+
+    deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+
+        // Optimistic: remove immediately
+        const gallery = document.getElementById('recordings-gallery');
+        const cardNextSibling = card.nextSibling;
+        const cardParent = card.parentNode;
+        card.remove();
+
+        const galleryWasVisible = gallery && gallery.style.display !== 'none';
+        const isEmpty = gallery && gallery.children.length === 0;
+        if (isEmpty) {
+            gallery.style.display = 'none';
+            const msg = document.getElementById('no-recordings-message');
+            if (msg) msg.style.display = '';
+        }
+
+        const fileItem = document.querySelector(`.file-item[data-filename="${recording.test_filename}"]`);
+        const recordingBtn = fileItem ? fileItem.querySelector('[data-action="view-recording"]') : null;
+        if (recordingBtn) recordingBtn.remove();
+
+        try {
+            await authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${recording.test_filename}/artifacts`, { method: 'DELETE' });
+        } catch (err) {
+            // Rollback
+            if (cardParent) cardParent.insertBefore(card, cardNextSibling);
+            if (isEmpty && gallery) {
+                gallery.style.display = galleryWasVisible ? '' : 'none';
+                const msg = document.getElementById('no-recordings-message');
+                if (msg) msg.style.display = 'none';
+            }
+            if (recordingBtn && fileItem) {
+                const actions = fileItem.querySelector('.file-item-actions');
+                if (actions) actions.insertBefore(recordingBtn, actions.firstChild);
+            }
+            showToast('Failed to delete recording. Please try again.');
+        }
     });
 
     return card;
@@ -1982,6 +2070,8 @@ async function loadAiSteps() {
         aiStepsList.innerHTML = '<div class="file-list-empty">Select a workspace</div>';
         return;
     }
+
+    aiStepsList.innerHTML = '<div class="file-list-loading"><span class="file-list-spinner"></span>Loading…</div>';
 
     try {
         const response = await authFetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
@@ -2404,6 +2494,104 @@ window.addEventListener('click', (event) => {
     }
 });
 
+// Custom video player — controls auto-hide after 2 seconds of inactivity
+(function initVideoViewerPlayer() {
+    const wrapper = document.getElementById('video-wrapper');
+    const video = document.getElementById('video-viewer-player');
+    const controls = document.getElementById('vc-controls');
+    const playBtn = document.getElementById('vc-play-btn');
+    const seekBar = document.getElementById('vc-seek-bar');
+    const currentTimeEl = document.getElementById('vc-current-time');
+    const durationEl = document.getElementById('vc-duration-time');
+    if (!wrapper || !video || !controls) return;
+
+    let hideTimer = null;
+
+    function formatTime(s) {
+        const m = Math.floor((s || 0) / 60);
+        const ss = Math.floor((s || 0) % 60).toString().padStart(2, '0');
+        return `${m}:${ss}`;
+    }
+
+    function showControls() {
+        controls.classList.remove('vc-hidden');
+        clearTimeout(hideTimer);
+        if (!video.paused && !video.ended) {
+            hideTimer = setTimeout(() => controls.classList.add('vc-hidden'), 2000);
+        }
+    }
+
+    wrapper.addEventListener('mousemove', showControls);
+    wrapper.addEventListener('mouseenter', showControls);
+    wrapper.addEventListener('mouseleave', () => {
+        if (!video.paused && !video.ended) {
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(() => controls.classList.add('vc-hidden'), 500);
+        }
+    });
+
+    // Click on video itself toggles play/pause
+    video.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (video.paused) video.play().catch(() => {}); else video.pause();
+    });
+
+    playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (video.paused) video.play().catch(() => {}); else video.pause();
+    });
+
+    video.addEventListener('play', () => {
+        playBtn.textContent = '⏸';
+        showControls();
+    });
+
+    video.addEventListener('pause', () => {
+        playBtn.textContent = '▶';
+        clearTimeout(hideTimer);
+        controls.classList.remove('vc-hidden');
+    });
+
+    video.addEventListener('ended', () => {
+        playBtn.textContent = '▶';
+        clearTimeout(hideTimer);
+        controls.classList.remove('vc-hidden');
+    });
+
+    video.addEventListener('timeupdate', () => {
+        const dur = video.duration || 0;
+        if (dur > 0) seekBar.value = (video.currentTime / dur) * 100;
+        currentTimeEl.textContent = formatTime(video.currentTime);
+    });
+
+    video.addEventListener('loadedmetadata', () => {
+        durationEl.textContent = formatTime(video.duration);
+        seekBar.value = 0;
+        currentTimeEl.textContent = '0:00';
+        controls.classList.remove('vc-hidden');
+    });
+
+    seekBar.addEventListener('input', (e) => {
+        e.stopPropagation();
+        const dur = video.duration || 0;
+        video.currentTime = (parseFloat(e.target.value) / 100) * dur;
+        showControls();
+    });
+
+    // Reset player state when modal opens
+    const modal = document.getElementById('video-viewer-modal');
+    new MutationObserver(() => {
+        if (modal.style.display === 'none') {
+            clearTimeout(hideTimer);
+            playBtn.textContent = '▶';
+            seekBar.value = 0;
+            currentTimeEl.textContent = '0:00';
+            durationEl.textContent = '0:00';
+            controls.classList.remove('vc-hidden');
+        }
+    }).observe(modal, { attributes: true, attributeFilter: ['style'] });
+})();
+
 // AI Chat Sidebar Toggle
 toggleChatBtn.addEventListener('click', () => {
     const isOpen = aiChatSidebar.classList.toggle('open');
@@ -2480,16 +2668,23 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// Output Panel Toggle (VS Code style)
-toggleOutputBtn.addEventListener('click', () => {
+// Output Panel — collapsed by default (only header visible)
+const outputPreviewText = document.getElementById('output-preview-text');
+
+// Toggle on the button or anywhere on the header
+const outputPanelHeader = outputPanel.querySelector('.output-panel-header');
+outputPanelHeader.addEventListener('click', (e) => {
+    // Don't toggle when clicking log-tab buttons or clear button
+    if (e.target.closest('.log-tabs') || e.target.closest('#clear-log') || e.target.closest('#copy-log')) return;
     outputPanel.classList.toggle('open');
 });
 
-// Function to open output panel automatically
 function openOutputPanel() {
-    if (!outputPanel.classList.contains('open')) {
-        outputPanel.classList.add('open');
-    }
+    outputPanel.classList.add('open');
+}
+
+function _updateOutputPreview(text) {
+    if (outputPreviewText) outputPreviewText.textContent = text;
 }
 
 // Tab switching (log tabs)
@@ -2536,6 +2731,9 @@ function addLogEntry(type, message, humanMessage = null) {
     `;
     humanLogContainer.appendChild(humanEntry);
     humanLogContainer.scrollTop = humanLogContainer.scrollHeight;
+
+    // Update the collapsed-state preview with the latest human-readable entry
+    _updateOutputPreview(`${timestamp}  ${displayMessage}`);
 }
 
 function simplifyMessage(message) {
@@ -3046,7 +3244,9 @@ function sendChatMessage() {
         message: message || 'Analyze this image and generate relevant Playwright code',
         existing_code: existingCode || null,
         image: currentImage,
-        file_type: fileType  // Send file type for context-aware assistance
+        file_type: fileType,
+        workspace_id: currentWorkspaceId,
+        user_id: currentUser ? currentUser.id : null,
     });
 
     // Clear image after sending
@@ -3188,13 +3388,11 @@ function appendChatMessageWithImage(type, content, imageSrc) {
 
 // Socket.IO event handlers for chat
 socket.on('chat_response', (data) => {
-    // Remove loading indicator
-    const systemMessages = chatMessages.querySelectorAll('.chat-message.system');
-    systemMessages.forEach(msg => {
-        if (msg.textContent.includes('thinking')) {
-            msg.remove();
-        }
+    // Remove loading indicators (thinking + tool-call)
+    chatMessages.querySelectorAll('.chat-message.system').forEach(msg => {
+        if (msg.textContent.includes('thinking')) msg.remove();
     });
+    chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
 
     // Add AI response
     appendChatMessage('ai', data.message);
@@ -3229,6 +3427,110 @@ socket.on('chat_error', (data) => {
     });
 
     appendChatMessage('system', `Error: ${data.message}`);
+});
+
+// Agent tool call notification — shown as a subtle status line in chat
+const TOOL_LABELS = {
+    list_tests:     '📋 Listing tests…',
+    list_ai_steps:  '📋 Listing AI steps…',
+    read_test:      '📖 Reading test…',
+    read_ai_step:   '📖 Reading AI steps…',
+    search_files:   '🔍 Searching files…',
+    create_test:    '✏️ Creating test…',
+    create_ai_step: '✏️ Creating AI steps…',
+    update_test:    '💾 Updating test…',
+    update_ai_step: '💾 Updating AI steps…',
+};
+
+socket.on('agent_tool_call', (data) => {
+    const label = TOOL_LABELS[data.tool] || `🔧 ${data.tool}…`;
+    // Show a transient tool-call indicator (replaces previous one if still present)
+    const existing = chatMessages.querySelector('.chat-message.tool-call');
+    if (existing) existing.remove();
+    const div = document.createElement('div');
+    div.className = 'chat-message tool-call';
+    div.textContent = label;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
+});
+
+socket.on('file_created', (data) => {
+    // Remove any tool-call indicators now that the agent finished a create action
+    chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
+    // Refresh the file explorer so the new file appears immediately
+    if (currentWorkspaceId) {
+        loadFileExplorer(currentWorkspaceId);
+    }
+    // Auto-open the newly created file in a tab
+    const { filename, name, type } = data;
+    if (filename && name && currentWorkspaceId) {
+        const fileType = type === 'ai_step' ? 'ai-step' : 'test';
+        const apiPath = fileType === 'ai-step'
+            ? `/api/ai-steps/${filename}`
+            : `/api/workspaces/${currentWorkspaceId}/tests/${filename}`;
+        authFetch(apiPath)
+            .then(res => res.json())
+            .then(freshData => {
+                if (freshData && freshData.code !== undefined) {
+                    testCache[filename] = freshData;
+                    openTab(filename, name, freshData.code, fileType);
+                }
+            })
+            .catch(err => console.error('Failed to open new tab after file_created:', err));
+    }
+});
+
+socket.on('file_updated', (data) => {
+    chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
+    // Immediately evict the stale cache entry so any open-from-explorer
+    // while async fetches are in-flight will fall back to a fresh API call.
+    const { filename, type } = data;
+    if (filename) delete testCache[filename];
+    if (currentWorkspaceId) {
+        loadFileExplorer(currentWorkspaceId);
+    }
+    // If the updated file is open in a tab, refresh its content live
+    if (filename && currentWorkspaceId) {
+        const openTab = openTabs.find(t => t.id === filename);
+        if (openTab) {
+            const fileType = type === 'ai_step' ? 'ai-step' : 'test';
+            const apiPath = fileType === 'ai-step'
+                ? `/api/ai-steps/${filename}`
+                : `/api/workspaces/${currentWorkspaceId}/tests/${filename}`;
+            authFetch(apiPath)
+                .then(res => res.json())
+                .then(freshData => {
+                    if (freshData && freshData.code !== undefined) {
+                        testCache[filename] = freshData;
+                        openTab.code = freshData.code;
+                        // Update CodeMirror immediately if this tab is active
+                        if (activeTabId === filename) {
+                            lastSavedCode = freshData.code;
+                            setPlaywrightCode(freshData.code);
+                        }
+                    }
+                })
+                .catch(err => console.error('Failed to refresh tab after file_updated:', err));
+        }
+    }
+});
+
+socket.on('propose_change', (data) => {
+    chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
+    const { filename, type, old_content, new_content, workspace_id } = data;
+    const isSteps = type === 'ai_step';
+    pendingCodeSuggestion = {
+        code: new_content,
+        currentCode: old_content,
+        explanation: `Review AI-proposed changes to ${filename}`,
+        targetTabId: filename,
+        contentType: isSteps ? 'steps' : 'code',
+        agentPending: true,
+        filename,
+        fileType: type,
+        workspaceId: workspace_id,
+    };
+    showCodePreview();
 });
 
 // ========================================
@@ -3465,7 +3767,7 @@ document.addEventListener('keydown', (e) => {
 clearChatBtn.addEventListener('click', () => {
     if (confirm('Clear all chat messages?')) {
         chatMessages.innerHTML = '';
-        socket.emit('clear_chat');
+        socket.emit('clear_chat', { workspace_id: currentWorkspaceId });
         appendChatMessage('system', 'Chat history cleared');
     }
 });
@@ -3571,10 +3873,39 @@ async function checkAuthentication() {
             hideAuthModals();
             await loadUserWorkspaces();
             return true;
-        } else {
-            showLoginModal();
-            return false;
         }
+
+        // Access token may be expired. Try refreshing silently before prompting login.
+        if (refreshToken) {
+            try {
+                const refreshResp = await fetch('/api/refresh-token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ refresh_token: refreshToken })
+                });
+                if (refreshResp.ok) {
+                    const refreshData = await refreshResp.json();
+                    storeTokens(refreshData.access_token, refreshData.refresh_token);
+
+                    // Retry with the new access token
+                    const retryResp = await authFetch('/api/check-auth');
+                    const retryData = await retryResp.json();
+                    if (retryData.authenticated) {
+                        currentUser = retryData.user;
+                        hideAuthModals();
+                        await loadUserWorkspaces();
+                        return true;
+                    }
+                }
+            } catch (refreshErr) {
+                console.warn('Silent token refresh failed:', refreshErr);
+            }
+            // Refresh token is also expired or invalid — clear everything
+            clearTokens();
+        }
+
+        showLoginModal();
+        return false;
     } catch (error) {
         console.error('Auth check failed:', error);
         showLoginModal();
@@ -3656,6 +3987,13 @@ async function handleLogin(event) {
     const password = document.getElementById('login-password').value;
     const remember = document.getElementById('login-remember').checked;
 
+    const btn = document.getElementById('login-submit-btn');
+    const btnText = btn.querySelector('.auth-submit-text');
+    const btnSpinner = btn.querySelector('.auth-submit-spinner');
+    btn.disabled = true;
+    btnText.style.display = 'none';
+    btnSpinner.style.display = '';
+
     try {
         const response = await fetch('/api/login', {
             method: 'POST',
@@ -3671,6 +4009,7 @@ async function handleLogin(event) {
 
             currentUser = data.user;
             hideAuthModals();
+            showAppOverlay('Loading workspace…');
             addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
 
             // Reconnect socket with the new authenticated token
@@ -3702,6 +4041,8 @@ async function handleLogin(event) {
             if (openTabs.length === 0) {
                 openDashboardTab();
             }
+
+            hideAppOverlay();
         } else {
             loginError.textContent = data.error || 'Login failed';
             loginError.style.display = 'block';
@@ -3710,6 +4051,11 @@ async function handleLogin(event) {
         console.error('Login error:', error);
         loginError.textContent = 'Login failed. Please try again.';
         loginError.style.display = 'block';
+        hideAppOverlay();
+    } finally {
+        btn.disabled = false;
+        btnText.style.display = '';
+        btnSpinner.style.display = 'none';
     }
 }
 
@@ -3721,12 +4067,19 @@ async function handleRegister(event) {
     const password = document.getElementById('register-password').value;
     const passwordConfirm = document.getElementById('register-password-confirm').value;
 
-    // Client-side validation
+    // Client-side validation (before showing loading state)
     if (password !== passwordConfirm) {
         registerError.textContent = 'Passwords do not match';
         registerError.style.display = 'block';
         return;
     }
+
+    const btn = document.getElementById('register-submit-btn');
+    const btnText = btn.querySelector('.auth-submit-text');
+    const btnSpinner = btn.querySelector('.auth-submit-spinner');
+    btn.disabled = true;
+    btnText.style.display = 'none';
+    btnSpinner.style.display = '';
 
     try {
         const response = await fetch('/api/register', {
@@ -3743,6 +4096,7 @@ async function handleRegister(event) {
 
             currentUser = data.user;
             hideAuthModals();
+            showAppOverlay('Setting up workspace…');
             addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
 
             // Connect socket with the new authenticated token
@@ -3774,6 +4128,8 @@ async function handleRegister(event) {
             if (openTabs.length === 0) {
                 openDashboardTab();
             }
+
+            hideAppOverlay();
         } else {
             registerError.textContent = data.error || 'Registration failed';
             registerError.style.display = 'block';
@@ -3782,6 +4138,11 @@ async function handleRegister(event) {
         console.error('Registration error:', error);
         registerError.textContent = 'Registration failed. Please try again.';
         registerError.style.display = 'block';
+        hideAppOverlay();
+    } finally {
+        btn.disabled = false;
+        btnText.style.display = '';
+        btnSpinner.style.display = 'none';
     }
 }
 
@@ -4001,6 +4362,10 @@ async function createWorkspace(event) {
     const name = document.getElementById('workspace-name').value.trim();
     const type = document.getElementById('workspace-type').value;
 
+    const submitBtn = document.getElementById('create-workspace-btn');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating…';
+
     try {
         const response = await authFetch('/api/workspaces', {
             method: 'POST',
@@ -4024,10 +4389,8 @@ async function createWorkspace(event) {
 
             addLogEntry('info', `Created workspace: ${name}`);
 
-            // Reload workspaces
+            // Reload workspaces then switch (tabs are closed inside switchWorkspace)
             await loadWorkspaces();
-
-            // Switch to new workspace
             await switchWorkspace(data.workspace.id);
         } else {
             newWorkspaceError.textContent = data.error || 'Failed to create workspace';
@@ -4037,6 +4400,9 @@ async function createWorkspace(event) {
         console.error('Failed to create workspace:', error);
         newWorkspaceError.textContent = 'Failed to create workspace';
         newWorkspaceError.style.display = 'block';
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Create';
     }
 }
 
@@ -4139,12 +4505,27 @@ closeInviteMemberBtns.forEach(btn => {
 // ========== THEME MANAGEMENT ==========
 const VALID_THEMES = ['mocha', 'macchiato', 'frappe', 'latte'];
 
+// macOS title bar colors to match each Catppuccin theme's --ctp-base
+const THEME_TITLEBAR = {
+    mocha:     { hex: '#1e1e2e', dark: true  },
+    macchiato: { hex: '#24273a', dark: true  },
+    frappe:    { hex: '#303446', dark: true  },
+    latte:     { hex: '#eff1f5', dark: false },
+};
+
 function applyTheme(themeName) {
     if (!VALID_THEMES.includes(themeName)) themeName = 'mocha';
     document.documentElement.setAttribute('data-theme', themeName);
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.theme === themeName);
     });
+    // Persist in cookie so the server can inject it on next page load (login page etc.)
+    document.cookie = `theme=${themeName}; path=/; max-age=31536000; SameSite=Lax`;
+    // Sync the native macOS title bar when running inside PyWebView
+    const tb = THEME_TITLEBAR[themeName] || THEME_TITLEBAR.mocha;
+    if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.set_title_bar_color(tb.hex, tb.dark);
+    }
 }
 
 function initThemePicker() {
@@ -4169,6 +4550,20 @@ async function restoreThemeFromDb() {
     }
 }
 // ========== END THEME MANAGEMENT ==========
+
+// ========== TOAST ==========
+function showToast(message, type = 'error') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('toast-visible'));
+    setTimeout(() => {
+        toast.classList.remove('toast-visible');
+        toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+    }, 3500);
+}
+// ========== END TOAST ==========
 
 // Load default example on page load
 window.addEventListener('load', async () => {

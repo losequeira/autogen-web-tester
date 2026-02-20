@@ -2,6 +2,7 @@
 
 import os
 import secrets
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -24,8 +25,8 @@ MODEL_NAME = "gpt-4o"  # Use gpt-4o-mini for cheaper testing
 
 # Video Recording Settings
 ENABLE_VIDEO_RECORDING = os.getenv("ENABLE_VIDEO_RECORDING", "true").lower() == "true"
-VIDEO_SIZE_WIDTH = int(os.getenv("VIDEO_SIZE_WIDTH", "1280"))
-VIDEO_SIZE_HEIGHT = int(os.getenv("VIDEO_SIZE_HEIGHT", "720"))
+VIDEO_SIZE_WIDTH = int(os.getenv("VIDEO_SIZE_WIDTH", "1920"))
+VIDEO_SIZE_HEIGHT = int(os.getenv("VIDEO_SIZE_HEIGHT", "1080"))
 KEEP_LAST_N_VIDEOS = int(os.getenv("KEEP_LAST_N_VIDEOS", "10"))  # Per test
 
 # Artifact Settings
@@ -43,6 +44,9 @@ class Config:
     SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
     SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "test-artifacts")
+
+    # Local artifact storage (Mac app — videos/HAR saved to disk)
+    ARTIFACTS_DIR: Path = Path.home() / ".autogen" / "artifacts"
 
     # Flask Secret Key (for CSRF protection)
     SECRET_KEY = os.getenv("SECRET_KEY")

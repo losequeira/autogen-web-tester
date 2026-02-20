@@ -1,86 +1,57 @@
-"""Supabase Storage helpers for uploading, downloading, and deleting test artifacts."""
+"""Local disk storage for test artifacts.
 
+Each test has exactly one recording at a fixed path:
+  ~/.autogen/artifacts/{workspace_id}/{test_name}/recording.webm
+  ~/.autogen/artifacts/{workspace_id}/{test_name}/network.har
+
+Previous files are overwritten on each run — no history kept.
+"""
+
+import shutil
 from pathlib import Path
-from supabase_client import get_supabase_client
+
 from config import Config
 
 
-def upload_artifact_dir(local_dir: Path, workspace_id: int, test_name: str, timestamp: str) -> dict:
-    """Upload .webm and .har files from a local directory to Supabase Storage.
+def save_artifact_dir(local_dir: Path, workspace_id: int, test_name: str) -> dict:
+    """Move the latest recording from a Playwright temp dir into ~/.autogen/artifacts/.
 
-    Returns a dict with keys:
-        video_path  — storage path for the video (or None)
-        har_path    — storage path for the HAR file (or None)
-        video_local — Path object of the local video file (for size calc)
+    Always saves to a fixed path, overwriting any previous recording for this test.
+
+    Returns:
+        video_path  — path relative to ARTIFACTS_DIR stored in DB (or None)
+        har_path    — path relative to ARTIFACTS_DIR stored in DB (or None)
+        video_local — absolute Path to the saved video file (for size calc)
     """
-    sb = get_supabase_client()
-    bucket = Config.SUPABASE_STORAGE_BUCKET
-    prefix = f"{workspace_id}/{test_name}/{timestamp}"
+    dest_dir = Config.ARTIFACTS_DIR / str(workspace_id) / test_name
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
     result: dict = {}
 
     video_files = list(local_dir.glob("*.webm")) + list(local_dir.glob("*.mp4"))
     if video_files:
-        video_file = video_files[0]
-        content_type = "video/mp4" if video_file.suffix == ".mp4" else "video/webm"
-        storage_path = f"{prefix}/{video_file.name}"
-        try:
-            with open(video_file, 'rb') as f:
-                sb.storage.from_(bucket).upload(
-                    storage_path,
-                    f.read(),
-                    {"content-type": content_type},
-                )
-            result['video_path'] = storage_path
-            result['video_local'] = video_file
-            print(f"Uploaded video to storage: {storage_path}")
-        except Exception as e:
-            print(f"Warning: Failed to upload video: {e}")
+        dest = dest_dir / "recording.webm"
+        dest.unlink(missing_ok=True)
+        shutil.move(str(video_files[0]), str(dest))
+        result["video_path"] = f"{workspace_id}/{test_name}/recording.webm"
+        result["video_local"] = dest
+        print(f"Saved video: {dest}")
 
     har_files = list(local_dir.glob("*.har"))
     if har_files:
-        har_file = har_files[0]
-        storage_path = f"{prefix}/{har_file.name}"
-        try:
-            with open(har_file, 'rb') as f:
-                sb.storage.from_(bucket).upload(
-                    storage_path,
-                    f.read(),
-                    {"content-type": "application/json"},
-                )
-            result['har_path'] = storage_path
-            print(f"Uploaded HAR to storage: {storage_path}")
-        except Exception as e:
-            print(f"Warning: Failed to upload HAR: {e}")
+        dest = dest_dir / "network.har"
+        dest.unlink(missing_ok=True)
+        shutil.move(str(har_files[0]), str(dest))
+        result["har_path"] = f"{workspace_id}/{test_name}/network.har"
+        print(f"Saved HAR: {dest}")
 
     return result
 
 
-def get_signed_url(storage_path: str, expires_in: int = 3600) -> str | None:
-    """Return a time-limited signed URL for a storage object, or None on error."""
+def delete_artifact(relative_path: str) -> None:
+    """Delete a local artifact file (path relative to ARTIFACTS_DIR)."""
+    path = Config.ARTIFACTS_DIR / relative_path
     try:
-        sb = get_supabase_client()
-        bucket = Config.SUPABASE_STORAGE_BUCKET
-        print(f"[get_signed_url] bucket={bucket}, path={storage_path}")
-        response = sb.storage.from_(bucket).create_signed_url(storage_path, expires_in)
-        print(f"[get_signed_url] response type={type(response)}, keys={list(response.keys()) if isinstance(response, dict) else 'N/A'}")
-        if response and 'signedURL' in response:
-            return response['signedURL']
-        if response and 'signedUrl' in response:
-            return response['signedUrl']
-        print(f"[get_signed_url] No signedURL/signedUrl key found in response: {response}")
-        return None
+        path.unlink(missing_ok=True)
     except Exception as e:
-        print(f"Warning: Failed to create signed URL for {storage_path}: {e}")
-        return None
-
-
-def delete_artifact(storage_path: str):
-    """Remove a file from the Supabase Storage bucket."""
-    try:
-        sb = get_supabase_client()
-        bucket = Config.SUPABASE_STORAGE_BUCKET
-        sb.storage.from_(bucket).remove([storage_path])
-        print(f"Deleted from storage: {storage_path}")
-    except Exception as e:
-        print(f"Warning: Failed to delete {storage_path} from storage: {e}")
+        print(f"Warning: Failed to delete {path}: {e}")
