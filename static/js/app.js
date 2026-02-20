@@ -3719,31 +3719,42 @@ function displayWorkspaceMembers(members) {
 }
 
 async function switchWorkspace(workspaceId) {
-    currentWorkspaceId = parseInt(workspaceId);
+    const wsSwitchOverlay = document.getElementById('workspace-switch-overlay');
+    if (wsSwitchOverlay) wsSwitchOverlay.style.display = 'flex';
 
-    // Close all open tabs — tests belong to a specific workspace
-    openTabs = [];
-    activeTabId = null;
-    lastSavedCode = '';
-    setPlaywrightCode('');
-    if (editorContent) editorContent.classList.add('empty');
-    hideDashboardContent();
-    renderTabs();
-    saveTabsState();
+    try {
+        currentWorkspaceId = parseInt(workspaceId);
 
-    // Save selected workspace to localStorage and DB
-    localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
-    savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
+        // Sync the dropdown immediately so it reflects the selection
+        if (workspaceDropdown) workspaceDropdown.value = currentWorkspaceId;
 
-    await loadWorkspaceDetails();
+        // Close all open tabs — tests belong to a specific workspace
+        openTabs = [];
+        activeTabId = null;
+        lastSavedCode = '';
+        setPlaywrightCode('');
+        if (editorContent) editorContent.classList.add('empty');
+        hideDashboardContent();
+        renderTabs();
+        saveTabsState();
 
-    // Reload file lists for new workspace
-    if (hasFileExplorer) {
-        loadFileExplorer();
-        loadAiSteps();
+        // Save selected workspace to localStorage and DB
+        localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
+        savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
+
+        await loadWorkspaceDetails();
+
+        // Reload file lists and dashboard for new workspace
+        if (hasFileExplorer) {
+            loadFileExplorer();
+            loadAiSteps();
+        }
+        loadDashboardStats();
+
+        addLogEntry('info', `Switched to workspace: ${currentWorkspace.name}`);
+    } finally {
+        if (wsSwitchOverlay) wsSwitchOverlay.style.display = 'none';
     }
-
-    addLogEntry('info', `Switched to workspace: ${currentWorkspace.name}`);
 }
 
 let _isFirstWorkspaceFlow = false;
