@@ -37,8 +37,14 @@ def _sb():
     return get_supabase_client()
 
 
+def sanitize_test_filename(name: str) -> str:
+    """Generate a .py filename for a test."""
+    filename = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    return filename.replace(' ', '_') + '.py'
+
+
 def sanitize_filename(name: str) -> str:
-    """Generate a filesystem-safe filename from a display name."""
+    """Generate a .json filename (used for AI steps)."""
     filename = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
     return filename.replace(' ', '_') + '.json'
 
@@ -285,7 +291,7 @@ def get_test(workspace_id: int, filename: str) -> dict | None:
 
 
 def create_test(workspace_id: int, name: str, code: str, source: str, user_id: str) -> dict:
-    filename = sanitize_filename(name)
+    filename = sanitize_test_filename(name)
 
     # Check for duplicates
     existing = _sb().table('tests').select('id').eq(
