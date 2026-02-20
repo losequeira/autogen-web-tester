@@ -72,6 +72,42 @@ TEMP_RECORDINGS_DIR.mkdir(exist_ok=True)
 # Embedded browser recorder sessions: recording_id -> {loop, actions, stop_event, page_ref, test_name}
 active_recorders: dict = {}
 
+# ===== Warm browser pool =====
+# A single headless Chromium instance kept alive between test runs to eliminate startup latency.
+import threading as _threading
+
+_warm_loop: asyncio.AbstractEventLoop | None = None
+_warm_browser = None          # Pre-launched Browser (stays alive between tests)
+_warm_playwright_exit = None  # Callable to shut down the warm playwright context on app exit
+_warm_ready = _threading.Event()
+_active_test_task = None      # asyncio.Task for the currently running test (targeted stop)
+
+
+async def _init_warm_browser():
+    """Start Playwright + headless Chromium in the warm loop."""
+    global _warm_browser, _warm_playwright_exit
+    from playwright.async_api import async_playwright as _ap
+    ctx = _ap()
+    pw = await ctx.__aenter__()
+    _warm_playwright_exit = lambda: ctx.__aexit__(None, None, None)
+    _warm_browser = await pw.chromium.launch(headless=True)
+    print("🔥 Warm browser ready — test startup will be instant")
+
+
+def _warm_browser_thread():
+    """Daemon thread: runs a persistent event loop with a pre-warmed Chromium browser."""
+    global _warm_loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _warm_loop = loop
+    loop.run_until_complete(_init_warm_browser())
+    _warm_ready.set()
+    loop.run_forever()
+
+
+_wb_thread = _threading.Thread(target=_warm_browser_thread, daemon=True, name='warm-browser')
+_wb_thread.start()
+# ===== End warm browser pool =====
 
 
 def update_test_artifacts(filename: str, artifact_dir: Path, test_status: str = 'unknown', workspace_id: int = None):
@@ -1083,14 +1119,13 @@ def run_playwright_code(code: str):
 
 def run_playwright_code_with_streaming(code: str, filename: str = None, workspace_id: int = None):
     """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
-    print(f"[streaming] run_playwright_code_with_streaming START filename={filename}")
-    global stop_requested, active_loop
+    global stop_requested, active_loop, _active_test_task
     stop_requested = False  # Reset stop flag at the start of execution
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # Wait for the warm browser to be ready (instant on subsequent runs)
+    _warm_ready.wait(timeout=15)
+    loop = _warm_loop
     active_loop = loop
-    print(f"[streaming] event loop created: {loop}")
 
     # Create artifacts directory for this test run if filename provided
     artifact_dir = None
@@ -1122,23 +1157,18 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         async def send_screenshot(page, action_name='action'):
             """Capture and send screenshot to browser sidebar."""
             try:
-                print(f"[screenshot] capturing for action={action_name}")
                 screenshot_bytes = await page.screenshot(
                     type='jpeg',
                     quality=config.SCREENCAST_JPEG_QUALITY,
                     full_page=False
                 )
-                print(f"[screenshot] captured {len(screenshot_bytes)} bytes, emitting via socketio")
                 socketio.emit('screenshot', {
                     'action': action_name,
                     'image': base64.b64encode(screenshot_bytes).decode('utf-8'),
                     'timestamp': datetime.now().isoformat()
                 })
-                print(f"[screenshot] emit done")
             except Exception as e:
-                print(f"[screenshot] ERROR: {e}")
-                import traceback
-                traceback.print_exc()
+                pass
 
         # Page wrapper that automatically captures screenshots
         class PageWrapper:
@@ -1152,25 +1182,17 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
             async def _start_streaming(self):
                 """Stream screenshots via polling at high quality."""
                 global stop_requested
-                print("[streaming] _start_streaming task started")
                 self._streaming = True
-                frame = 0
                 while self._streaming:
                     try:
                         if stop_requested:
                             raise asyncio.CancelledError("Test stopped by user")
                         await send_screenshot(self._page, 'stream')
-                        frame += 1
-                        if frame % 20 == 0:
-                            print(f"[streaming] {frame} frames sent")
                         await asyncio.sleep(0.1)  # 10 FPS
                     except asyncio.CancelledError:
-                        print("[streaming] cancelled")
                         break
-                    except Exception as e:
-                        print(f"[streaming] error, stopping: {e}")
+                    except Exception:
                         break
-                print("[streaming] _start_streaming task ended")
 
             def _stop_streaming(self):
                 """Stop streaming."""
@@ -1180,14 +1202,11 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
 
             async def goto(self, url, **kwargs):
                 global stop_requested
-                print(f"[goto] navigating to {url}")
                 if stop_requested:
                     raise asyncio.CancelledError("Test stopped by user")
                 result = await self._page.goto(url, **kwargs)
-                print(f"[goto] navigation complete")
                 # Start streaming after first navigation
                 if not self._stream_task:
-                    print(f"[goto] starting streaming task")
                     self._stream_task = asyncio.create_task(self._start_streaming())
                 return result
 
@@ -1242,11 +1261,12 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
 
         # Browser wrapper
         class BrowserWrapper:
-            def __init__(self, browser, default_context=None):
+            def __init__(self, browser, default_context=None, owns_browser=True):
                 self._browser = browser
                 self._default_context = default_context
                 self._contexts = []
                 self._closed = False
+                self._owns_browser = owns_browser  # False for the warm browser
 
             async def new_page(self):
                 """Create new page with screenshot wrapper."""
@@ -1274,29 +1294,27 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 return wrapped
 
             async def close(self):
-                """Close all contexts and browser."""
+                """Close all contexts and browser (browser only if not the shared warm instance)."""
                 if self._closed:
                     return
                 self._closed = True
-                print("🔴 BrowserWrapper.close() called - saving videos...")
-                # Close all contexts first (to save videos)
+                # Close all contexts first (finalizes video recordings)
                 for ctx in self._contexts:
                     try:
-                        print(f"  Closing context: {ctx}")
                         await ctx.close()
-                    except Exception as e:
-                        print(f"  Error closing context: {e}")
+                    except Exception:
+                        pass
                 if self._default_context:
                     try:
-                        print(f"  Closing default context for video recording...")
                         await self._default_context.close()
-                        print(f"  ✅ Default context closed - video should be saved")
-                    except Exception as e:
-                        print(f"  ❌ Error closing default context: {e}")
-                print("  Closing browser...")
-                result = await self._browser.close()
-                print("  ✅ Browser closed")
-                return result
+                    except Exception:
+                        pass
+                # Only close the underlying browser if we own it (not the warm browser)
+                if self._owns_browser:
+                    try:
+                        await self._browser.close()
+                    except Exception:
+                        pass
 
             def __getattr__(self, name):
                 return getattr(self._browser, name)
@@ -1308,17 +1326,19 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
 
             @property
             def chromium(self):
-                return LauncherWrapper(self._playwright.chromium)
+                return LauncherWrapper(self._playwright.chromium if self._playwright else None)
 
             @property
             def firefox(self):
-                return LauncherWrapper(self._playwright.firefox)
+                return LauncherWrapper(self._playwright.firefox if self._playwright else None)
 
             @property
             def webkit(self):
-                return LauncherWrapper(self._playwright.webkit)
+                return LauncherWrapper(self._playwright.webkit if self._playwright else None)
 
             def __getattr__(self, name):
+                if self._playwright is None:
+                    raise AttributeError(name)
                 return getattr(self._playwright, name)
 
         # Browser launcher wrapper
@@ -1327,16 +1347,19 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 self._launcher = launcher
 
             async def launch(self, **kwargs):
-                """Launch browser with wrapper. Force headless=True to prevent window flickering."""
-                # Override headless to True for smooth streaming without window
-                kwargs['headless'] = True
-                print(f"🚀 Launching browser in HEADLESS mode (streaming to sidebar only)")
-                browser = await self._launcher.launch(**kwargs)
+                """Return the pre-warmed browser (or launch fresh if warm browser is unavailable)."""
+                owns = False
+                if _warm_browser and _warm_browser.is_connected():
+                    browser = _warm_browser
+                else:
+                    # Fall back to a fresh launch if the warm browser died
+                    kwargs['headless'] = True
+                    browser = await self._launcher.launch(**kwargs)
+                    owns = True
 
-                # Create context with video recording if video_dir is set
+                # Create a fresh context per test (needed for video recording + clean state)
                 default_context = None
                 if video_dir:
-                    print(f"📹 Creating browser context with video recording to: {video_dir}")
                     context_options = {
                         'record_video_dir': video_dir,
                         'record_video_size': {'width': config.VIDEO_SIZE_WIDTH, 'height': config.VIDEO_SIZE_HEIGHT},
@@ -1346,32 +1369,26 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                     raw_context = await browser.new_context(**context_options)
                     default_context = ContextWrapper(raw_context)
 
-                wrapped_browser = BrowserWrapper(browser, default_context)
+                wrapped_browser = BrowserWrapper(browser, default_context, owns_browser=owns)
                 _all_browsers.append(wrapped_browser)
                 return wrapped_browser
 
             def __getattr__(self, name):
                 return getattr(self._launcher, name)
 
-        # Custom async_playwright that returns wrapped version
+        # Custom async_playwright that returns wrapped version backed by the warm browser
         class async_playwright_wrapper:
             async def __aenter__(self):
-                print("🎭 async_playwright_wrapper.__aenter__() called - using wrapped Playwright!")
-                self._playwright_context = async_playwright()
-                playwright = await self._playwright_context.__aenter__()
-                wrapped = PlaywrightWrapper(playwright)
-                print("✅ Playwright wrapped successfully")
-                return wrapped
+                # Return a PlaywrightWrapper; actual browser comes from the warm pool
+                return PlaywrightWrapper(None)
 
             async def __aexit__(self, *args):
-                print("🎭 async_playwright_wrapper.__aexit__() called")
-                # Ensure all browser contexts are closed first (finalizes video files)
+                # Close all contexts (finalizes video recordings) but keep the warm browser alive
                 for bw in _all_browsers:
                     try:
                         await bw.close()
-                    except Exception as e:
-                        print(f"  ⚠️ Error closing browser in __aexit__: {e}")
-                return await self._playwright_context.__aexit__(*args)
+                    except Exception:
+                        pass
 
         try:
             nonlocal test_status
@@ -1442,8 +1459,18 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
             socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
             socketio.emit('test_complete', {'status': 'error', 'message': str(e)})
 
+    async def _run_and_register():
+        """Wrap execution so the task can be targeted by the stop handler."""
+        global _active_test_task
+        _active_test_task = asyncio.current_task()
+        try:
+            await execute_with_auto_streaming()
+        finally:
+            _active_test_task = None
+
     try:
-        loop.run_until_complete(execute_with_auto_streaming())
+        future = asyncio.run_coroutine_threadsafe(_run_and_register(), loop)
+        future.result()  # Block the background thread until the test finishes
     except Exception as e:
         import traceback
         test_status = 'error'
@@ -1452,18 +1479,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         socketio.emit('test_complete', {'status': 'error'})
     finally:
         active_loop = None
-        try:
-            pending = asyncio.all_tasks(loop)
-            for task in pending:
-                task.cancel()
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        except Exception:
-            pass
-        finally:
-            try:
-                loop.close()
-            except Exception:
-                pass
+        _active_test_task = None
 
     # Update test artifacts AFTER loop cleanup (separate block so it always runs)
     print(f"📼 === ARTIFACT SAVE BLOCK REACHED === artifact_dir={artifact_dir}, filename={filename}, workspace_id={workspace_id}")
@@ -2269,20 +2285,19 @@ def handle_run_test(data):
 
 @socketio.on('stop_test')
 def handle_stop_test():
-    """Hard-stop the running test by cancelling all asyncio tasks immediately."""
+    """Hard-stop the running test by cancelling its asyncio task."""
     global stop_requested, active_loop
     stop_requested = True
 
     loop = active_loop
     if loop and not loop.is_closed():
-        # Schedule cancellation of every task on the running loop from this thread.
-        # call_soon_threadsafe is safe to call from any thread and wakes the loop
-        # immediately, causing CancelledError to be raised inside whatever is awaited.
-        def _cancel_all():
-            for task in asyncio.all_tasks(loop):
+        # Cancel only the active test task — the warm browser loop must stay alive.
+        def _cancel_test():
+            task = _active_test_task
+            if task and not task.done():
                 task.cancel()
 
-        loop.call_soon_threadsafe(_cancel_all)
+        loop.call_soon_threadsafe(_cancel_test)
         emit('log', {'type': 'info', 'message': '⏹ Test stopped'})
     else:
         emit('log', {'type': 'info', 'message': '⏹ Stop requested (no active test)'})
@@ -2307,7 +2322,6 @@ def handle_run_playwright_code(data):
 @socketio.on('run_saved_test')
 def handle_run_saved_test(data):
     """Handle running a saved Playwright test (no AI needed)."""
-    print(f"[run_saved_test] event received: {data}")
     filename = data.get('filename')
     workspace_id = data.get('workspaceId')
     if workspace_id is not None:
@@ -2317,26 +2331,19 @@ def handle_run_saved_test(data):
         emit('log', {'type': 'error', 'message': 'No test specified'})
         return
 
-    print(f"[run_saved_test] fetching test from DB: filename={filename} workspace_id={workspace_id}")
     try:
         test_data = db.get_test(workspace_id, filename) if workspace_id else None
-        print(f"[run_saved_test] db.get_test returned: {bool(test_data)}")
         if not test_data:
             emit('log', {'type': 'error', 'message': 'Test not found'})
             return
 
         code = test_data.get('code')
-        print(f"[run_saved_test] code length={len(code) if code else 0}, launching background task")
         emit('log', {'type': 'info', 'message': f'Running saved test: {test_data.get("name")}'})
         emit('log', {'type': 'info', 'message': '🚀 Executing Playwright code with live browser preview...'})
 
         socketio.start_background_task(run_playwright_code_with_streaming, code, filename, workspace_id)
-        print(f"[run_saved_test] background task started")
 
     except Exception as e:
-        import traceback
-        print(f"[run_saved_test] EXCEPTION: {e}")
-        traceback.print_exc()
         emit('log', {'type': 'error', 'message': f'Error running saved test: {str(e)}'})
 
 
