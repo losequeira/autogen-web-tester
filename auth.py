@@ -253,6 +253,43 @@ def login():
         return jsonify({'error': 'Invalid username or password'}), 401
 
 
+@auth_bp.route('/auto-login', methods=['POST'])
+def auto_login():
+    """Auto-login using LOCAL_USERNAME / LOCAL_PASSWORD from .env (local Mac app only)."""
+    import config as _config
+    username = _config.LOCAL_USERNAME
+    password = _config.LOCAL_PASSWORD
+    if not username or not password:
+        return jsonify({'error': 'No local credentials configured'}), 404
+
+    try:
+        user = db.get_user_by_username(username)
+        if not user or not user.get('is_active'):
+            return jsonify({'error': 'User not found or disabled'}), 401
+
+        sb = get_supabase_client()
+        auth_response = sb.auth.sign_in_with_password({
+            'email': user['email'],
+            'password': password,
+        })
+        session = auth_response.session
+        if not session:
+            return jsonify({'error': 'Auto-login failed'}), 401
+
+        workspaces = db.get_workspaces_for_user(user['id'])
+        return jsonify({
+            'message': 'Auto-login successful',
+            'user': user,
+            'workspaces': workspaces,
+            'access_token': session.access_token,
+            'refresh_token': session.refresh_token,
+        }), 200
+
+    except Exception as e:
+        print(f"Auto-login error: {e}")
+        return jsonify({'error': 'Auto-login failed'}), 401
+
+
 @auth_bp.route('/logout', methods=['POST'])
 @login_required
 def logout():

@@ -100,18 +100,16 @@ class BrowserToolWithScreenshots(BrowserTool):
         self.playwright_code = []  # Track Playwright code
 
     async def start_streaming(self):
-        """Start continuous screenshot streaming for video-like experience."""
+        """Stream screenshots at high quality via polling."""
         self.streaming = True
         while self.streaming and self.page:
             try:
                 await self._send_screenshot('stream')
-                # Stream at ~40 FPS for very smooth video-like experience
-                await asyncio.sleep(0.025)  # 25ms = 40 frames per second
+                await asyncio.sleep(0.1)  # 10 FPS
             except Exception as e:
                 if not self.streaming:
                     break
                 error_msg = str(e).lower()
-                # If a popup closed but original page is still alive, retry
                 if "target closed" in error_msg and self.original_page and self.page != self.original_page:
                     self.page = self.original_page
                     await asyncio.sleep(0.1)
@@ -130,7 +128,7 @@ class BrowserToolWithScreenshots(BrowserTool):
             # Only capture viewport (not full page) for faster transmission
             screenshot_bytes = await self.page.screenshot(
                 type='jpeg',
-                quality=40,
+                quality=config.SCREENCAST_JPEG_QUALITY,
                 full_page=False
             )
             screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
@@ -189,6 +187,7 @@ class BrowserToolWithScreenshots(BrowserTool):
         self.playwright_code.append(f'page = await popup_info.value')
         result = await super().click_and_wait_for_popup(selector)
         await self._send_screenshot('click_and_wait_for_popup')
+
         return result
 
     async def click_text_and_wait_for_popup(self, text: str) -> str:
@@ -198,12 +197,14 @@ class BrowserToolWithScreenshots(BrowserTool):
         self.playwright_code.append(f'page = await popup_info.value')
         result = await super().click_text_and_wait_for_popup(text)
         await self._send_screenshot('click_text_and_wait_for_popup')
+
         return result
 
     async def switch_to_original_page(self) -> str:
         self.playwright_code.append(f'page = original_page')
         result = await super().switch_to_original_page()
         await self._send_screenshot('switch_to_original_page')
+
         return result
 
     async def close_current_page(self) -> str:
@@ -211,6 +212,7 @@ class BrowserToolWithScreenshots(BrowserTool):
         self.playwright_code.append(f'page = original_page')
         result = await super().close_current_page()
         await self._send_screenshot('close_current_page')
+
         return result
 
 
@@ -666,7 +668,7 @@ async def run_test_async(task: str, test_filename: str = None, workspace_id: int
             socketio.emit('log', {'type': 'info', 'message': 'Browser initialized'})
 
             # Start continuous video-like streaming
-            asyncio.create_task(browser.start_streaming())
+            browser.stream_task = asyncio.create_task(browser.start_streaming())
 
             # Create tools
             navigate_tool = FunctionTool(
@@ -1003,6 +1005,8 @@ These rules apply to ALL tasks. Users will give you natural language instruction
         # Stop streaming when test completes
         if active_browser:
             active_browser.stop_streaming()
+            if active_browser.stream_task:
+                active_browser.stream_task.cancel()
         active_browser = None
 
         # Update test artifacts if video recording was enabled
@@ -1079,12 +1083,14 @@ def run_playwright_code(code: str):
 
 def run_playwright_code_with_streaming(code: str, filename: str = None, workspace_id: int = None):
     """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
+    print(f"[streaming] run_playwright_code_with_streaming START filename={filename}")
     global stop_requested, active_loop
     stop_requested = False  # Reset stop flag at the start of execution
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     active_loop = loop
+    print(f"[streaming] event loop created: {loop}")
 
     # Create artifacts directory for this test run if filename provided
     artifact_dir = None
@@ -1116,22 +1122,21 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         async def send_screenshot(page, action_name='action'):
             """Capture and send screenshot to browser sidebar."""
             try:
-                print(f"📸 Capturing screenshot for action: {action_name}")
+                print(f"[screenshot] capturing for action={action_name}")
                 screenshot_bytes = await page.screenshot(
                     type='jpeg',
-                    quality=40,
+                    quality=config.SCREENCAST_JPEG_QUALITY,
                     full_page=False
                 )
-                screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                print(f"✅ Screenshot captured ({len(screenshot_b64)} bytes), sending to browser...")
+                print(f"[screenshot] captured {len(screenshot_bytes)} bytes, emitting via socketio")
                 socketio.emit('screenshot', {
                     'action': action_name,
-                    'image': screenshot_b64,
+                    'image': base64.b64encode(screenshot_bytes).decode('utf-8'),
                     'timestamp': datetime.now().isoformat()
                 })
-                print(f"✅ Screenshot sent for action: {action_name}")
+                print(f"[screenshot] emit done")
             except Exception as e:
-                print(f"❌ Screenshot error: {e}")
+                print(f"[screenshot] ERROR: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -1145,21 +1150,27 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 self._stream_task = None
 
             async def _start_streaming(self):
-                """Start continuous screenshot streaming."""
+                """Stream screenshots via polling at high quality."""
                 global stop_requested
+                print("[streaming] _start_streaming task started")
                 self._streaming = True
+                frame = 0
                 while self._streaming:
                     try:
-                        # Check if stop was requested
                         if stop_requested:
-                            print("⏹ Stop requested - cancelling streaming")
                             raise asyncio.CancelledError("Test stopped by user")
                         await send_screenshot(self._page, 'stream')
+                        frame += 1
+                        if frame % 20 == 0:
+                            print(f"[streaming] {frame} frames sent")
                         await asyncio.sleep(0.1)  # 10 FPS
                     except asyncio.CancelledError:
+                        print("[streaming] cancelled")
                         break
-                    except Exception:
+                    except Exception as e:
+                        print(f"[streaming] error, stopping: {e}")
                         break
+                print("[streaming] _start_streaming task ended")
 
             def _stop_streaming(self):
                 """Stop streaming."""
@@ -1168,67 +1179,44 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                     self._stream_task.cancel()
 
             async def goto(self, url, **kwargs):
-                """Navigate and capture screenshot."""
                 global stop_requested
+                print(f"[goto] navigating to {url}")
                 if stop_requested:
-                    print("⏹ Stop requested - cancelling goto action")
                     raise asyncio.CancelledError("Test stopped by user")
-                print(f"🌐 PageWrapper.goto() called for URL: {url}")
                 result = await self._page.goto(url, **kwargs)
-                await send_screenshot(self._page, 'navigate')
+                print(f"[goto] navigation complete")
                 # Start streaming after first navigation
                 if not self._stream_task:
-                    print("📹 Starting continuous screenshot streaming at 10 FPS...")
+                    print(f"[goto] starting streaming task")
                     self._stream_task = asyncio.create_task(self._start_streaming())
                 return result
 
             async def click(self, selector, **kwargs):
-                """Click and capture screenshot."""
                 global stop_requested
                 if stop_requested:
-                    print("⏹ Stop requested - cancelling click action")
                     raise asyncio.CancelledError("Test stopped by user")
-                print(f"👆 PageWrapper.click() called for selector: {selector}")
-                result = await self._page.click(selector, **kwargs)
-                await send_screenshot(self._page, 'click')
-                return result
+                return await self._page.click(selector, **kwargs)
 
             async def fill(self, selector, value, **kwargs):
-                """Fill and capture screenshot."""
                 global stop_requested
                 if stop_requested:
-                    print("⏹ Stop requested - cancelling fill action")
                     raise asyncio.CancelledError("Test stopped by user")
-                print(f"✍️ PageWrapper.fill() called for selector: {selector}")
-                result = await self._page.fill(selector, value, **kwargs)
-                await send_screenshot(self._page, 'fill')
-                return result
+                return await self._page.fill(selector, value, **kwargs)
 
             async def type(self, selector, text, **kwargs):
-                """Type and capture screenshot."""
                 global stop_requested
                 if stop_requested:
-                    print("⏹ Stop requested - cancelling type action")
                     raise asyncio.CancelledError("Test stopped by user")
-                result = await self._page.type(selector, text, **kwargs)
-                await send_screenshot(self._page, 'type')
-                return result
+                return await self._page.type(selector, text, **kwargs)
 
             async def press(self, selector, key, **kwargs):
-                """Press key and capture screenshot."""
                 global stop_requested
                 if stop_requested:
-                    print("⏹ Stop requested - cancelling press action")
                     raise asyncio.CancelledError("Test stopped by user")
-                result = await self._page.press(selector, key, **kwargs)
-                await send_screenshot(self._page, 'press')
-                return result
+                return await self._page.press(selector, key, **kwargs)
 
             async def screenshot(self, **kwargs):
-                """Take screenshot and send to sidebar."""
-                result = await self._page.screenshot(**kwargs)
-                await send_screenshot(self._page, 'screenshot')
-                return result
+                return await self._page.screenshot(**kwargs)
 
             async def close(self):
                 """Stop streaming and close page."""
@@ -1264,8 +1252,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 """Create new page with screenshot wrapper."""
                 # If we have a default context (with video recording), use it
                 if self._default_context:
-                    page = await self._default_context.new_page()
-                    return PageWrapper(page)
+                    return await self._default_context.new_page()
                 else:
                     page = await self._browser.new_page()
                     return PageWrapper(page)
@@ -2320,6 +2307,7 @@ def handle_run_playwright_code(data):
 @socketio.on('run_saved_test')
 def handle_run_saved_test(data):
     """Handle running a saved Playwright test (no AI needed)."""
+    print(f"[run_saved_test] event received: {data}")
     filename = data.get('filename')
     workspace_id = data.get('workspaceId')
     if workspace_id is not None:
@@ -2329,19 +2317,26 @@ def handle_run_saved_test(data):
         emit('log', {'type': 'error', 'message': 'No test specified'})
         return
 
+    print(f"[run_saved_test] fetching test from DB: filename={filename} workspace_id={workspace_id}")
     try:
         test_data = db.get_test(workspace_id, filename) if workspace_id else None
+        print(f"[run_saved_test] db.get_test returned: {bool(test_data)}")
         if not test_data:
             emit('log', {'type': 'error', 'message': 'Test not found'})
             return
 
         code = test_data.get('code')
+        print(f"[run_saved_test] code length={len(code) if code else 0}, launching background task")
         emit('log', {'type': 'info', 'message': f'Running saved test: {test_data.get("name")}'})
         emit('log', {'type': 'info', 'message': '🚀 Executing Playwright code with live browser preview...'})
 
         socketio.start_background_task(run_playwright_code_with_streaming, code, filename, workspace_id)
+        print(f"[run_saved_test] background task started")
 
     except Exception as e:
+        import traceback
+        print(f"[run_saved_test] EXCEPTION: {e}")
+        traceback.print_exc()
         emit('log', {'type': 'error', 'message': f'Error running saved test: {str(e)}'})
 
 

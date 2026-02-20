@@ -34,6 +34,16 @@ ENABLE_HAR_RECORDING = os.getenv("ENABLE_HAR_RECORDING", "true").lower() == "tru
 ENABLE_TRACE_RECORDING = os.getenv("ENABLE_TRACE_RECORDING", "false").lower() == "true"
 MAX_ARTIFACT_SIZE_MB = int(os.getenv("MAX_ARTIFACT_SIZE_MB", "500"))  # Fail if exceeds
 
+# Local auto-login (single-user Mac app — skip login screen)
+LOCAL_USERNAME = os.getenv("LOCAL_USERNAME", "")
+LOCAL_PASSWORD = os.getenv("LOCAL_PASSWORD", "")
+
+# CDP Screencast (live browser view quality)
+USE_CDP_SCREENCAST = os.getenv("USE_CDP_SCREENCAST", "true").lower() == "true"
+SCREENCAST_JPEG_QUALITY = int(os.getenv("SCREENCAST_JPEG_QUALITY", "100"))
+SCREENCAST_MAX_WIDTH = int(os.getenv("SCREENCAST_MAX_WIDTH", "1920"))
+SCREENCAST_MAX_HEIGHT = int(os.getenv("SCREENCAST_MAX_HEIGHT", "1080"))
+
 
 # Multi-User Configuration
 class Config:

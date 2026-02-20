@@ -356,15 +356,6 @@ socket.on('screenshot', (data) => {
         recorderUrlInput.value = data.url || '';
     }
 
-    // Update timestamp
-    const timestamp = new Date(data.timestamp).toLocaleTimeString();
-
-    // Show "LIVE" indicator for stream, or action name for specific actions
-    if (data.action === 'stream') {
-        screenshotTimestamp.textContent = `🔴 LIVE - ${timestamp}`;
-    } else {
-        screenshotTimestamp.textContent = `${data.action} - ${timestamp}`;
-    }
 
     // Only log action screenshots, not continuous stream frames
     if (data.action !== 'stream') {
@@ -4168,6 +4159,9 @@ async function checkAuthentication() {
                 if (refreshResp.ok) {
                     const refreshData = await refreshResp.json();
                     storeTokens(refreshData.access_token, refreshData.refresh_token);
+                    // Reconnect socket with the refreshed token
+                    socket.io.opts.query = { token: refreshData.access_token };
+                    socket.disconnect().connect();
 
                     // Retry with the new access token
                     const retryResp = await authFetch('/api/check-auth');
@@ -4184,6 +4178,25 @@ async function checkAuthentication() {
             }
             // Refresh token is also expired or invalid — clear everything
             clearTokens();
+        }
+
+        // Try auto-login from server-side .env credentials before showing modal
+        try {
+            const autoResp = await fetch('/api/auto-login', { method: 'POST' });
+            if (autoResp.ok) {
+                const autoData = await autoResp.json();
+                storeTokens(autoData.access_token, autoData.refresh_token);
+                // The socket was initialized with the old/expired token.
+                // Update its auth query and reconnect so handle_connect accepts it.
+                socket.io.opts.query = { token: autoData.access_token };
+                socket.disconnect().connect();
+                currentUser = autoData.user;
+                hideAuthModals();
+                await loadUserWorkspaces();
+                return true;
+            }
+        } catch (autoErr) {
+            console.warn('Auto-login not available:', autoErr);
         }
 
         showLoginModal();
