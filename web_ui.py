@@ -34,6 +34,8 @@ from config import Config
 import local_tree
 import git_ops
 import git.exc
+import github_config
+import requests as _requests
 
 # Playwright trace viewer static assets (bundled with the playwright package)
 import playwright as _playwright_pkg
@@ -1780,6 +1782,15 @@ def create_workspace():
             (ws_dir / 'saved_tests').mkdir(exist_ok=True)
             (ws_dir / 'ai_steps').mkdir(exist_ok=True)
             git_ops.init_repo(ws_dir)
+        # Ensure .github-config.json is never committed
+        gitignore_path = ws_dir / '.gitignore'
+        gitignore_entry = '.github-config.json\n'
+        if gitignore_path.exists():
+            existing = gitignore_path.read_text()
+            if '.github-config.json' not in existing:
+                gitignore_path.write_text(existing + gitignore_entry)
+        else:
+            gitignore_path.write_text(gitignore_entry)
 
         return jsonify({'message': 'Workspace created', 'workspace': {'name': name}}), 201
 
@@ -1957,12 +1968,14 @@ def git_commit(workspace_name):
 @workspace_access_required(permission='write')
 def git_push(workspace_name):
     data = request.get_json() or {}
+    ws_dir = _ws_dir(workspace_name)
+    token = data.get('token') or github_config.decrypt_token(ws_dir)
     try:
         git_ops.push(
-            _ws_dir(workspace_name),
+            ws_dir,
             remote=data.get('remote', 'origin'),
             branch=data.get('branch') or None,
-            token=data.get('token') or None,
+            token=token,
         )
         return jsonify({'success': True}), 200
     except (ValueError, git.exc.GitCommandError) as e:
@@ -2040,6 +2053,120 @@ def git_log(workspace_name):
         return jsonify({'commits': commits}), 200
     except (ValueError, git.exc.GitCommandError) as e:
         return jsonify({'error': str(e)}), 400
+
+
+# ========== GITHUB API ENDPOINTS ==========
+
+
+def _parse_github_repo(remote_url: str) -> tuple[str, str] | None:
+    """Return (owner, repo) from a GitHub HTTPS or SSH remote URL, or None."""
+    import re
+    patterns = [
+        r'github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$',
+    ]
+    for pat in patterns:
+        m = re.search(pat, remote_url)
+        if m:
+            return m.group(1), m.group(2)
+    return None
+
+
+@app.route('/api/workspaces/<workspace_name>/github/config', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def get_github_config(workspace_name):
+    ws_dir = _ws_dir(workspace_name)
+    cfg = github_config.get_config(ws_dir)
+    if not cfg:
+        return jsonify({'connected': False}), 200
+    remote_url = cfg.get('remote_url', '')
+    parsed = _parse_github_repo(remote_url)
+    return jsonify({
+        'connected': True,
+        'remote_url': remote_url,
+        'owner': parsed[0] if parsed else None,
+        'repo': parsed[1] if parsed else None,
+    }), 200
+
+
+@app.route('/api/workspaces/<workspace_name>/github/connect', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def github_connect(workspace_name):
+    data = request.get_json(force=True) or {}
+    remote_url = data.get('remote_url', '').strip()
+    pat = data.get('pat', '').strip()
+    if not remote_url or not pat:
+        return jsonify({'error': 'remote_url and pat are required'}), 400
+    if not _parse_github_repo(remote_url):
+        return jsonify({'error': 'URL does not look like a GitHub repo'}), 400
+    # Verify token against GitHub API
+    headers = {'Authorization': f'token {pat}', 'Accept': 'application/vnd.github+json'}
+    try:
+        r = _requests.get('https://api.github.com/user', headers=headers, timeout=10)
+        if r.status_code == 401:
+            return jsonify({'error': 'Invalid PAT — authentication failed'}), 400
+        r.raise_for_status()
+    except _requests.RequestException as exc:
+        return jsonify({'error': f'GitHub API error: {exc}'}), 502
+    ws_dir = _ws_dir(workspace_name)
+    github_config.save_config(ws_dir, remote_url, pat)
+    git_ops.add_remote(ws_dir, remote_url)
+    parsed = _parse_github_repo(remote_url)
+    return jsonify({
+        'connected': True,
+        'remote_url': remote_url,
+        'owner': parsed[0] if parsed else None,
+        'repo': parsed[1] if parsed else None,
+    }), 200
+
+
+@app.route('/api/workspaces/<workspace_name>/github/create-repo', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def github_create_repo(workspace_name):
+    data = request.get_json(force=True) or {}
+    pat = data.get('pat', '').strip()
+    repo_name = data.get('repo_name', '').strip()
+    private = bool(data.get('private', True))
+    description = data.get('description', '').strip()
+    if not pat or not repo_name:
+        return jsonify({'error': 'pat and repo_name are required'}), 400
+    headers = {
+        'Authorization': f'token {pat}',
+        'Accept': 'application/vnd.github+json',
+    }
+    payload = {'name': repo_name, 'private': private, 'description': description, 'auto_init': False}
+    try:
+        r = _requests.post('https://api.github.com/user/repos', json=payload, headers=headers, timeout=15)
+        if r.status_code == 401:
+            return jsonify({'error': 'Invalid PAT — authentication failed'}), 400
+        if r.status_code == 422:
+            return jsonify({'error': 'Repository name already exists or is invalid'}), 400
+        r.raise_for_status()
+        remote_url = r.json().get('clone_url', '')
+    except _requests.RequestException as exc:
+        return jsonify({'error': f'GitHub API error: {exc}'}), 502
+    ws_dir = _ws_dir(workspace_name)
+    github_config.save_config(ws_dir, remote_url, pat)
+    git_ops.add_remote(ws_dir, remote_url)
+    parsed = _parse_github_repo(remote_url)
+    return jsonify({
+        'connected': True,
+        'remote_url': remote_url,
+        'owner': parsed[0] if parsed else None,
+        'repo': parsed[1] if parsed else None,
+    }), 200
+
+
+@app.route('/api/workspaces/<workspace_name>/github/disconnect', methods=['DELETE'])
+@login_required
+@workspace_access_required(permission='write')
+def github_disconnect(workspace_name):
+    ws_dir = _ws_dir(workspace_name)
+    git_ops.remove_remote(ws_dir)
+    github_config.delete_config(ws_dir)
+    return jsonify({'connected': False}), 200
 
 
 # ========== END GIT API ENDPOINTS ==========

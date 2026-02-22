@@ -279,3 +279,35 @@ def _inject_token(url: str, token: str) -> str:
     if url.startswith('http://'):
         return url.replace('http://', f'http://{token}@', 1)
     return url
+
+
+# ──────────────────────────────────────────────
+# Remote helpers
+# ──────────────────────────────────────────────
+
+
+def get_remote_url(workspace_path: Path, remote: str = 'origin') -> str | None:
+    """Return the URL for *remote*, or None if the remote doesn't exist."""
+    repo = _get_repo(workspace_path)
+    try:
+        return repo.remote(remote).url
+    except ValueError:
+        return None
+
+
+def add_remote(workspace_path: Path, url: str, remote: str = 'origin') -> None:
+    """Add *remote* pointing at *url*, or update URL if it already exists."""
+    repo = _get_repo(workspace_path)
+    try:
+        repo.remote(remote).set_url(url)
+    except ValueError:
+        repo.create_remote(remote, url)
+
+
+def remove_remote(workspace_path: Path, remote: str = 'origin') -> None:
+    """Delete *remote* if it exists; no-op otherwise."""
+    repo = _get_repo(workspace_path)
+    try:
+        repo.delete_remote(repo.remote(remote))
+    except ValueError:
+        pass

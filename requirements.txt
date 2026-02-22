@@ -32,5 +32,8 @@ cryptography>=41.0.0
 # Git integration
 gitpython~=3.1
 
+# GitHub API
+requests~=2.31
+
 # Code formatting
 black~=24.1.0
