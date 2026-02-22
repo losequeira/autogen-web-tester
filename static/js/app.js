@@ -5644,7 +5644,7 @@ async function loadScmBranches() {
             item.className = 'scm-branch-item';
             if (branch === data.current) item.classList.add('active');
             const icon = document.createElement('i');
-            icon.className = 'lni lni-git-fork';
+            icon.className = 'lni lni-git';
             const label = document.createElement('span');
             label.textContent = branch;
             item.appendChild(icon);
