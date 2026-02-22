@@ -4066,15 +4066,15 @@ body {
 
 /* ========== ACTIVITY BAR (VS Code-like) ========== */
 .activity-bar {
-    width: 48px;
+    width: 52px;
     background: var(--ctp-crust);
-    border-right: 1px solid var(--ctp-surface0);
+    border-right: 1px solid var(--ctp-surface1);
     display: flex;
     flex-direction: column;
     justify-content: space-between;
     align-items: center;
     flex-shrink: 0;
-    padding: 6px 0;
+    padding: 8px 0;
     z-index: 2;
 }
 
@@ -4088,17 +4088,17 @@ body {
 
 .activity-bar-btn {
     position: relative;
-    width: 36px;
-    height: 36px;
+    width: 40px;
+    height: 40px;
     background: transparent;
     border: none;
-    border-radius: 6px;
-    color: var(--ctp-overlay1);
+    border-radius: 8px;
+    color: var(--ctp-subtext0);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
+    font-size: 20px;
     transition: color 0.15s, background 0.15s;
 }
 
@@ -4109,7 +4109,7 @@ body {
 
 .activity-bar-btn.active {
     color: var(--ctp-text);
-    box-shadow: -2px 0 0 0 var(--ctp-accent) inset;
+    box-shadow: -3px 0 0 0 var(--ctp-accent) inset;
 }
 
 .activity-bar-badge {
