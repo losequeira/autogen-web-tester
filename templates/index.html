@@ -226,6 +226,25 @@
                             </div>
                         </div>
 
+                        <!-- GitHub status row -->
+                        <div id="github-status-row" class="github-status-row github-status-disconnected">
+                            <i class="lni lni-github github-status-icon"></i>
+                            <span id="github-status-label" class="github-status-label">Not connected to GitHub</span>
+                            <div id="github-status-actions" class="github-status-actions">
+                                <button id="github-connect-btn" class="btn btn-small btn-accent" title="Connect to GitHub">Connect</button>
+                            </div>
+                            <a id="github-repo-link" class="github-repo-link" href="#" target="_blank" rel="noopener" style="display:none;"></a>
+                            <span id="github-sync-counts" class="github-sync-counts" style="display:none;"></span>
+                            <div class="github-overflow-wrapper" id="github-overflow-wrapper" style="display:none;">
+                                <button id="github-overflow-btn" class="btn-icon-small" title="More options"><i class="lni lni-more-alt"></i></button>
+                                <div id="github-overflow-menu" class="github-overflow-menu" style="display:none;">
+                                    <button class="github-overflow-item" id="github-sync-btn"><i class="lni lni-reload"></i> Sync</button>
+                                    <button class="github-overflow-item" id="github-copy-url-btn"><i class="lni lni-link"></i> Copy repo URL</button>
+                                    <button class="github-overflow-item github-overflow-item--danger" id="github-disconnect-btn"><i class="lni lni-unlink"></i> Disconnect</button>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Branch row -->
                         <div class="scm-branch-row">
                             <i class="lni lni-git-fork scm-branch-icon"></i>
@@ -777,6 +796,89 @@
                         <button type="button" class="btn btn-secondary close-new-workspace">Cancel</button>
                     </div>
                 </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- GitHub Connection Wizard Modal -->
+    <div id="github-wizard-modal" class="modal" style="display:none;">
+        <div class="modal-content github-wizard-content">
+            <div class="modal-header">
+                <i class="lni lni-github"></i>
+                <h3 id="github-wizard-title">Connect to GitHub</h3>
+                <button class="modal-close-btn" id="github-wizard-close" title="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+
+                <!-- Step 0: Choose flow -->
+                <div id="github-wizard-step-0" class="github-wizard-step">
+                    <p class="github-wizard-intro">Link this workspace to a GitHub repository to push, pull, and sync your code.</p>
+                    <div class="github-wizard-choices">
+                        <button class="github-wizard-choice-btn" id="github-choice-connect">
+                            <i class="lni lni-link"></i>
+                            <span class="github-choice-title">Connect existing repo</span>
+                            <span class="github-choice-desc">Push this workspace to an existing GitHub repository</span>
+                        </button>
+                        <button class="github-wizard-choice-btn" id="github-choice-create">
+                            <i class="lni lni-circle-plus"></i>
+                            <span class="github-choice-title">Create new repo</span>
+                            <span class="github-choice-desc">Create a new GitHub repository and push this workspace</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 1a: Connect existing repo -->
+                <div id="github-wizard-step-connect" class="github-wizard-step" style="display:none;">
+                    <button class="github-wizard-back-btn" id="github-back-from-connect"><i class="lni lni-arrow-left"></i> Back</button>
+                    <div class="github-wizard-field">
+                        <label for="github-remote-url">Repository URL</label>
+                        <input type="url" id="github-remote-url" class="github-wizard-input" placeholder="https://github.com/owner/repo.git">
+                    </div>
+                    <div class="github-wizard-field">
+                        <label for="github-pat-connect">Personal Access Token</label>
+                        <input type="password" id="github-pat-connect" class="github-wizard-input" placeholder="ghp_…">
+                        <span class="github-wizard-hint">Needs <code>repo</code> scope. <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener">Create one</a></span>
+                    </div>
+                    <div id="github-connect-error" class="github-wizard-error" style="display:none;"></div>
+                    <div class="github-wizard-actions">
+                        <button id="github-connect-submit" class="btn btn-primary">Connect</button>
+                    </div>
+                </div>
+
+                <!-- Step 1b: Create new repo -->
+                <div id="github-wizard-step-create" class="github-wizard-step" style="display:none;">
+                    <button class="github-wizard-back-btn" id="github-back-from-create"><i class="lni lni-arrow-left"></i> Back</button>
+                    <div class="github-wizard-field">
+                        <label for="github-new-repo-name">Repository name</label>
+                        <input type="text" id="github-new-repo-name" class="github-wizard-input" placeholder="my-project">
+                    </div>
+                    <div class="github-wizard-field">
+                        <label for="github-new-repo-desc">Description (optional)</label>
+                        <input type="text" id="github-new-repo-desc" class="github-wizard-input" placeholder="Short description…">
+                    </div>
+                    <div class="github-wizard-field github-wizard-field--inline">
+                        <input type="checkbox" id="github-new-repo-private" checked>
+                        <label for="github-new-repo-private">Private repository</label>
+                    </div>
+                    <div class="github-wizard-field">
+                        <label for="github-pat-create">Personal Access Token</label>
+                        <input type="password" id="github-pat-create" class="github-wizard-input" placeholder="ghp_…">
+                        <span class="github-wizard-hint">Needs <code>repo</code> scope. <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener">Create one</a></span>
+                    </div>
+                    <div id="github-create-error" class="github-wizard-error" style="display:none;"></div>
+                    <div class="github-wizard-actions">
+                        <button id="github-create-submit" class="btn btn-primary">Create &amp; Connect</button>
+                    </div>
+                </div>
+
+                <!-- Progress / result step -->
+                <div id="github-wizard-step-progress" class="github-wizard-step" style="display:none;">
+                    <div class="github-wizard-progress">
+                        <div class="github-wizard-spinner"></div>
+                        <span id="github-wizard-progress-msg">Connecting…</span>
+                    </div>
+                </div>
+
             </div>
         </div>
     </div>

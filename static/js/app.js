@@ -2471,6 +2471,7 @@ window.addEventListener('load', () => {
     }
     initUnifiedTree();
     initScmPanel();
+    initGithubPanel();
 });
 
 // ========================================
@@ -5360,7 +5361,10 @@ function switchPanel(panelId) {
         btn.classList.toggle('active', btn.dataset.panel === panelId));
     document.querySelectorAll('.sidebar-panel').forEach(p =>
         p.classList.toggle('sidebar-panel--hidden', p.id !== `panel-${panelId}`));
-    if (panelId === 'scm') refreshScmPanel();
+    if (panelId === 'scm') {
+        refreshScmPanel();
+        loadGithubConfig();
+    }
 }
 
 document.querySelectorAll('.activity-bar-btn[data-panel]').forEach(btn =>
@@ -5548,12 +5552,18 @@ async function scmCommit() {
 
 async function scmPush() {
     if (!currentWorkspaceName) return;
-    const token = prompt('GitHub Personal Access Token (leave blank if SSH or already configured):');
-    if (token === null) return; // user cancelled
+    // If GitHub is connected the stored token is used server-side; no prompt needed.
+    const ghCfg = window._githubConfig || {};
+    let tokenOverride = null;
+    if (!ghCfg.connected) {
+        const t = prompt('GitHub Personal Access Token (leave blank if SSH or already configured):');
+        if (t === null) return; // user cancelled
+        if (t) tokenOverride = t;
+    }
 
     try {
         const body = {};
-        if (token) body.token = token;
+        if (tokenOverride) body.token = tokenOverride;
         const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/push`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -5728,3 +5738,278 @@ function initScmPanel() {
     }
 }
 // ========== END SCM PANEL ==========
+
+// ========== GITHUB PANEL ==========
+
+window._githubConfig = null; // cached: {connected, remote_url, owner, repo}
+
+async function loadGithubConfig() {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/github/config`);
+        if (!res.ok) return;
+        const cfg = await res.json();
+        window._githubConfig = cfg;
+        renderGithubStatusRow(cfg);
+    } catch (_) { /* silent */ }
+}
+
+function renderGithubStatusRow(cfg) {
+    const row = document.getElementById('github-status-row');
+    const label = document.getElementById('github-status-label');
+    const actions = document.getElementById('github-status-actions');
+    const repoLink = document.getElementById('github-repo-link');
+    const overflowWrapper = document.getElementById('github-overflow-wrapper');
+    if (!row) return;
+
+    if (cfg && cfg.connected) {
+        row.className = 'github-status-row github-status-connected';
+        label.style.display = 'none';
+        actions.style.display = 'none';
+        if (repoLink) {
+            const repoUrl = cfg.remote_url.replace(/\.git$/, '');
+            repoLink.href = repoUrl.startsWith('https://') ? repoUrl : `https://github.com/${cfg.owner}/${cfg.repo}`;
+            repoLink.textContent = `${cfg.owner}/${cfg.repo}`;
+            repoLink.style.display = '';
+        }
+        if (overflowWrapper) overflowWrapper.style.display = '';
+    } else {
+        row.className = 'github-status-row github-status-disconnected';
+        label.style.display = '';
+        label.textContent = 'Not connected to GitHub';
+        actions.style.display = '';
+        if (repoLink) repoLink.style.display = 'none';
+        if (overflowWrapper) overflowWrapper.style.display = 'none';
+    }
+}
+
+function openGithubWizard() {
+    const modal = document.getElementById('github-wizard-modal');
+    if (!modal) return;
+    // Reset to step 0
+    document.getElementById('github-wizard-step-0').style.display = '';
+    document.getElementById('github-wizard-step-connect').style.display = 'none';
+    document.getElementById('github-wizard-step-create').style.display = 'none';
+    document.getElementById('github-wizard-step-progress').style.display = 'none';
+    document.getElementById('github-wizard-title').textContent = 'Connect to GitHub';
+    // Clear inputs
+    ['github-remote-url','github-pat-connect','github-new-repo-name','github-new-repo-desc','github-pat-create'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    const privCb = document.getElementById('github-new-repo-private');
+    if (privCb) privCb.checked = true;
+    ['github-connect-error','github-create-error'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+    });
+    modal.style.display = 'flex';
+}
+
+function closeGithubWizard() {
+    const modal = document.getElementById('github-wizard-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+function showGithubWizardProgress(msg) {
+    ['github-wizard-step-0','github-wizard-step-connect','github-wizard-step-create'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+    });
+    const step = document.getElementById('github-wizard-step-progress');
+    const msgEl = document.getElementById('github-wizard-progress-msg');
+    if (step) step.style.display = '';
+    if (msgEl) msgEl.textContent = msg || 'Working…';
+}
+
+function showGithubWizardError(stepId, msg) {
+    const errEl = document.getElementById(stepId);
+    if (!errEl) return;
+    errEl.textContent = msg;
+    errEl.style.display = '';
+    // Return to the form step
+    document.getElementById('github-wizard-step-progress').style.display = 'none';
+    if (stepId === 'github-connect-error') document.getElementById('github-wizard-step-connect').style.display = '';
+    if (stepId === 'github-create-error') document.getElementById('github-wizard-step-create').style.display = '';
+}
+
+async function githubConnectSubmit() {
+    const remoteUrl = (document.getElementById('github-remote-url') || {}).value?.trim();
+    const pat = (document.getElementById('github-pat-connect') || {}).value?.trim();
+    if (!remoteUrl || !pat) {
+        showGithubWizardError('github-connect-error', 'Please fill in both fields.');
+        return;
+    }
+    showGithubWizardProgress('Connecting to GitHub…');
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/github/connect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ remote_url: remoteUrl, pat })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showGithubWizardError('github-connect-error', data.error || 'Connection failed.');
+            return;
+        }
+        window._githubConfig = data;
+        renderGithubStatusRow(data);
+        closeGithubWizard();
+        addLogEntry('info', `Connected to GitHub: ${data.owner}/${data.repo}`);
+    } catch (e) {
+        showGithubWizardError('github-connect-error', 'Network error: ' + e.message);
+    }
+}
+
+async function githubCreateRepoSubmit() {
+    const repoName = (document.getElementById('github-new-repo-name') || {}).value?.trim();
+    const pat = (document.getElementById('github-pat-create') || {}).value?.trim();
+    const description = (document.getElementById('github-new-repo-desc') || {}).value?.trim();
+    const isPrivate = document.getElementById('github-new-repo-private')?.checked ?? true;
+    if (!repoName || !pat) {
+        showGithubWizardError('github-create-error', 'Repository name and token are required.');
+        return;
+    }
+    showGithubWizardProgress('Creating repository on GitHub…');
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/github/create-repo`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo_name: repoName, pat, description, private: isPrivate })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showGithubWizardError('github-create-error', data.error || 'Repo creation failed.');
+            return;
+        }
+        window._githubConfig = data;
+        renderGithubStatusRow(data);
+        closeGithubWizard();
+        addLogEntry('info', `Created GitHub repo: ${data.owner}/${data.repo}`);
+    } catch (e) {
+        showGithubWizardError('github-create-error', 'Network error: ' + e.message);
+    }
+}
+
+async function githubDisconnect() {
+    if (!currentWorkspaceName) return;
+    if (!confirm('Disconnect this workspace from GitHub? The local repo and files are not affected.')) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/github/disconnect`, {
+            method: 'DELETE'
+        });
+        if (res.ok) {
+            window._githubConfig = { connected: false };
+            renderGithubStatusRow({ connected: false });
+            addLogEntry('info', 'Disconnected from GitHub.');
+        } else {
+            const d = await res.json();
+            alert(d.error || 'Disconnect failed.');
+        }
+    } catch (e) {
+        alert('Network error: ' + e.message);
+    }
+}
+
+async function githubSync() {
+    // Pull then push using stored token
+    if (!currentWorkspaceName) return;
+    try {
+        const pullRes = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/pull`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+        });
+        if (!pullRes.ok) {
+            const d = await pullRes.json();
+            alert('Pull failed: ' + (d.error || 'unknown error'));
+            return;
+        }
+        const pushRes = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/push`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+        });
+        const pd = await pushRes.json();
+        if (!pushRes.ok) {
+            alert('Push failed: ' + (pd.error || 'unknown error'));
+        } else {
+            addLogEntry('info', 'Synced with GitHub.');
+        }
+    } catch (e) {
+        alert('Sync error: ' + e.message);
+    }
+}
+
+function initGithubPanel() {
+    // Connect button in status row
+    const connectBtn = document.getElementById('github-connect-btn');
+    if (connectBtn) connectBtn.addEventListener('click', openGithubWizard);
+
+    // Wizard close
+    const closeBtn = document.getElementById('github-wizard-close');
+    if (closeBtn) closeBtn.addEventListener('click', closeGithubWizard);
+    const modal = document.getElementById('github-wizard-modal');
+    if (modal) modal.addEventListener('click', e => { if (e.target === modal) closeGithubWizard(); });
+
+    // Step 0 choices
+    const choiceConnect = document.getElementById('github-choice-connect');
+    if (choiceConnect) choiceConnect.addEventListener('click', () => {
+        document.getElementById('github-wizard-step-0').style.display = 'none';
+        document.getElementById('github-wizard-step-connect').style.display = '';
+        document.getElementById('github-wizard-title').textContent = 'Connect existing repo';
+    });
+    const choiceCreate = document.getElementById('github-choice-create');
+    if (choiceCreate) choiceCreate.addEventListener('click', () => {
+        document.getElementById('github-wizard-step-0').style.display = 'none';
+        document.getElementById('github-wizard-step-create').style.display = '';
+        document.getElementById('github-wizard-title').textContent = 'Create new repo';
+    });
+
+    // Back buttons
+    const backConnect = document.getElementById('github-back-from-connect');
+    if (backConnect) backConnect.addEventListener('click', () => {
+        document.getElementById('github-wizard-step-connect').style.display = 'none';
+        document.getElementById('github-wizard-step-0').style.display = '';
+        document.getElementById('github-wizard-title').textContent = 'Connect to GitHub';
+    });
+    const backCreate = document.getElementById('github-back-from-create');
+    if (backCreate) backCreate.addEventListener('click', () => {
+        document.getElementById('github-wizard-step-create').style.display = 'none';
+        document.getElementById('github-wizard-step-0').style.display = '';
+        document.getElementById('github-wizard-title').textContent = 'Connect to GitHub';
+    });
+
+    // Submit buttons
+    const connectSubmit = document.getElementById('github-connect-submit');
+    if (connectSubmit) connectSubmit.addEventListener('click', githubConnectSubmit);
+    const createSubmit = document.getElementById('github-create-submit');
+    if (createSubmit) createSubmit.addEventListener('click', githubCreateRepoSubmit);
+
+    // Overflow menu
+    const overflowBtn = document.getElementById('github-overflow-btn');
+    const overflowMenu = document.getElementById('github-overflow-menu');
+    if (overflowBtn && overflowMenu) {
+        overflowBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            overflowMenu.style.display = overflowMenu.style.display === 'none' ? '' : 'none';
+        });
+        document.addEventListener('click', () => { overflowMenu.style.display = 'none'; });
+    }
+
+    const syncBtn = document.getElementById('github-sync-btn');
+    if (syncBtn) syncBtn.addEventListener('click', () => { overflowMenu && (overflowMenu.style.display = 'none'); githubSync(); });
+
+    const copyUrlBtn = document.getElementById('github-copy-url-btn');
+    if (copyUrlBtn) copyUrlBtn.addEventListener('click', () => {
+        overflowMenu && (overflowMenu.style.display = 'none');
+        const cfg = window._githubConfig;
+        if (cfg && cfg.remote_url) {
+            navigator.clipboard.writeText(cfg.remote_url).then(() => addLogEntry('info', 'Repo URL copied.'));
+        }
+    });
+
+    const disconnectBtn = document.getElementById('github-disconnect-btn');
+    if (disconnectBtn) disconnectBtn.addEventListener('click', () => {
+        overflowMenu && (overflowMenu.style.display = 'none');
+        githubDisconnect();
+    });
+}
+
+// ========== END GITHUB PANEL ==========
