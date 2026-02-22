@@ -6,6 +6,7 @@ Provides a browser interface to write and run tests, watch browser automation li
 import asyncio
 import base64
 import sys
+import time
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from datetime import datetime
@@ -30,6 +31,7 @@ from browser_tool import BrowserTool
 from code_agent import CodeGenerationAgent
 import config
 from config import Config
+import local_tree
 
 # Playwright trace viewer static assets (bundled with the playwright package)
 import playwright as _playwright_pkg
@@ -40,7 +42,7 @@ _TRACE_VIEWER_DIR = (
 # Import multi-user modules
 import db
 from auth import init_auth, login_required, get_current_user
-from decorators import workspace_access_required, workspace_owner_required
+from decorators import workspace_access_required
 
 app = Flask(
     __name__,
@@ -124,19 +126,49 @@ _wb_thread.start()
 # ===== End warm browser pool =====
 
 
-def update_test_artifacts(filename: str, artifact_dir: Path, test_status: str = 'unknown', workspace_id: int = None):
-    """Update test artifact metadata in the database."""
-    print(f"📼 update_test_artifacts called: filename={filename}, workspace_id={workspace_id}, status={test_status}")
-    if not filename or not workspace_id:
-        print(f"Warning: Cannot update artifacts without filename and workspace_id (filename={filename}, workspace_id={workspace_id})")
+def update_test_artifacts(
+    filename: str,
+    artifact_dir: Path,
+    test_status: str = 'unknown',
+    workspace_name: str = None,
+    from_tree: bool = True,
+):
+    """Save test artifacts into the workspace directory and update local meta."""
+    print(f"📼 update_test_artifacts called: filename={filename}, workspace_name={workspace_name}, status={test_status}")
+    if not filename or not workspace_name:
+        print(f"Warning: Cannot update artifacts without filename and workspace_name")
         return
 
     try:
-        db.add_test_artifact(workspace_id, filename, artifact_dir, test_status)
-        print(f"📼 Artifact saved successfully")
+        from storage import save_artifact_dir
+        import shutil
+        # Sanitize path for artifact dir: e2e/Landing.py -> e2e_Landing
+        test_name = filename.replace("/", "_").replace("\\", "_")
+        if test_name.endswith(".py"):
+            test_name = test_name[:-3]
+        artifact_dir_abs = artifact_dir.resolve()
+        storage_paths = save_artifact_dir(artifact_dir_abs, workspace_name, test_name)
+        root = _tree_root(workspace_name, "saved_tests")
+        local_tree.write_last_run_meta(
+            root, filename,
+            status=test_status,
+            last_run_time=datetime.utcnow().isoformat(),
+        )
+        # Write status.json inside the artifact dir for recordings gallery
+        art_dir = Config.AUTOGEN_WORKSPACES_DIR / workspace_name / 'saved_tests' / 'artifacts' / test_name
+        if art_dir.is_dir():
+            import json as _json
+            status_file = art_dir / 'status.json'
+            status_file.write_text(_json.dumps({
+                'status': test_status,
+                'timestamp': datetime.utcnow().isoformat(),
+            }), encoding='utf-8')
+        print(f"📼 Artifact saved: {storage_paths.get('video_path')}")
+        if artifact_dir_abs.exists():
+            shutil.rmtree(artifact_dir_abs, ignore_errors=True)
     except Exception as e:
         import traceback
-        print(f"Warning: Could not update test metadata: {e}")
+        print(f"Warning: Could not update artifacts: {e}")
         traceback.print_exc()
 
 
@@ -577,6 +609,10 @@ def run_codegen_process(recording_id: str, url: str, output_file: str, test_name
             pass
 
 
+# Minimum pause (ms) between actions to record as an explicit wait step
+RECORDER_WAIT_THRESHOLD_MS = 1000
+
+
 def generate_code_from_actions(actions: list) -> str:
     """Generate Playwright Python code from a list of recorded (action, *args) tuples."""
     lines = [
@@ -598,6 +634,10 @@ def generate_code_from_actions(actions: list) -> str:
         elif kind == 'type':
             text = action[1].replace('\\', '\\\\').replace("'", "\\'")
             lines.append(f"        await page.keyboard.type('{text}')")
+        elif kind == 'wait':
+            ms = action[1]
+            sec = ms / 1000.0
+            lines.append(f"        await asyncio.sleep({sec})")
     lines.extend([
         '        await browser.close()',
         '',
@@ -625,6 +665,7 @@ def run_embedded_recorder(recording_id: str, url: str, test_name: str):
         'stop_event': stop_event,
         'page_ref': page_ref,
         'test_name': test_name,
+        'last_action_at': None,
     }
 
     viewport_w = getattr(config, 'VIDEO_SIZE_WIDTH', 1280)
@@ -688,9 +729,21 @@ def run_embedded_recorder(recording_id: str, url: str, test_name: str):
         active_recorders.pop(recording_id, None)
 
 
+def _maybe_append_wait_before_action(recorder: dict, actions: list) -> None:
+    """If enough time passed since last action, append a ('wait', ms) step."""
+    last = recorder.get('last_action_at')
+    if last is None:
+        return
+    elapsed_ms = (time.time() - last) * 1000
+    threshold = getattr(config, 'RECORDER_WAIT_THRESHOLD_MS', RECORDER_WAIT_THRESHOLD_MS)
+    if elapsed_ms >= threshold:
+        actions.append(('wait', round(elapsed_ms)))
+    return
+
+
 @socketio.on('recorder_interact')
 def handle_recorder_interact(data):
-    """Handle interactive input events (click, type, navigate, stop) for the embedded recorder."""
+    """Handle interactive input events (click, type, navigate, stop, wait) for the embedded recorder."""
     recording_id = data.get('recording_id')
     action = data.get('action')
 
@@ -703,26 +756,40 @@ def handle_recorder_interact(data):
     actions = recorder['actions']
 
     if action == 'click' and page:
+        _maybe_append_wait_before_action(recorder, actions)
         x = int(data.get('x', 0))
         y = int(data.get('y', 0))
         actions.append(('click', x, y))
+        recorder['last_action_at'] = time.time()
         asyncio.run_coroutine_threadsafe(page.mouse.click(x, y), loop)
 
     elif action == 'type' and page:
+        _maybe_append_wait_before_action(recorder, actions)
         text = data.get('text', '')
         actions.append(('type', text))
+        recorder['last_action_at'] = time.time()
         asyncio.run_coroutine_threadsafe(page.keyboard.type(text), loop)
 
     elif action == 'key' and page:
         key = data.get('key', '')
         if key:
+            recorder['last_action_at'] = time.time()
             asyncio.run_coroutine_threadsafe(page.keyboard.press(key), loop)
 
     elif action == 'navigate' and page:
+        _maybe_append_wait_before_action(recorder, actions)
         nav_url = data.get('url', '')
         if nav_url:
             actions.append(('goto', nav_url))
+            recorder['last_action_at'] = time.time()
             asyncio.run_coroutine_threadsafe(page.goto(nav_url), loop)
+
+    elif action == 'wait':
+        duration_ms = int(data.get('duration_ms', 0))
+        if duration_ms > 0:
+            _maybe_append_wait_before_action(recorder, actions)
+            actions.append(('wait', duration_ms))
+            recorder['last_action_at'] = time.time()
 
     elif action == 'stop':
         code = generate_code_from_actions(actions)
@@ -734,7 +801,7 @@ def handle_recorder_interact(data):
         })
 
 
-async def run_test_async(task: str, test_filename: str = None, workspace_id: int = None):
+async def run_test_async(task: str, test_filename: str = None, workspace_name: str = None):
     """Run the test with live updates."""
     global active_browser, stop_requested, current_ai_step
 
@@ -745,15 +812,15 @@ async def run_test_async(task: str, test_filename: str = None, workspace_id: int
     artifact_dir = None
     video_dir = None
     saved_test_filename = test_filename  # Save filename before current_ai_step gets reset
-    saved_workspace_id = workspace_id
+    saved_workspace_name = workspace_name
     test_status = None  # Track test status for artifact metadata
 
-    # Get filename and workspace_id from current_ai_step if not provided
+    # Get filename and workspace_name from current_ai_step if not provided
     if current_ai_step:
         if not saved_test_filename:
             saved_test_filename = current_ai_step.get('filename')
-        if not saved_workspace_id:
-            saved_workspace_id = current_ai_step.get('workspace_id')
+        if not saved_workspace_name:
+            saved_workspace_name = current_ai_step.get('workspace_name')
 
     if saved_test_filename:
         from pathlib import Path
@@ -1128,20 +1195,20 @@ These rules apply to ALL tasks. Users will give you natural language instruction
                 saved_test_filename,
                 artifact_dir,
                 test_status or 'unknown',
-                workspace_id=saved_workspace_id
+                workspace_name=saved_workspace_name,
             )
             # Tell frontend to refresh now that artifacts are saved
             socketio.emit('artifacts_updated', {'filename': saved_test_filename})
 
 
-def run_test_sync(task: str, test_filename: str = None, workspace_id: int = None):
+def run_test_sync(task: str, test_filename: str = None, workspace_name: str = None):
     """Wrapper to run async test in sync context."""
     global active_loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     active_loop = loop
     try:
-        loop.run_until_complete(run_test_async(task, test_filename, workspace_id))
+        loop.run_until_complete(run_test_async(task, test_filename, workspace_name))
     finally:
         active_loop = None
         # Properly shutdown the event loop to avoid crashes
@@ -1191,7 +1258,9 @@ def run_playwright_code(code: str):
             loop.close()
 
 
-def run_playwright_code_with_streaming(code: str, filename: str = None, workspace_id: int = None):
+def run_playwright_code_with_streaming(
+    code: str, filename: str = None, workspace_name: str = None, from_tree: bool = False
+):
     """Execute Playwright code with automatic screenshot streaming to browser sidebar."""
     global stop_requested, active_loop, _active_test_task
     stop_requested = False  # Reset stop flag at the start of execution
@@ -1206,7 +1275,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
     video_dir = None
     test_status = None  # Track test status for artifact metadata
     if filename:
-        print(f"🎬 Filename provided: {filename}, workspace_id: {workspace_id}")
+        print(f"🎬 Filename provided: {filename}, workspace_name: {workspace_name}")
         from pathlib import Path
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1564,12 +1633,12 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         _active_test_task = None
 
     # Update test artifacts AFTER loop cleanup (separate block so it always runs)
-    print(f"📼 === ARTIFACT SAVE BLOCK REACHED === artifact_dir={artifact_dir}, filename={filename}, workspace_id={workspace_id}")
+    print(f"📼 === ARTIFACT SAVE BLOCK REACHED === artifact_dir={artifact_dir}, filename={filename}, workspace_name={workspace_name}")
     if artifact_dir and filename:
         try:
             import time
             time.sleep(5)  # Give browser time to finalize the video file
-            print(f"📼 Saving artifacts: filename={filename}, workspace_id={workspace_id}, status={test_status}, dir={artifact_dir}")
+            print(f"📼 Saving artifacts: filename={filename}, workspace_name={workspace_name}, status={test_status}, dir={artifact_dir}")
             # List all files in artifact dir for debugging
             all_files = list(artifact_dir.iterdir()) if artifact_dir.exists() else []
             print(f"📼 All files in artifact dir: {all_files}")
@@ -1579,7 +1648,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
                 filename,
                 artifact_dir,
                 test_status or 'unknown',
-                workspace_id=workspace_id
+                workspace_name=workspace_name,
             )
             # Tell frontend to refresh now that artifacts are saved
             socketio.emit('artifacts_updated', {'filename': filename})
@@ -1591,7 +1660,7 @@ def run_playwright_code_with_streaming(code: str, filename: str = None, workspac
         print(f"⚠️ Skipping artifact update: artifact_dir={artifact_dir}, filename={filename}")
 
 
-def run_playwright_code_headless(code: str, filename: str, workspace_id: int = None):
+def run_playwright_code_headless(code: str, filename: str, workspace_name: str = None):
     """Execute Playwright code in headless mode WITHOUT screenshot streaming.
 
     Returns:
@@ -1649,321 +1718,412 @@ def index():
 
 # ========== WORKSPACE MANAGEMENT API ENDPOINTS ==========
 
+_WORKSPACE_NAME_RE = re.compile(r'^[a-zA-Z0-9_\- ]+$')
+
+
+def _validate_workspace_name(name: str) -> str | None:
+    """Return cleaned name or None if invalid."""
+    name = name.strip()
+    if not name:
+        return None
+    if '..' in name or '/' in name:
+        return None
+    if not _WORKSPACE_NAME_RE.match(name):
+        return None
+    return name
+
+
 @app.route('/api/workspaces', methods=['GET'])
 @login_required
 def get_workspaces():
-    """Get all workspaces accessible to current user (owned + shared)."""
+    """List workspace subdirectories under AUTOGEN_WORKSPACES_DIR."""
     try:
-        user = get_current_user()
-        workspaces = db.get_workspaces_for_user(user['id'])
+        base = Config.AUTOGEN_WORKSPACES_DIR
+        base.mkdir(parents=True, exist_ok=True)
+        workspaces = [
+            {'name': d.name}
+            for d in sorted(base.iterdir(), key=lambda p: p.name.lower())
+            if d.is_dir()
+        ]
         return jsonify({'workspaces': workspaces}), 200
     except Exception as e:
-        print(f"Error getting workspaces: {e}")
-        return jsonify({'error': 'Failed to get workspaces'}), 500
+        print(f"Error listing workspaces: {e}")
+        return jsonify({'error': 'Failed to list workspaces'}), 500
 
 
 @app.route('/api/workspaces', methods=['POST'])
 @login_required
 def create_workspace():
-    """Create a new workspace."""
+    """Create a new workspace directory."""
     try:
-        data = request.get_json()
-
-        name = data.get('name', '').strip()
-        workspace_type = data.get('type', 'private')
-
+        data = request.get_json() or {}
+        name = _validate_workspace_name(data.get('name', ''))
         if not name:
-            return jsonify({'error': 'Workspace name is required'}), 400
+            return jsonify({'error': 'Workspace name must be non-empty and may only contain letters, numbers, spaces, hyphens, and underscores'}), 400
 
-        if workspace_type not in ['private', 'shared']:
-            return jsonify({'error': 'Invalid workspace type'}), 400
+        ws_dir = Config.AUTOGEN_WORKSPACES_DIR / name
+        if ws_dir.exists():
+            return jsonify({'error': 'A workspace with that name already exists'}), 409
 
-        user = get_current_user()
-        workspace = db.create_workspace(name=name, ws_type=workspace_type, owner_id=user['id'])
+        ws_dir.mkdir(parents=True, exist_ok=True)
+        (ws_dir / 'saved_tests').mkdir(exist_ok=True)
+        (ws_dir / 'ai_steps').mkdir(exist_ok=True)
 
-        return jsonify({
-            'message': 'Workspace created successfully',
-            'workspace': workspace
-        }), 201
+        return jsonify({'message': 'Workspace created', 'workspace': {'name': name}}), 201
 
     except Exception as e:
         print(f"Error creating workspace: {e}")
         return jsonify({'error': 'Failed to create workspace'}), 500
 
 
-@app.route('/api/workspaces/<int:workspace_id>', methods=['GET'])
+@app.route('/api/workspaces/<workspace_name>', methods=['PUT'])
 @login_required
-def get_workspace(workspace_id):
-    """Get workspace details with members."""
+def rename_workspace(workspace_name):
+    """Rename a workspace directory."""
+    data = request.get_json() or {}
+    new_name = _validate_workspace_name(data.get('name', ''))
+    if not new_name:
+        return jsonify({'error': 'Workspace name must be non-empty and may only contain letters, numbers, spaces, hyphens, and underscores'}), 400
+
+    old_dir = Config.AUTOGEN_WORKSPACES_DIR / workspace_name
+    if not old_dir.is_dir():
+        return jsonify({'error': 'Workspace not found'}), 404
+
+    new_dir = Config.AUTOGEN_WORKSPACES_DIR / new_name
+    if new_dir.exists():
+        return jsonify({'error': 'A workspace with that name already exists'}), 409
+
     try:
-        workspace = db.get_workspace_by_id(workspace_id)
-        if not workspace:
-            return jsonify({'error': 'Workspace not found'}), 404
-
-        user = get_current_user()
-        if not db.workspace_has_access(workspace_id, user['id'], 'read'):
-            return jsonify({'error': 'Access denied'}), 403
-
-        # Ensure members are included
-        if 'members' not in workspace:
-            workspace['members'] = db.get_workspace_members(workspace_id)
-
-        return jsonify({'workspace': workspace}), 200
-
+        old_dir.rename(new_dir)
+        return jsonify({'workspace': {'name': new_name}}), 200
     except Exception as e:
-        print(f"Error getting workspace: {e}")
-        return jsonify({'error': 'Failed to get workspace'}), 500
+        return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/workspaces/<int:workspace_id>/members', methods=['POST'])
+@app.route('/api/workspaces/<workspace_name>', methods=['DELETE'])
 @login_required
-def add_workspace_member(workspace_id):
-    """Invite a user to a workspace."""
+def delete_workspace(workspace_name):
+    """Delete a workspace directory."""
+    import shutil
+    name = _validate_workspace_name(workspace_name)
+    if not name:
+        return jsonify({'error': 'Invalid workspace name'}), 400
+
+    ws_dir = Config.AUTOGEN_WORKSPACES_DIR / name
+    if not ws_dir.is_dir():
+        return jsonify({'error': 'Workspace not found'}), 404
+
     try:
-        data = request.get_json()
-
-        username = data.get('username', '').strip()
-        role = data.get('role', 'viewer')
-
-        if not username:
-            return jsonify({'error': 'Username is required'}), 400
-
-        if role not in ['editor', 'viewer']:
-            return jsonify({'error': 'Invalid role (use editor or viewer)'}), 400
-
-        workspace = db.get_workspace_by_id(workspace_id)
-        if not workspace:
-            return jsonify({'error': 'Workspace not found'}), 404
-
-        user = get_current_user()
-        if workspace['owner_id'] != user['id']:
-            return jsonify({'error': 'Only workspace owner can add members'}), 403
-
-        # Find user to invite
-        invite_user = db.get_user_by_username(username)
-        if not invite_user:
-            return jsonify({'error': f'User {username} not found'}), 404
-
-        # Don't add owner as member
-        if invite_user['id'] == workspace['owner_id']:
-            return jsonify({'error': 'Owner is already a member by default'}), 400
-
-        # Check if user is already a member
-        existing_members = db.get_workspace_members(workspace_id)
-        for m in existing_members:
-            if m['user_id'] == invite_user['id']:
-                return jsonify({'error': f'{username} is already a member'}), 409
-
-        member = db.add_workspace_member(workspace_id, invite_user['id'], role)
-
-        return jsonify({
-            'message': f'{username} added to workspace',
-            'member': member
-        }), 201
-
+        shutil.rmtree(ws_dir)
+        return jsonify({'success': True}), 200
     except Exception as e:
-        print(f"Error adding member: {e}")
-        return jsonify({'error': 'Failed to add member'}), 500
-
-
-@app.route('/api/workspaces/<int:workspace_id>/members/<user_id>', methods=['DELETE'])
-@login_required
-def remove_workspace_member(workspace_id, user_id):
-    """Remove a user from a workspace."""
-    try:
-        workspace = db.get_workspace_by_id(workspace_id)
-        if not workspace:
-            return jsonify({'error': 'Workspace not found'}), 404
-
-        current = get_current_user()
-        if workspace['owner_id'] != current['id']:
-            return jsonify({'error': 'Only workspace owner can remove members'}), 403
-
-        if not db.remove_workspace_member(workspace_id, user_id):
-            return jsonify({'error': 'User is not a member of this workspace'}), 404
-
-        return jsonify({'message': 'Member removed successfully'}), 200
-
-    except Exception as e:
-        print(f"Error removing member: {e}")
-        return jsonify({'error': 'Failed to remove member'}), 500
-
-
-@app.route('/api/workspaces/<int:workspace_id>/members/<user_id>/role', methods=['PUT'])
-@login_required
-def update_member_role(workspace_id, user_id):
-    """Update a member's role in a workspace."""
-    try:
-        data = request.get_json()
-        new_role = data.get('role', '').lower()
-
-        if new_role not in ['editor', 'viewer']:
-            return jsonify({'error': 'Invalid role (use editor or viewer)'}), 400
-
-        workspace = db.get_workspace_by_id(workspace_id)
-        if not workspace:
-            return jsonify({'error': 'Workspace not found'}), 404
-
-        current = get_current_user()
-        if workspace['owner_id'] != current['id']:
-            return jsonify({'error': 'Only workspace owner can update member roles'}), 403
-
-        member = db.update_member_role(workspace_id, user_id, new_role)
-        if not member:
-            return jsonify({'error': 'User is not a member of this workspace'}), 404
-
-        return jsonify({
-            'message': 'Member role updated successfully',
-            'member': member
-        }), 200
-
-    except Exception as e:
-        print(f"Error updating member role: {e}")
-        return jsonify({'error': 'Failed to update member role'}), 500
+        print(f"Error deleting workspace: {e}")
+        return jsonify({'error': 'Failed to delete workspace'}), 500
 
 
 # ========== END WORKSPACE MANAGEMENT API ENDPOINTS ==========
 
 
-# ========== WORKSPACE-AWARE TEST MANAGEMENT API ENDPOINTS ==========
+# ========== LOCAL TREE API (Saved Tests / AI Steps under ~/.autogen/workspaces) ==========
 
-@app.route('/api/workspaces/<int:workspace_id>/tests', methods=['GET'])
+def _tree_root(workspace_name: str, tree_type: str) -> Path:
+    return Config.AUTOGEN_WORKSPACES_DIR / workspace_name / tree_type
+
+
+def _collect_tree_paths(nodes: list) -> set:
+    """Return set of all file paths in tree (for merging DB items)."""
+    paths = set()
+    for node in nodes:
+        if node.get("type") == "file" and node.get("path"):
+            paths.add(node["path"])
+        if node.get("children"):
+            paths.update(_collect_tree_paths(node["children"]))
+    return paths
+
+
+def _enrich_tree_artifacts(nodes: list, workspace_name: str, root: Path) -> None:
+    """Mutate file nodes in tree to add artifacts and last_run meta from disk."""
+    artifacts_base = Config.AUTOGEN_WORKSPACES_DIR / workspace_name / "saved_tests" / "artifacts"
+    for node in nodes:
+        if node.get("type") == "folder" and node.get("children"):
+            _enrich_tree_artifacts(node["children"], workspace_name, root)
+        elif node.get("type") == "file" and node.get("path"):
+            path = node["path"]
+            test_name = path.replace("/", "_").replace("\\", "_")
+            if test_name.endswith(".py"):
+                test_name = test_name[:-3]
+            art_dir = artifacts_base / test_name
+            artifacts = []
+            if (art_dir / "recording.webm").exists():
+                artifacts.append({
+                    "video_path": f"{workspace_name}/saved_tests/artifacts/{test_name}/recording.webm",
+                    "trace_path": f"{workspace_name}/saved_tests/artifacts/{test_name}/trace.zip" if (art_dir / "trace.zip").exists() else None,
+                })
+            elif (art_dir / "trace.zip").exists():
+                artifacts.append({"trace_path": f"{workspace_name}/saved_tests/artifacts/{test_name}/trace.zip"})
+            if artifacts:
+                node["artifacts"] = artifacts
+            try:
+                meta = local_tree.get_last_run_meta(root, path)
+                if meta:
+                    node["last_run_status"] = meta.get("last_run_status")
+                    node["last_run_time"] = meta.get("last_run_time")
+            except Exception:
+                pass
+
+
+@app.route('/api/workspaces/<workspace_name>/tree/saved_tests', methods=['GET'])
 @login_required
 @workspace_access_required(permission='read')
-def get_workspace_tests(workspace_id):
-    """Get all tests in a workspace."""
+def get_tree_saved_tests(workspace_name):
+    """Get folder tree for Saved Tests (local filesystem only)."""
     try:
-        tests = db.get_tests(workspace_id)
-        return jsonify({'tests': tests}), 200
+        root = _tree_root(workspace_name, "saved_tests")
+        root.mkdir(parents=True, exist_ok=True)
+        children = local_tree.list_tree(root, "saved_tests")
+        _enrich_tree_artifacts(children, workspace_name, root)
+        return jsonify({"tree": children}), 200
     except Exception as e:
-        print(f"Error getting workspace tests: {e}")
-        return jsonify({'error': 'Failed to get tests'}), 500
+        app.logger.exception("Error listing saved_tests tree: %s", e)
+        return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/workspaces/<int:workspace_id>/tests', methods=['POST'])
+@app.route('/api/workspaces/<workspace_name>/tree/ai_steps', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def get_tree_ai_steps(workspace_name):
+    """Get folder tree for AI Steps (local filesystem only)."""
+    try:
+        root = _tree_root(workspace_name, "ai_steps")
+        root.mkdir(parents=True, exist_ok=True)
+        children = local_tree.list_tree(root, "ai_steps")
+        return jsonify({"tree": children}), 200
+    except Exception as e:
+        app.logger.exception("Error listing ai_steps tree: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/workspaces/<workspace_name>/tree/saved_tests', methods=['POST'])
 @login_required
 @workspace_access_required(permission='write')
-def create_workspace_test(workspace_id):
-    """Create a new test in a workspace."""
+def post_tree_saved_tests(workspace_name):
+    """Create a folder under Saved Tests. Body: { "path": "folder/sub", "type": "folder" }."""
     try:
-        data = request.get_json()
-        name = data.get('name', '').strip()
-        code = data.get('code', '')
-        source = data.get('source', 'manual')
-
-        if not name or not code:
-            return jsonify({'error': 'Name and code are required'}), 400
-
-        result = db.create_test(workspace_id, name, code, source, get_current_user()['id'])
-        return jsonify(result), 201
-
+        data = request.get_json() or {}
+        path = (data.get("path") or "").strip().strip("/")
+        if not path or data.get("type") != "folder":
+            return jsonify({'error': 'path and type: "folder" required'}), 400
+        root = _tree_root(workspace_name, "saved_tests")
+        root.mkdir(parents=True, exist_ok=True)
+        local_tree.create_folder(root, path)
+        return jsonify({"success": True, "path": path}), 201
     except ValueError as e:
-        return jsonify({'error': str(e)}), 409
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
-        print(f"Error creating test: {e}")
-        return jsonify({'error': 'Failed to create test'}), 500
+        app.logger.exception("Error creating folder: %s", e)
+        return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>', methods=['GET'])
-@login_required
-@workspace_access_required(permission='read')
-def get_workspace_test(workspace_id, filename):
-    """Get a specific test from a workspace."""
-    try:
-        test_data = db.get_test(workspace_id, filename)
-        if not test_data:
-            return jsonify({'error': 'Test not found'}), 404
-        return jsonify(test_data), 200
-    except Exception as e:
-        print(f"Error getting test: {e}")
-        return jsonify({'error': 'Failed to get test'}), 500
-
-
-@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>', methods=['PUT'])
+@app.route('/api/workspaces/<workspace_name>/tree/ai_steps', methods=['POST'])
 @login_required
 @workspace_access_required(permission='write')
-def update_workspace_test(workspace_id, filename):
-    """Update a test in a workspace."""
+def post_tree_ai_steps(workspace_name):
+    """Create a folder under AI Steps. Body: { "path": "folder/sub", "type": "folder" }."""
     try:
-        req_data = request.get_json()
-        fields = {}
-        if 'name' in req_data:
-            fields['name'] = req_data['name']
-        if 'code' in req_data:
-            fields['code'] = req_data['code']
-        if 'status' in req_data:
-            fields['last_run_status'] = req_data['status']
+        data = request.get_json() or {}
+        path = (data.get("path") or "").strip().strip("/")
+        if not path or data.get("type") != "folder":
+            return jsonify({'error': 'path and type: "folder" required'}), 400
+        root = _tree_root(workspace_name, "ai_steps")
+        root.mkdir(parents=True, exist_ok=True)
+        local_tree.create_folder(root, path)
+        return jsonify({"success": True, "path": path}), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Error creating folder: %s", e)
+        return jsonify({'error': str(e)}), 500
 
-        result = db.update_test(workspace_id, filename, **fields)
-        if not result:
-            return jsonify({'error': 'Test not found'}), 404
+
+@app.route('/api/workspaces/<workspace_name>/tree/saved_tests/move', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def move_tree_saved_test(workspace_name):
+    """Move a file or folder. Body: { "from": "path", "to": "path" }."""
+    try:
+        data = request.get_json() or {}
+        from_path = (data.get("from") or "").strip().strip("/")
+        to_path = (data.get("to") or "").strip().strip("/")
+        if not from_path or not to_path:
+            return jsonify({'error': 'from and to are required'}), 400
+        if from_path == to_path:
+            return jsonify({'error': 'Source and destination are the same'}), 400
+        root = _tree_root(workspace_name, "saved_tests")
+        root.mkdir(parents=True, exist_ok=True)
+        local_tree.move_path(root, from_path, to_path, "saved_tests")
+        return jsonify({"success": True, "to": to_path}), 200
+    except FileNotFoundError:
+        return jsonify({'error': 'Source not found (only items in the file tree can be moved)'}), 404
+    except ValueError as e:
+        err = str(e)
+        if "already exists" in err.lower():
+            return jsonify({'error': err}), 409
+        return jsonify({'error': err}), 400
+    except Exception as e:
+        app.logger.exception("Error moving: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/workspaces/<workspace_name>/tree/ai_steps/move', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def move_tree_ai_step(workspace_name):
+    """Move a file or folder. Body: { "from": "path", "to": "path" }."""
+    try:
+        data = request.get_json() or {}
+        from_path = (data.get("from") or "").strip().strip("/")
+        to_path = (data.get("to") or "").strip().strip("/")
+        if not from_path or not to_path:
+            return jsonify({'error': 'from and to are required'}), 400
+        if from_path == to_path:
+            return jsonify({'error': 'Source and destination are the same'}), 400
+        root = _tree_root(workspace_name, "ai_steps")
+        root.mkdir(parents=True, exist_ok=True)
+        local_tree.move_path(root, from_path, to_path, "ai_steps")
+        return jsonify({"success": True, "to": to_path}), 200
+    except FileNotFoundError:
+        return jsonify({'error': 'Source not found (only items in the file tree can be moved)'}), 404
+    except ValueError as e:
+        err = str(e)
+        if "already exists" in err.lower():
+            return jsonify({'error': err}), 409
+        return jsonify({'error': err}), 400
+    except Exception as e:
+        app.logger.exception("Error moving: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/workspaces/<workspace_name>/tree/saved_tests/<path:filepath>', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def get_tree_saved_test_file(workspace_name, filepath):
+    """Get a single Saved Test file content by path (disk only)."""
+    try:
+        root = _tree_root(workspace_name, "saved_tests")
+        data = local_tree.get_file_content(root, filepath, "saved_tests")
+        meta = local_tree.get_last_run_meta(root, filepath)
+        if meta:
+            data["last_run_status"] = meta.get("last_run_status")
+            data["last_run_time"] = meta.get("last_run_time")
+        return jsonify(data), 200
+    except FileNotFoundError:
+        return jsonify({'error': 'Test not found'}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Error reading test: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/workspaces/<workspace_name>/tree/saved_tests/<path:filepath>', methods=['PUT'])
+@login_required
+@workspace_access_required(permission='write')
+def put_tree_saved_test_file(workspace_name, filepath):
+    """Create or update a Saved Test file. Body: { "name", "code" }."""
+    try:
+        data = request.get_json() or {}
+        name = data.get("name", "").strip()
+        code = data.get("code", "")
+        root = _tree_root(workspace_name, "saved_tests")
+        root.mkdir(parents=True, exist_ok=True)
+        result = local_tree.create_or_update_file(root, filepath, "saved_tests", name=name, code=code)
         return jsonify(result), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
-        print(f"Error updating test: {e}")
-        return jsonify({'error': 'Failed to update test'}), 500
+        app.logger.exception("Error writing test: %s", e)
+        return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>', methods=['DELETE'])
+@app.route('/api/workspaces/<workspace_name>/tree/saved_tests/<path:filepath>', methods=['DELETE'])
 @login_required
 @workspace_access_required(permission='write')
-def delete_workspace_test(workspace_id, filename):
-    """Delete a test from a workspace."""
+def delete_tree_saved_test(workspace_name, filepath):
+    """Delete a Saved Test file or folder."""
     try:
-        if not db.delete_test(workspace_id, filename):
-            return jsonify({'error': 'Test not found'}), 404
-        return jsonify({'success': True, 'message': 'Test deleted successfully'}), 200
+        root = _tree_root(workspace_name, "saved_tests")
+        local_tree.delete_path(root, filepath)
+        return jsonify({"success": True}), 200
+    except FileNotFoundError:
+        return jsonify({'error': 'Not found'}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
-        print(f"Error deleting test: {e}")
-        return jsonify({'error': 'Failed to delete test'}), 500
+        app.logger.exception("Error deleting: %s", e)
+        return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>/artifacts', methods=['GET'])
+@app.route('/api/workspaces/<workspace_name>/tree/ai_steps/<path:filepath>', methods=['GET'])
 @login_required
 @workspace_access_required(permission='read')
-def get_workspace_test_artifacts(workspace_id, filename):
-    """Get list of artifacts for a test in a workspace, with local video URLs."""
+def get_tree_ai_step_file(workspace_name, filepath):
+    """Get a single AI Step file content by path (disk only)."""
     try:
-        artifacts = db.get_test_artifacts(workspace_id, filename)
-        if artifacts is None:
-            return jsonify({'error': 'Test not found'}), 404
-        for a in artifacts:
-            if a.get('video_path'):
-                a['video_url'] = f"/api/video/{a['video_path']}"
-            if a.get('trace_path'):
-                a['trace_url'] = f"/api/trace/{a['trace_path']}"
-        return jsonify(artifacts), 200
+        root = _tree_root(workspace_name, "ai_steps")
+        data = local_tree.get_file_content(root, filepath, "ai_steps")
+        meta = local_tree.get_last_run_meta(root, filepath)
+        if meta:
+            data["last_run_status"] = meta.get("last_run_status")
+            data["last_run_time"] = meta.get("last_run_time")
+        return jsonify(data), 200
+    except FileNotFoundError:
+        return jsonify({'error': 'AI step not found'}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
-        print(f"Error getting test artifacts: {e}")
-        return jsonify({'error': 'Failed to load artifacts'}), 500
+        app.logger.exception("Error reading AI step: %s", e)
+        return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/workspaces/<int:workspace_id>/tests/<filename>/artifacts', methods=['DELETE'])
+@app.route('/api/workspaces/<workspace_name>/tree/ai_steps/<path:filepath>', methods=['PUT'])
 @login_required
 @workspace_access_required(permission='write')
-def delete_workspace_test_artifacts(workspace_id, filename):
-    """Delete all artifacts (DB rows + local files) for a test."""
+def put_tree_ai_step_file(workspace_name, filepath):
+    """Create or update an AI Step file. Body: { "name", "steps" }."""
     try:
-        db.delete_test_artifacts(workspace_id, filename)
-        return jsonify({'ok': True}), 200
+        data = request.get_json() or {}
+        name = data.get("name", "").strip()
+        steps = data.get("steps", "")
+        root = _tree_root(workspace_name, "ai_steps")
+        root.mkdir(parents=True, exist_ok=True)
+        result = local_tree.create_or_update_file(root, filepath, "ai_steps", name=name, steps=steps)
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
-        print(f"Error deleting artifacts: {e}")
-        return jsonify({'error': 'Failed to delete artifacts'}), 500
+        app.logger.exception("Error writing AI step: %s", e)
+        return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/workspaces/<int:workspace_id>/ai-steps', methods=['GET'])
+@app.route('/api/workspaces/<workspace_name>/tree/ai_steps/<path:filepath>', methods=['DELETE'])
 @login_required
-@workspace_access_required(permission='read')
-def get_workspace_ai_steps(workspace_id):
-    """Get all AI steps in a workspace."""
+@workspace_access_required(permission='write')
+def delete_tree_ai_step(workspace_name, filepath):
+    """Delete an AI Step file or folder."""
     try:
-        ai_steps = db.get_ai_steps(workspace_id)
-        return jsonify({'ai_steps': ai_steps}), 200
+        root = _tree_root(workspace_name, "ai_steps")
+        local_tree.delete_path(root, filepath)
+        return jsonify({"success": True}), 200
+    except FileNotFoundError:
+        return jsonify({'error': 'Not found'}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
-        app.logger.exception("Error getting AI steps for workspace %s: %s", workspace_id, e)
-        return jsonify({'error': 'Failed to get AI steps'}), 500
+        app.logger.exception("Error deleting: %s", e)
+        return jsonify({'error': str(e)}), 500
 
 
-# ========== END WORKSPACE-AWARE TEST MANAGEMENT API ENDPOINTS ==========
+# ========== END LOCAL TREE API ==========
 
 
 @app.route('/api/example-tests')
@@ -2085,6 +2245,39 @@ def get_saved_tests():
 @login_required
 def get_recent_recordings():
     """Get recent video recordings for the current workspace."""
+    workspace_name = request.args.get('workspaceName')
+    if workspace_name:
+        artifacts_base = Config.AUTOGEN_WORKSPACES_DIR / workspace_name / 'saved_tests' / 'artifacts'
+        recordings = []
+        if artifacts_base.is_dir():
+            for entry in sorted(artifacts_base.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+                if not entry.is_dir():
+                    continue
+                video = entry / 'recording.webm'
+                if not video.exists():
+                    continue
+                status_file = entry / 'status.json'
+                status = 'unknown'
+                timestamp = ''
+                if status_file.exists():
+                    import json as _json
+                    try:
+                        sd = _json.loads(status_file.read_text(encoding='utf-8'))
+                        status = sd.get('status', 'unknown')
+                        timestamp = sd.get('timestamp', '')
+                    except Exception:
+                        pass
+                if not timestamp:
+                    from datetime import datetime as _dt
+                    timestamp = _dt.utcfromtimestamp(video.stat().st_mtime).isoformat()
+                test_name = entry.name.replace('_', ' ')
+                recordings.append({
+                    'test_filename': entry.name,
+                    'test_name': test_name,
+                    'status': status,
+                    'timestamp': timestamp,
+                })
+        return jsonify(recordings)
     ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify([])
@@ -2146,10 +2339,16 @@ def update_test_status(filename):
     """Update the last run status of a saved test."""
     data = request.json
     status = data.get('status')
+    workspace_name = request.args.get('workspaceName')
+    if workspace_name:
+        root = _tree_root(workspace_name, 'saved_tests')
+        local_tree.write_last_run_meta(
+            root, filename, status=status, last_run_time=datetime.utcnow().isoformat()
+        )
+        return jsonify({'success': True})
     ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'Test not found'}), 404
-
     result = db.update_test(ws_id, filename,
                                      last_run_status=status,
                                      last_run_time=datetime.now())
@@ -2206,6 +2405,14 @@ def save_ai_step():
 @login_required
 def get_ai_step(filename):
     """Get a specific AI step test."""
+    workspace_name = request.args.get('workspaceName')
+    if workspace_name:
+        root = _tree_root(workspace_name, 'ai_steps')
+        try:
+            data = local_tree.get_file_content(root, filename, 'ai_steps')
+            return jsonify(data)
+        except FileNotFoundError:
+            return jsonify({'error': 'AI step not found'}), 404
     ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'AI step not found'}), 404
@@ -2220,16 +2427,24 @@ def get_ai_step(filename):
 def update_ai_step(filename):
     """Update an existing AI step test."""
     data = request.json
+    workspace_name = request.args.get('workspaceName')
+    if workspace_name:
+        root = _tree_root(workspace_name, 'ai_steps')
+        steps = data.get('steps', '')
+        name = data.get('name')
+        try:
+            local_tree.create_or_update_file(root, filename, 'ai_steps', name=name, steps=steps)
+            return jsonify({'success': True})
+        except (ValueError, FileNotFoundError) as e:
+            return jsonify({'error': str(e)}), 400
     ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'AI step not found'}), 404
-
     fields = {}
     if 'steps' in data:
         fields['steps'] = data['steps']
     if 'name' in data:
         fields['name'] = data['name']
-
     result = db.update_ai_step(ws_id, filename, **fields)
     if not result:
         return jsonify({'error': 'AI step not found'}), 404
@@ -2240,6 +2455,14 @@ def update_ai_step(filename):
 @login_required
 def delete_ai_step(filename):
     """Delete an AI step test."""
+    workspace_name = request.args.get('workspaceName')
+    if workspace_name:
+        root = _tree_root(workspace_name, 'ai_steps')
+        try:
+            local_tree.delete_path(root, filename)
+            return jsonify({'success': True})
+        except FileNotFoundError:
+            return jsonify({'error': 'AI step not found'}), 404
     ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'AI step not found'}), 404
@@ -2252,6 +2475,14 @@ def delete_ai_step(filename):
 @login_required
 def get_ai_step_markdown(filename):
     """Get AI step in markdown format."""
+    workspace_name = request.args.get('workspaceName')
+    if workspace_name:
+        root = _tree_root(workspace_name, 'ai_steps')
+        try:
+            data = local_tree.get_file_content(root, filename, 'ai_steps')
+            return jsonify({'markdown': data.get('steps', ''), 'filename': filename})
+        except FileNotFoundError:
+            return jsonify({'error': 'AI step not found'}), 404
     ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'AI step not found'}), 404
@@ -2269,11 +2500,17 @@ def update_ai_step_markdown(filename):
     markdown_content = data.get('markdown')
     if not markdown_content:
         return jsonify({'error': 'Markdown content required'}), 400
-
+    workspace_name = request.args.get('workspaceName')
+    if workspace_name:
+        root = _tree_root(workspace_name, 'ai_steps')
+        try:
+            local_tree.create_or_update_file(root, filename, 'ai_steps', steps=markdown_content.strip())
+            return jsonify({'success': True})
+        except (ValueError, FileNotFoundError) as e:
+            return jsonify({'error': str(e)}), 400
     ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'AI step not found'}), 404
-
     result = db.update_ai_step(ws_id, filename, steps=markdown_content.strip())
     if not result:
         return jsonify({'error': 'AI step not found'}), 404
@@ -2289,11 +2526,11 @@ def serve_artifact(filepath):
 
 @app.route('/api/trace/<path:filepath>')
 def serve_trace(filepath):
-    """Serve a Playwright trace.zip file from ~/.autogen/artifacts/."""
+    """Serve a Playwright trace.zip file from ~/.autogen/workspaces/."""
     from flask import send_file
     from config import Config
 
-    base = Config.ARTIFACTS_DIR.resolve()
+    base = Config.AUTOGEN_WORKSPACES_DIR.resolve()
     full_path = (base / filepath).resolve()
     if not str(full_path).startswith(str(base)):
         return jsonify({'error': 'Forbidden'}), 403
@@ -2326,17 +2563,17 @@ def trace_viewer_static(filepath):
 
 @app.route('/api/video/<path:filepath>')
 def stream_video(filepath):
-    """Stream a local artifact file (video or HAR) from ~/.autogen/artifacts/.
+    """Stream a local artifact file (video or HAR) from ~/.autogen/workspaces/.
 
     No auth header needed — the browser <video> element fetches this directly.
-    Path-traversal is prevented by checking the resolved path stays inside ARTIFACTS_DIR.
+    Path-traversal is prevented by checking the resolved path stays inside AUTOGEN_WORKSPACES_DIR.
     """
     from flask import send_file
     from config import Config
 
-    base = Config.ARTIFACTS_DIR.resolve()
+    base = Config.AUTOGEN_WORKSPACES_DIR.resolve()
     full_path = (base / filepath).resolve()
-    # Prevent path traversal outside the artifacts directory
+    # Prevent path traversal outside the workspaces directory
     if not str(full_path).startswith(str(base)):
         return jsonify({'error': 'Forbidden'}), 403
     if not full_path.exists():
@@ -2348,6 +2585,12 @@ def stream_video(filepath):
 @login_required
 def get_test_artifacts(filename):
     """Get list of artifacts for a saved test."""
+    workspace_name = request.args.get('workspaceName')
+    if workspace_name:
+        test_name = filename.replace('/', '_').replace('\\', '_')
+        if test_name.endswith('.py'):
+            test_name = test_name[:-3]
+        return jsonify(_get_artifacts_for_test(workspace_name, test_name))
     ws_id = _get_workspace_id()
     if not ws_id:
         return jsonify({'error': 'Test not found'}), 404
@@ -2355,6 +2598,64 @@ def get_test_artifacts(filename):
     if artifacts is None:
         return jsonify({'error': 'Test not found'}), 404
     return jsonify(artifacts)
+
+
+def _get_artifacts_for_test(workspace_name: str, test_name: str) -> list:
+    """Return artifact info list for a test from the local filesystem."""
+    art_dir = Config.AUTOGEN_WORKSPACES_DIR / workspace_name / 'saved_tests' / 'artifacts' / test_name
+    if not art_dir.is_dir():
+        return []
+    video = art_dir / 'recording.webm'
+    if not video.exists():
+        return []
+    video_rel = f'{workspace_name}/saved_tests/artifacts/{test_name}/recording.webm'
+    trace_rel = f'{workspace_name}/saved_tests/artifacts/{test_name}/trace.zip'
+    has_trace = (art_dir / 'trace.zip').exists()
+    status = 'unknown'
+    timestamp = ''
+    status_file = art_dir / 'status.json'
+    if status_file.exists():
+        import json as _json
+        try:
+            sd = _json.loads(status_file.read_text(encoding='utf-8'))
+            status = sd.get('status', 'unknown')
+            timestamp = sd.get('timestamp', '')
+        except Exception:
+            pass
+    if not timestamp:
+        from datetime import datetime as _dt
+        timestamp = _dt.utcfromtimestamp(video.stat().st_mtime).isoformat()
+    size_mb = round(video.stat().st_size / (1024 * 1024), 2)
+    return [{
+        'video_url': f'/api/video/{video_rel}',
+        'video_path': video_rel,
+        'trace_path': trace_rel if has_trace else None,
+        'timestamp': timestamp,
+        'video_size_mb': size_mb,
+        'status': status,
+    }]
+
+
+@app.route('/api/workspaces/<workspace_name>/tests/<test_name>/artifacts', methods=['GET'])
+@login_required
+def get_workspace_test_artifacts(workspace_name, test_name):
+    """Get artifacts for a test in a workspace (filesystem-based)."""
+    return jsonify(_get_artifacts_for_test(workspace_name, test_name))
+
+
+@app.route('/api/workspaces/<workspace_name>/tests/<test_name>/artifacts', methods=['DELETE'])
+@login_required
+def delete_workspace_test_artifacts(workspace_name, test_name):
+    """Delete artifact directory for a test."""
+    import shutil
+    art_dir = Config.AUTOGEN_WORKSPACES_DIR / workspace_name / 'saved_tests' / 'artifacts' / test_name
+    if not art_dir.is_dir():
+        return jsonify({'success': True})
+    try:
+        shutil.rmtree(art_dir)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/format-code', methods=['POST'])
@@ -2447,17 +2748,21 @@ def handle_run_playwright_code(data):
 @socketio.on('run_saved_test')
 def handle_run_saved_test(data):
     """Handle running a saved Playwright test (no AI needed)."""
-    filename = data.get('filename')
-    workspace_id = data.get('workspaceId')
-    if workspace_id is not None:
-        workspace_id = int(workspace_id)
+    filename = data.get('filename')  # may be path e.g. "folder/test.py"
+    workspace_name = data.get('workspaceName')
 
     if not filename:
         emit('log', {'type': 'error', 'message': 'No test specified'})
         return
 
     try:
-        test_data = db.get_test(workspace_id, filename) if workspace_id else None
+        test_data = None
+        root = _tree_root(workspace_name, "saved_tests") if workspace_name else None
+        if root and root.exists():
+            try:
+                test_data = local_tree.get_file_content(root, filename, "saved_tests")
+            except (FileNotFoundError, ValueError):
+                pass
         if not test_data:
             emit('log', {'type': 'error', 'message': 'Test not found'})
             return
@@ -2466,7 +2771,10 @@ def handle_run_saved_test(data):
         emit('log', {'type': 'info', 'message': f'Running saved test: {test_data.get("name")}'})
         emit('log', {'type': 'info', 'message': '🚀 Executing Playwright code with live browser preview...'})
 
-        socketio.start_background_task(run_playwright_code_with_streaming, code, filename, workspace_id)
+        socketio.start_background_task(
+            run_playwright_code_with_streaming,
+            code, filename, workspace_name, True
+        )
 
     except Exception as e:
         emit('log', {'type': 'error', 'message': f'Error running saved test: {str(e)}'})
@@ -2476,11 +2784,11 @@ def handle_run_saved_test(data):
 def handle_run_all_tests(data):
     """Handle running all saved tests in parallel."""
     filenames = data.get('filenames', [])
-    workspace_id = data.get('workspaceId')
-    socketio.start_background_task(run_all_tests_parallel, filenames, workspace_id)
+    workspace_name = data.get('workspaceName')
+    socketio.start_background_task(run_all_tests_parallel, filenames, workspace_name)
 
 
-def run_all_tests_parallel(filenames, workspace_id=None):
+def run_all_tests_parallel(filenames, workspace_name=None):
     """Execute all tests in parallel and collect results."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time
@@ -2489,9 +2797,16 @@ def run_all_tests_parallel(filenames, workspace_id=None):
     results = []
 
     def run_single_test(filename):
-        """Execute a single test and return result."""
+        """Execute a single test and return result from local tree."""
         try:
-            test_data = db.get_test(workspace_id, filename) if workspace_id else None
+            test_data = None
+            if workspace_name:
+                root = _tree_root(workspace_name, "saved_tests")
+                if root.exists():
+                    try:
+                        test_data = local_tree.get_file_content(root, filename, "saved_tests")
+                    except (FileNotFoundError, ValueError):
+                        pass
             if not test_data:
                 return {
                     'filename': filename,
@@ -2503,13 +2818,16 @@ def run_all_tests_parallel(filenames, workspace_id=None):
             name = test_data.get('name', filename)
             code = test_data.get('code', '')
 
-            # Execute test in headless mode with workspace_id
-            status, error_msg = run_playwright_code_headless(code, filename, workspace_id)
+            status, error_msg = run_playwright_code_headless(code, filename, workspace_name)
 
-            # Update test status in DB
-            db.update_test(workspace_id, filename,
-                                    last_run_status=status,
-                                    last_run_time=datetime.now())
+            try:
+                local_tree.write_last_run_meta(
+                    _tree_root(workspace_name, "saved_tests"), filename,
+                    status=status,
+                    last_run_time=datetime.utcnow().isoformat(),
+                )
+            except Exception:
+                pass
 
             return {
                 'filename': filename,
@@ -2565,26 +2883,25 @@ def run_all_tests_parallel(filenames, workspace_id=None):
 
 @socketio.on('run_ai_step')
 def handle_run_ai_step(data):
-    """Handle running an AI step test by database ID."""
+    """Handle running an AI step test from local tree."""
     global current_ai_step
 
-    step_id = data.get('id')
-    # Fallback to filename+workspace for backwards compatibility
-    filename = data.get('filename')
-    workspace_id = data.get('workspaceId')
+    filename = data.get('filename')  # may be path e.g. "folder/step.md"
+    workspace_name = data.get('workspaceName')
 
-    if not step_id and not filename:
+    if not filename:
         emit('log', {'type': 'error', 'message': 'No AI step specified'})
         return
 
     try:
-        if step_id:
-            step_data = db.get_ai_step_by_id(step_id, workspace_id=workspace_id)
-            if step_data:
-                workspace_id = step_data['workspace_id']
-                filename = step_data['filename']
-        else:
-            step_data = db.get_ai_step(workspace_id, filename) if workspace_id else None
+        step_data = None
+        if filename and workspace_name:
+            root = _tree_root(workspace_name, "ai_steps")
+            if root.exists():
+                try:
+                    step_data = local_tree.get_file_content(root, filename, "ai_steps")
+                except (FileNotFoundError, ValueError):
+                    pass
 
         if not step_data:
             emit('log', {'type': 'error', 'message': 'AI step not found'})
@@ -2599,14 +2916,19 @@ def handle_run_ai_step(data):
 
         emit('log', {'type': 'info', 'message': f'🤖 Running AI steps: {name}'})
 
-        # Update last_run timestamp in DB
-        db.update_ai_step(workspace_id, filename, last_run=datetime.now())
+        try:
+            root = _tree_root(workspace_name, "ai_steps")
+            local_tree.write_last_run_meta(
+                root, filename,
+                last_run_time=datetime.utcnow().isoformat(),
+            )
+        except Exception:
+            pass
 
         # Track current AI step for code generation prompt
-        current_ai_step = {'filename': filename, 'name': name, 'workspace_id': workspace_id}
+        current_ai_step = {'filename': filename, 'name': name, 'workspace_name': workspace_name}
 
-        # Run test using existing run_test_sync logic with workspace_id
-        socketio.start_background_task(run_test_sync, steps, filename, workspace_id)
+        socketio.start_background_task(run_test_sync, steps, filename, workspace_name)
 
     except Exception as e:
         emit('log', {'type': 'error', 'message': f'Error running AI step: {str(e)}'})
@@ -2618,17 +2940,17 @@ def handle_chat_message(data):
     message = data.get('message', '')
     existing_code = data.get('existing_code')
     image = data.get('image')
-    workspace_id = data.get('workspace_id')
+    workspace_name = data.get('workspaceName')
     user_id = data.get('user_id')
 
     if not message and not image:
         emit('chat_error', {'message': 'No message or image provided'})
         return
 
-    if workspace_id and user_id:
+    if workspace_name and user_id:
         # Use workspace agent with full tool access
         socketio.start_background_task(
-            _run_workspace_agent, message, existing_code, image, workspace_id, user_id
+            _run_workspace_agent, message, existing_code, image, workspace_name, user_id
         )
     else:
         # Fallback: no workspace context, use simple code agent
@@ -2636,12 +2958,12 @@ def handle_chat_message(data):
         socketio.start_background_task(handle_code_chat, message, existing_code, image, file_type)
 
 
-def _run_workspace_agent(message, existing_code, image, workspace_id, user_id):
+def _run_workspace_agent(message, existing_code, image, workspace_name, user_id):
     """Background task: run workspace agent with tool-calling loop."""
     try:
         workspace_agent.run(
             message=message,
-            workspace_id=workspace_id,
+            workspace_id=workspace_name,
             user_id=user_id,
             emit_fn=socketio.emit,
             image=image,
@@ -2684,9 +3006,9 @@ def handle_code_chat(message, existing_code, image=None, file_type='unknown'):
 @socketio.on('clear_chat')
 def handle_clear_chat(data=None):
     """Handle chat history clear request."""
-    workspace_id = (data or {}).get('workspace_id')
-    if workspace_id:
-        workspace_agent.clear_history(workspace_id)
+    workspace_name = (data or {}).get('workspaceName')
+    if workspace_name:
+        workspace_agent.clear_history(workspace_name)
     else:
         code_agent.clear_history()
     emit('log', {'type': 'info', 'message': 'Chat history cleared'})
@@ -2695,12 +3017,16 @@ def handle_clear_chat(data=None):
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection."""
-    # Check if user is authenticated
+    from auth import _LOCAL_MODE, _LOCAL_TOKEN, _LOCAL_USER
+
+    # In local mode, accept any connection
+    if _LOCAL_MODE:
+        emit('log', {'type': 'info', 'message': 'Connected to AutoGen Web Tester'})
+        return
+
     # Validate JWT from socket auth params
-    # Flask-SocketIO passes the client's `auth` dict via request.args (query) or request headers
     token = request.args.get('token')
     if not token:
-        # Also check Authorization header (some clients send it there)
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             token = auth_header[7:]

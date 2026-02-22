@@ -168,6 +168,14 @@ def create_workspace(name: str, ws_type: str, owner_id: str) -> dict:
     return _format_workspace(ws)
 
 
+def get_workspace_member_role(workspace_id: int, user_id: str) -> str | None:
+    """Return the member's role string, or None if they are not a member."""
+    resp = _sb().table('workspace_members').select('role').eq(
+        'workspace_id', workspace_id
+    ).eq('user_id', user_id).execute()
+    return resp.data[0]['role'] if resp.data else None
+
+
 def workspace_has_access(workspace_id: int, user_id: str, permission: str = 'read') -> bool:
     ws = get_workspace_by_id(workspace_id)
     if not ws:

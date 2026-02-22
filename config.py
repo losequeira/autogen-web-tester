@@ -40,9 +40,16 @@ ENABLE_HAR_RECORDING = os.getenv("ENABLE_HAR_RECORDING", "true").lower() == "tru
 ENABLE_TRACE_RECORDING = os.getenv("ENABLE_TRACE_RECORDING", "true").lower() == "true"
 MAX_ARTIFACT_SIZE_MB = int(os.getenv("MAX_ARTIFACT_SIZE_MB", "500"))  # Fail if exceeds
 
+# Local mode: skip Supabase auth entirely (single-user Mac app).
+# Set LOCAL_MODE=false in .env to re-enable Supabase authentication.
+LOCAL_MODE = os.getenv("LOCAL_MODE", "true").lower() != "false"
+
 # Local auto-login (single-user Mac app — skip login screen)
 LOCAL_USERNAME = os.getenv("LOCAL_USERNAME", "")
 LOCAL_PASSWORD = os.getenv("LOCAL_PASSWORD", "")
+
+# Recorder: minimum pause (ms) between actions to record as an explicit wait step
+RECORDER_WAIT_THRESHOLD_MS = int(os.getenv("RECORDER_WAIT_THRESHOLD_MS", "1000"))
 
 # CDP Screencast (live browser view quality)
 USE_CDP_SCREENCAST = os.getenv("USE_CDP_SCREENCAST", "true").lower() == "true"
@@ -61,8 +68,8 @@ class Config:
     SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "test-artifacts")
 
-    # Local artifact storage (Mac app — videos/HAR saved to disk)
-    ARTIFACTS_DIR: Path = Path.home() / ".autogen" / "artifacts"
+    # Local workspace tree (Saved Tests / AI Steps) for prototyping
+    AUTOGEN_WORKSPACES_DIR: Path = Path.home() / ".autogen" / "workspaces"
 
     # Flask Secret Key (for CSRF protection)
     SECRET_KEY = os.getenv("SECRET_KEY")

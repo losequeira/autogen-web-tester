@@ -1,67 +1,33 @@
 """
 Access control decorators for workspace-aware endpoints.
 
-Provides permission checking for workspace operations.
+Workspaces are purely local directories under ~/.autogen/workspaces/<name>/.
+Access check: the directory must exist.
 """
 
 from functools import wraps
 from flask import jsonify
-from auth import get_current_user
-import db
+from config import Config
 
 
 def workspace_access_required(permission='read'):
     """
-    Decorator to check if user has access to a workspace.
+    Decorator to check that the workspace directory exists.
 
-    Args:
-        permission: Required permission level ('read' or 'write')
+    Returns 404 if AUTOGEN_WORKSPACES_DIR/<workspace_name> does not exist.
+    The permission argument is accepted for API compatibility but not used.
     """
     def decorator(f):
         @wraps(f)
-        def decorated_function(workspace_id=None, *args, **kwargs):
-            if workspace_id is None:
-                return jsonify({'error': 'Workspace ID is required'}), 400
+        def decorated_function(workspace_name=None, *args, **kwargs):
+            if not workspace_name:
+                return jsonify({'error': 'Workspace name is required'}), 400
 
-            user = get_current_user()
-            if user is None:
-                return jsonify({'error': 'Authentication required'}), 401
-
-            workspace = db.get_workspace_by_id(workspace_id)
-            if not workspace:
+            ws_dir = Config.AUTOGEN_WORKSPACES_DIR / workspace_name
+            if not ws_dir.is_dir():
                 return jsonify({'error': 'Workspace not found'}), 404
 
-            if not db.workspace_has_access(workspace_id, user['id'], permission):
-                return jsonify({'error': 'Access denied'}), 403
-
-            return f(workspace_id=workspace_id, *args, **kwargs)
-
-        return decorated_function
-    return decorator
-
-
-def workspace_owner_required():
-    """
-    Decorator to check if user is the owner of a workspace.
-    """
-    def decorator(f):
-        @wraps(f)
-        def decorated_function(workspace_id=None, *args, **kwargs):
-            if workspace_id is None:
-                return jsonify({'error': 'Workspace ID is required'}), 400
-
-            user = get_current_user()
-            if user is None:
-                return jsonify({'error': 'Authentication required'}), 401
-
-            workspace = db.get_workspace_by_id(workspace_id)
-            if not workspace:
-                return jsonify({'error': 'Workspace not found'}), 404
-
-            if workspace['owner_id'] != user['id']:
-                return jsonify({'error': 'Only workspace owner can perform this action'}), 403
-
-            return f(workspace_id=workspace_id, *args, **kwargs)
+            return f(workspace_name=workspace_name, *args, **kwargs)
 
         return decorated_function
     return decorator

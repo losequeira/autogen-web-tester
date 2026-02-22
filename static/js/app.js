@@ -77,57 +77,33 @@ const socket = io({ query: { token: authToken || '' } });
 
 // Authentication state
 let currentUser = null;
-let currentWorkspaceId = null;
+let currentWorkspaceName = null;
 
 // Cache of tests keyed by filename, populated when the file explorer loads
 let testCache = {};
 
 // ========== USER PREFERENCES SYNC ==========
-// Debounce timer for batching preference saves to DB
-let _prefSaveTimer = null;
-let _pendingPrefUpdates = {};
-// Cache preferences for startup so we only GET once; invalidated after PUT
-let _cachedPreferences = null;
-
 function savePreferenceToDb(key, value) {
-    _pendingPrefUpdates[key] = value;
-    if (_prefSaveTimer) clearTimeout(_prefSaveTimer);
-    _prefSaveTimer = setTimeout(_flushPreferences, 500);
-}
-
-function _flushPreferences() {
-    const updates = _pendingPrefUpdates;
-    _pendingPrefUpdates = {};
-    _prefSaveTimer = null;
-
-    if (Object.keys(updates).length === 0) return;
-
-    _cachedPreferences = null; // invalidate cache after any PUT
-    authFetch('/api/preferences', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ preferences: updates })
-    }).catch(err => console.error('Failed to save preferences to DB:', err));
-}
-
-/** Fetch preferences once and cache for startup; returns cached value when available. */
-async function loadPreferencesFromDb() {
-    if (_cachedPreferences !== null) return _cachedPreferences;
     try {
-        const response = await authFetch('/api/preferences');
-        if (!response.ok) return null;
-        const data = await response.json();
-        _cachedPreferences = data.preferences || {};
-        return _cachedPreferences;
+        localStorage.setItem('pref_' + key, JSON.stringify(value));
     } catch (err) {
-        console.error('Failed to load preferences from DB:', err);
-        return null;
+        console.error('Failed to save preference:', err);
     }
 }
 
-/** Ensure preferences are fetched and cached (e.g. right after auth). Call once at startup. */
+async function loadPreferencesFromDb() {
+    const prefs = {};
+    for (const key of ['theme', 'editorTabsState', 'selectedWorkspaceName']) {
+        const raw = localStorage.getItem('pref_' + key);
+        if (raw !== null) {
+            try { prefs[key] = JSON.parse(raw); } catch { prefs[key] = raw; }
+        }
+    }
+    return prefs;
+}
+
 async function ensurePreferencesCached() {
-    if (_cachedPreferences === null) await loadPreferencesFromDb();
+    // no-op: localStorage reads are synchronous, no caching needed
 }
 // ========== END USER PREFERENCES SYNC ==========
 
@@ -145,19 +121,11 @@ const currentUsernameEl = document.getElementById('current-username');
 const logoutBtn = document.getElementById('logout-btn');
 const workspaceDropdown = document.getElementById('workspace-dropdown');
 const newWorkspaceBtn = document.getElementById('new-workspace-btn');
-const inviteMemberBtn = document.getElementById('invite-member-btn');
-const workspaceMembersContainer = document.getElementById('workspace-members-container');
-const workspaceMembersList = document.getElementById('workspace-members-list');
 
 const newWorkspaceModal = document.getElementById('new-workspace-modal');
 const newWorkspaceForm = document.getElementById('new-workspace-form');
 const closeNewWorkspaceBtns = document.querySelectorAll('.close-new-workspace');
 const newWorkspaceError = document.getElementById('new-workspace-error');
-
-const inviteMemberModal = document.getElementById('invite-member-modal');
-const inviteMemberForm = document.getElementById('invite-member-form');
-const closeInviteMemberBtns = document.querySelectorAll('.close-invite-member');
-const inviteMemberError = document.getElementById('invite-member-error');
 
 let userWorkspaces = [];
 let currentWorkspace = null;
@@ -516,7 +484,7 @@ socket.on('test_complete', (data) => {
         const aiTab = openTabs.find(t => t.id === runningAiStepTabId);
         if (aiTab && activeTabId === runningAiStepTabId) {
             // Reload fresh from DB to make sure we have the latest
-            authFetch(`/api/ai-steps/${runningAiStepTabId}/markdown?workspace_id=${currentWorkspaceId}`)
+            authFetch(`/api/ai-steps/${runningAiStepTabId}/markdown?workspaceName=${currentWorkspaceName}`)
                 .then(res => res.json())
                 .then(aiData => {
                     if (aiData.markdown) {
@@ -530,21 +498,15 @@ socket.on('test_complete', (data) => {
         runningAiStepTabId = null;
     }
 
-    // Update saved test status if this was a saved test run
     if (currentRunningTestFilename) {
-        authFetch(`/api/saved-tests/${currentRunningTestFilename}/status?workspace_id=${currentWorkspaceId}`, {
+        authFetch(`/api/saved-tests/${currentRunningTestFilename}/status?workspaceName=${currentWorkspaceName}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: data.status })
-        })
-        .then(() => {
-            // Reload file explorer to show updated status
-            if (hasFileExplorer) {
-                loadFileExplorer();
-            }
+        }).catch(() => {}).finally(() => {
+            if (hasFileExplorer) loadFileExplorer();
             currentRunningTestFilename = null;
-        })
-        .catch(err => console.error('Error updating test status:', err));
+        });
     }
 });
 
@@ -621,7 +583,7 @@ socket.on('ai_step_complete_with_code', (data) => {
 
     // Reload the AI step content to restore it (it may have been cleared during execution)
     const aiStepFilename = data.ai_step_filename;
-    authFetch(`/api/ai-steps/${aiStepFilename}/markdown?workspace_id=${currentWorkspaceId}`)
+    authFetch(`/api/ai-steps/${aiStepFilename}/markdown?workspaceName=${currentWorkspaceName}`)
         .then(res => res.json())
         .then(aiStepData => {
             // Find and restore the AI step tab if it's open
@@ -646,27 +608,22 @@ socket.on('ai_step_complete_with_code', (data) => {
 
                 if (testName && testName.trim()) {
                     // Save the generated code as a new test
-                    authFetch(`/api/workspaces/${currentWorkspaceId}/tests`, {
-                        method: 'POST',
+                    const trimmedName = testName.trim();
+                    const generatedFilename = trimmedName.replace(/\s+/g, '_') + '.py';
+                    authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(generatedFilename)}`, {
+                        method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            name: testName.trim(),
+                            name: trimmedName,
                             code: data.code,
-                            source: 'ai_step'
                         })
                     })
                     .then(res => res.json())
                     .then(result => {
-                        if (result.success) {
-                            addLogEntry('success', `💾 Saved generated test: ${testName}`);
-
-                            // Reload file explorer
-                            if (hasFileExplorer) {
-                                loadFileExplorer();
-                            }
-
-                            // Open the new test in a tab
-                            openTab(result.filename, testName, data.code, 'test');
+                        if (result.filename) {
+                            addLogEntry('success', `💾 Saved generated test: ${trimmedName}`);
+                            if (hasFileExplorer) loadFileExplorer();
+                            openTab(result.filename, trimmedName, data.code, 'test');
                         } else {
                             alert('Error saving test: ' + (result.error || 'Unknown error'));
                         }
@@ -831,54 +788,49 @@ function saveCurrentTest() {
         const tab = openTabs.find(t => t.id === activeTabId);
         if (!tab) return;
 
-        // Handle AI Step saves
         if (tab.fileType === 'ai-step') {
-            authFetch(`/api/ai-steps/${activeTabId}/markdown?workspace_id=${currentWorkspaceId}`, {
+            const path = encodeURIComponent(activeTabId);
+            authFetch(`/api/workspaces/${currentWorkspaceName}/tree/ai_steps/${path}`, {
                 method: 'PUT',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ markdown: code })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: tab.name, steps: code })
             })
             .then(res => res.json())
             .then(data => {
-                if (data.success) {
-                    addLogEntry('success', `💾 Saved AI Step: ${tab.name}`);
+                if (data.path || data.filename) {
+                    addLogEntry('success', `Saved: ${tab.name}`);
                     tab.isDirty = false;
                     tab.code = code;
                     lastSavedCode = code;
                     renderTabs();
                     loadAiSteps();
                 } else {
-                    alert('Error saving: ' + (data.error || 'Unknown error'));
+                    alert('Error: ' + (data.error || 'Unknown'));
                 }
             })
             .catch(err => alert('Error saving: ' + err));
-
             return;
         }
 
-        authFetch(`/api/saved-tests/${activeTabId}?workspace_id=${currentWorkspaceId}`, {
+        const path = encodeURIComponent(activeTabId);
+        authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${path}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name: tab.name,
-                code: code
-            })
+            body: JSON.stringify({ name: tab.name, code })
         })
         .then(res => res.json())
         .then(data => {
-            if (data.success) {
+            if (data.path || data.filename || data.success) {
                 tab.isDirty = false;
                 tab.code = code;
                 lastSavedCode = code;
                 renderTabs();
-                addLogEntry('success', `💾 Saved: ${tab.name}`);
+                addLogEntry('success', `Saved: ${tab.name}`);
             } else {
-                alert('Error saving: ' + (data.error || 'Unknown error'));
+                alert('Error: ' + (data.error || 'Unknown'));
             }
         })
-        .catch(err => {
-            alert('Failed to save: ' + err);
-        });
+        .catch(err => alert('Failed to save: ' + err));
     } else {
         // Saving as new test
         let defaultName = '';
@@ -984,8 +936,17 @@ function runSavedTest(filename, name) {
 
     socket.emit('run_saved_test', {
         filename,
-        workspaceId: currentWorkspaceId
+        workspaceName: currentWorkspaceName
     });
+}
+
+function collectTreeFilePaths(nodes) {
+    const paths = [];
+    nodes.forEach(n => {
+        if (n.type === 'file' && n.path) paths.push(n.path);
+        if (n.children) paths.push(...collectTreeFilePaths(n.children));
+    });
+    return paths;
 }
 
 async function runAllTests() {
@@ -994,10 +955,11 @@ async function runAllTests() {
         return;
     }
 
-    const response = await authFetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`);
-    const tests = await response.json();
+    const treeRes = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`);
+    const treeData = await treeRes.json();
+    const filePaths = collectTreeFilePaths(treeData.tree || []);
 
-    if (tests.length === 0) {
+    if (filePaths.length === 0) {
         alert('No tests available to run.');
         return;
     }
@@ -1012,43 +974,39 @@ async function runAllTests() {
     // Clear logs
     humanLogContainer.innerHTML = '';
     technicalLogContainer.innerHTML = '';
-    addLogEntry('info', `🚀 Running ${tests.length} tests in parallel...`);
+    addLogEntry('info', `🚀 Running ${filePaths.length} tests in parallel...`);
 
     // Show stop button
     updateStopButtonVisibility();
 
-    // Mark all file items as batch running
-    document.querySelectorAll('.file-item').forEach(item => {
+    document.querySelectorAll('.file-item:not(.file-item--folder)').forEach(item => {
         item.classList.add('batch-running');
     });
 
-    // Disable Run All button
     const runAllBtn = document.getElementById('run-all-tests-btn');
     if (runAllBtn) {
         runAllBtn.disabled = true;
         runAllBtn.style.opacity = '0.5';
     }
 
-    // Add loading spinners
-    tests.forEach(test => {
-        runningTestsSet.add(test.filename);
-        const fileItem = document.querySelector(`.file-item[data-filename="${test.filename}"]`);
+    filePaths.forEach(path => {
+        runningTestsSet.add(path);
+        const fileItem = document.querySelector(`.file-item[data-filename="${path}"]`);
         if (fileItem) {
             fileItem.classList.remove('file-item-status-passed', 'file-item-status-failed', 'file-item-status-unknown', 'file-item-status-running');
             fileItem.classList.add('batch-running-active');
 
             const spinner = document.createElement('span');
             spinner.className = 'test-loading-spinner';
-            spinner.dataset.filename = test.filename;
+            spinner.dataset.filename = path;
             const actions = fileItem.querySelector('.file-item-actions');
-            fileItem.insertBefore(spinner, actions);
+            if (actions) fileItem.insertBefore(spinner, actions);
         }
     });
 
-    // Emit batch run event
     socket.emit('run_all_tests', {
-        filenames: tests.map(t => t.filename),
-        workspaceId: currentWorkspaceId
+        filenames: filePaths,
+        workspaceName: currentWorkspaceName
     });
 }
 
@@ -1241,21 +1199,30 @@ async function restoreTabsState() {
             !tabInfo.id.startsWith('chat_')
         );
 
-        // Fetch all ai-step and test tab contents in parallel
         const fetchPromises = tabsToRestore
             .filter(tabInfo => tabInfo.fileType === 'ai-step' || tabInfo.fileType === 'test')
             .map(async (tabInfo) => {
                 try {
                     if (tabInfo.fileType === 'ai-step') {
-                        const response = await authFetch(`/api/ai-steps/${tabInfo.id}/markdown?workspace_id=${currentWorkspaceId}`);
-                        if (response.ok) {
-                            const data = await response.json();
+                        let res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/ai_steps/${encodeURIComponent(tabInfo.id)}`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            return { tabInfo, type: 'ai-step', data: { markdown: data.steps } };
+                        }
+                        res = await authFetch(`/api/ai-steps/${tabInfo.id}/markdown?workspaceName=${currentWorkspaceName}`);
+                        if (res.ok) {
+                            const data = await res.json();
                             return { tabInfo, type: 'ai-step', data };
                         }
                     } else {
-                        const response = await authFetch(`/api/saved-tests/${tabInfo.id}?workspace_id=${currentWorkspaceId}`);
-                        if (response.ok) {
-                            const data = await response.json();
+                        let res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(tabInfo.id)}`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            return { tabInfo, type: 'test', data };
+                        }
+                        res = await authFetch(`/api/saved-tests/${tabInfo.id}?workspaceName=${currentWorkspaceName}`);
+                        if (res.ok) {
+                            const data = await res.json();
                             return { tabInfo, type: 'test', data };
                         }
                     }
@@ -1423,41 +1390,8 @@ function hideWelcomePage() {
 }
 
 async function fetchTestStatistics() {
-    try {
-        if (!currentWorkspaceId) {
-            return { totalTests: 0, passedTests: 0, failedTests: 0, aiSteps: 0 };
-        }
-
-        // Fetch saved tests for current workspace
-        const testsResponse = await authFetch(`/api/workspaces/${currentWorkspaceId}/tests`);
-        const tests = await testsResponse.json();
-
-        // Fetch AI steps for current workspace
-        const aiStepsResponse = await authFetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
-        const aiStepsData = await aiStepsResponse.json();
-        const aiSteps = aiStepsData.ai_steps || [];
-
-        // Calculate statistics
-        const totalTests = tests.length;
-        const passedTests = tests.filter(t => t.last_run_status === 'success').length;
-        const failedTests = tests.filter(t => t.last_run_status === 'error' || t.last_run_status === 'stopped').length;
-        const aiStepsCount = aiSteps.length;
-
-        return {
-            totalTests,
-            passedTests,
-            failedTests,
-            aiSteps: aiStepsCount
-        };
-    } catch (err) {
-        console.error('Error fetching statistics:', err);
-        return {
-            totalTests: 0,
-            passedTests: 0,
-            failedTests: 0,
-            aiSteps: 0
-        };
-    }
+    // Stats are loaded from tree data in loadDashboardStats; this function is a no-op stub.
+    return { totalTests: 0, passedTests: 0, failedTests: 0, aiSteps: 0 };
 }
 
 function updateFormatBtnVisibility() {
@@ -1564,177 +1498,298 @@ function updateFileListActiveState() {
     }
 }
 
-// File Explorer Functions
+// Root drop zones for "move to root" (attach once to list containers)
+function setupTreeRootDropZones() {
+    if (fileList && !fileList.dataset.dropZoneSetup) {
+        fileList.dataset.dropZoneSetup = '1';
+        fileList.addEventListener('dragover', (e) => {
+            if (!e.dataTransfer.types.includes('application/json')) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        });
+        fileList.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (e.target.closest('.file-item--folder')) return;
+            let data;
+            try { data = JSON.parse(e.dataTransfer.getData('application/json') || '{}'); } catch (_) { return; }
+            if (data.treeType !== 'saved_tests' || !data.path) return;
+            const fromPath = data.path;
+            const toPath = fromPath.split('/').pop();
+            if (toPath === fromPath) return;
+            moveTreeItem(currentWorkspaceName, 'saved_tests', fromPath, toPath).catch(err => alert(err.message || err));
+        });
+    }
+    if (aiStepsList && !aiStepsList.dataset.dropZoneSetup) {
+        aiStepsList.dataset.dropZoneSetup = '1';
+        aiStepsList.addEventListener('dragover', (e) => {
+            if (!e.dataTransfer.types.includes('application/json')) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        });
+        aiStepsList.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (e.target.closest('.file-item--folder')) return;
+            let data;
+            try { data = JSON.parse(e.dataTransfer.getData('application/json') || '{}'); } catch (_) { return; }
+            if (data.treeType !== 'ai_steps' || !data.path) return;
+            const fromPath = data.path;
+            const toPath = fromPath.split('/').pop();
+            if (toPath === fromPath) return;
+            moveTreeItem(currentWorkspaceName, 'ai_steps', fromPath, toPath).catch(err => alert(err.message || err));
+        });
+    }
+}
+
+// Drag-and-drop: move tree item (file or folder) via API, then reload tree and fix open tab id
+async function moveTreeItem(workspaceName, treeType, fromPath, toPath) {
+    const res = await authFetch(`/api/workspaces/${workspaceName}/tree/${treeType}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: fromPath, to: toPath })
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || res.statusText);
+    }
+    if (treeType === 'saved_tests') loadFileExplorer();
+    else loadAiSteps();
+    // If the moved path is the active tab, update tab id to new path so save goes to new location
+    if (activeTabId === fromPath) {
+        const tab = openTabs.find(t => t.id === fromPath);
+        if (tab) {
+            tab.id = toPath;
+            if (activeTabId === fromPath) activeTabId = toPath;
+            renderEditorTabs();
+        }
+    }
+}
+
+// File Explorer Functions (tree: Saved Tests from ~/.autogen)
 function loadFileExplorer() {
     if (!hasFileExplorer || !fileList) {
         console.warn('File explorer elements not found, skipping load');
         return;
     }
+    setupTreeRootDropZones();
 
-    if (!currentWorkspaceId) {
-        fileList.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--ctp-overlay1); font-size: 12px;">Select a workspace</div>';
+    if (!currentWorkspaceName) {
+        fileList.innerHTML = '<div class="file-list-empty">Select a workspace</div>';
         return;
     }
 
     fileList.innerHTML = '<div class="file-list-loading"><span class="file-list-spinner"></span>Loading tests…</div>';
 
-    authFetch(`/api/workspaces/${currentWorkspaceId}/tests`)
+    authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`)
         .then(res => res.json())
         .then(data => {
-            const tests = data.tests || [];
-            // Cache tests by filename so openFileFromExplorer can skip the extra round-trip
+            const children = data.tree || [];
             testCache = {};
-            tests.forEach(t => { testCache[t.filename] = t; });
             fileList.innerHTML = '';
 
-            if (tests.length === 0) {
-                fileList.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--ctp-overlay1); font-size: 12px;">No saved tests</div>';
+            if (children.length === 0) {
+                fileList.innerHTML = '<div class="file-list-empty">No saved tests. Add a folder or new test.</div>';
+                updateFileListActiveState();
                 return;
             }
 
-            tests.forEach(test => {
-                const hasRecording = test.artifacts?.some(a => a.video_url || (a.video_path && a.video_path !== 'null'));
-                const hasTrace = test.artifacts?.some(a => a.trace_path);
-                const hasChildren = hasRecording || hasTrace;
-
-                // Wrapper tree node
-                const nodeEl = document.createElement('div');
-                nodeEl.className = 'file-tree-node';
-                nodeEl.dataset.filename = test.filename;
-
-                // Main file item row
-                const fileItem = document.createElement('div');
-                fileItem.className = 'file-item';
-                fileItem.dataset.filename = test.filename;
-
-                const sourceIcon = test.source === 'codegen' ? '<i class="lni lni-camera-movie-1"></i>' : '<i class="lni lni-python"></i>';
-
-                // Status border class (no icon)
-                if (currentRunningTestFilename === test.filename) {
-                    fileItem.classList.add('file-item-status-running');
-                } else if (test.last_run_status === 'success') {
-                    fileItem.classList.add('file-item-status-passed');
-                } else if (test.last_run_status === 'error' || test.last_run_status === 'stopped') {
-                    fileItem.classList.add('file-item-status-failed');
-                } else {
-                    fileItem.classList.add('file-item-status-unknown');
-                }
-
-                // Expand chevron (distinct from play icon; invisible placeholder when no children)
-                const expandArrow = hasChildren
-                    ? '<span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>'
-                    : '<span class="file-tree-expand" style="visibility:hidden;"><i class="lni lni-chevron-down"></i></span>';
-
-                // Show stop button if this test is currently running, otherwise show run button
-                let runOrStopBtn = '';
-                if (currentRunningTestFilename === test.filename) {
-                    runOrStopBtn = `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: var(--ctp-red);"><i class="lni lni-hand-stop"></i></button>`;
-                } else {
-                    runOrStopBtn = `<button class="file-item-action file-item-action--run" data-action="run" title="Run Test"><i class="lni lni-play"></i></button>`;
-                }
-
-                const testDisplayName = getDisplayName(test.name, 'test');
-                // All interpolated values are either hardcoded HTML or sanitized via escapeHtml()
-                fileItem.innerHTML = `
-                    ${expandArrow}
-                    <span class="file-item-icon">${sourceIcon}</span>
-                    <span class="file-item-name">${escapeHtml(testDisplayName)}</span>
-                    <div class="file-item-actions">
-                        ${runOrStopBtn}
-                    </div>
-                `;
-
-                // Children container (Recording / Trace)
-                const childrenEl = document.createElement('div');
-                childrenEl.className = 'file-tree-children';
-
-                if (hasRecording) {
-                    const recordingChild = document.createElement('div');
-                    recordingChild.className = 'file-tree-child';
-                    recordingChild.dataset.childAction = 'recording';
-                    recordingChild.dataset.filename = test.filename;
-                    // Hardcoded icon + text — no user content
-                    recordingChild.innerHTML = '<i class="lni lni-camera-movie-1"></i> Recording';
-                    recordingChild.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        openRecordingTab(test.filename, test.name);
-                    });
-                    childrenEl.appendChild(recordingChild);
-                }
-
-                if (hasTrace) {
-                    const traceChild = document.createElement('div');
-                    traceChild.className = 'file-tree-child';
-                    traceChild.dataset.childAction = 'trace';
-                    traceChild.dataset.filename = test.filename;
-                    // Hardcoded icon + text — no user content
-                    traceChild.innerHTML = '<i class="lni lni-layers-1"></i> Trace';
-                    traceChild.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        openTraceTab(test.filename, test.name);
-                    });
-                    childrenEl.appendChild(traceChild);
-                }
-
-                // Click handler for file item row
-                fileItem.addEventListener('click', (e) => {
-                    const action = e.target.closest('[data-action]')?.dataset.action;
-                    if (action === 'delete') {
-                        deleteFileFromExplorer(test.filename, test.name);
-                    } else if (action === 'run') {
-                        e.stopPropagation();
-                        runSavedTest(test.filename, test.name);
-                    } else if (action === 'stop') {
-                        e.stopPropagation();
-                        if (isStopRequested) return;
-                        if (confirm('Are you sure you want to stop the running test?')) {
-                            isStopRequested = true;
-                            socket.emit('stop_test');
-                            addLogEntry('info', '⏹ Stop request sent to server');
-                            if (stopTestBtn) {
-                                stopTestBtn.disabled = true;
-                                stopTestBtn.textContent = 'STOPPING...';
-                                stopTestBtn.title = 'Stopping test...';
-                            }
-                        }
-                    } else if (e.target.closest('.file-tree-expand') && hasChildren) {
-                        nodeEl.classList.toggle('expanded');
-                    } else if (!e.target.closest('.file-item-actions') && !e.target.closest('.file-tree-expand')) {
-                        openFileFromExplorer(test.filename, test.name);
-                    }
-                });
-
-                fileItem.addEventListener('contextmenu', (e) => {
-                    e.preventDefault();
-                    showContextMenu(e.clientX, e.clientY, { filename: test.filename, name: test.name, type: 'test' });
-                });
-
-                nodeEl.appendChild(fileItem);
-                nodeEl.appendChild(childrenEl);
-                fileList.appendChild(nodeEl);
-            });
-
+            renderSavedTestsTree(children, fileList, 0, '');
             updateFileListActiveState();
         })
         .catch(err => {
             console.error('Failed to load file explorer:', err);
+            fileList.innerHTML = '<div class="file-list-empty">Error loading tests</div>';
         });
 }
 
+function renderSavedTestsTree(nodes, container, depth, parentPath) {
+    nodes.forEach(node => {
+        if (node.type === 'folder') {
+            const nodeEl = document.createElement('div');
+            nodeEl.className = 'file-tree-node file-tree-node--folder';
+            nodeEl.dataset.path = node.path;
+            nodeEl.dataset.type = 'folder';
+            const hasChildren = (node.children && node.children.length > 0);
+            const expandArrow = '<span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>';
+            const row = document.createElement('div');
+            row.className = 'file-item file-item--folder';
+            row.style.paddingLeft = (10 + depth * 10) + 'px';
+            row.innerHTML = `
+                ${expandArrow}
+                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder"></i></span>
+                <span class="file-item-name">${escapeHtml(node.name)}</span>
+            `;
+            const childrenEl = document.createElement('div');
+            childrenEl.className = 'file-tree-children';
+            if (hasChildren) {
+                renderSavedTestsTree(node.children, childrenEl, depth + 1, node.path);
+            }
+            row.addEventListener('click', (e) => {
+                if (e.target.closest('.file-tree-expand')) {
+                    nodeEl.classList.toggle('expanded');
+                } else if (!e.target.closest('.file-item-actions')) {
+                    nodeEl.classList.toggle('expanded');
+                }
+            });
+            row.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                showContextMenu(e.clientX, e.clientY, { path: node.path, name: node.name, type: 'folder', treeType: 'saved_tests' });
+            });
+            row.draggable = true;
+            row.addEventListener('dragstart', (e) => {
+                e.dataTransfer.setData('application/json', JSON.stringify({ path: node.path, type: 'folder', treeType: 'saved_tests' }));
+                e.dataTransfer.effectAllowed = 'move';
+            });
+            row.addEventListener('dragover', (e) => {
+                if (!e.dataTransfer.types.includes('application/json')) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                row.classList.add('file-tree-drop-target');
+            });
+            row.addEventListener('dragleave', () => row.classList.remove('file-tree-drop-target'));
+            row.addEventListener('drop', (e) => {
+                e.preventDefault();
+                row.classList.remove('file-tree-drop-target');
+                let data;
+                try { data = JSON.parse(e.dataTransfer.getData('application/json') || '{}'); } catch (_) { return; }
+                if (data.treeType !== 'saved_tests' || !data.path) return;
+                const fromPath = data.path;
+                const basename = fromPath.split('/').pop();
+                const toPath = node.path ? node.path + '/' + basename : basename;
+                if (toPath === fromPath || (data.type === 'folder' && (toPath === fromPath || toPath.startsWith(fromPath + '/')))) return;
+                moveTreeItem(currentWorkspaceName, 'saved_tests', fromPath, toPath).catch(err => alert(err.message || err));
+            });
+            nodeEl.appendChild(row);
+            nodeEl.appendChild(childrenEl);
+            container.appendChild(nodeEl);
+            return;
+        }
+
+        // file node
+        const path = node.path;
+        const name = node.display_name || node.name || path.replace(/\.py$/, '').replace(/_/g, ' ');
+        testCache[path] = { path, filename: path, name, artifacts: node.artifacts || [], last_run_status: node.last_run_status };
+
+        const hasRecording = (node.artifacts || []).some(a => a.video_path && a.video_path !== 'null');
+        const hasTrace = (node.artifacts || []).some(a => a.trace_path);
+        const hasChildren = hasRecording || hasTrace;
+
+        const nodeEl = document.createElement('div');
+        nodeEl.className = 'file-tree-node';
+        nodeEl.dataset.path = path;
+        nodeEl.dataset.type = 'file';
+
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        fileItem.dataset.filename = path;
+        fileItem.dataset.path = path;
+
+        if (currentRunningTestFilename === path) fileItem.classList.add('file-item-status-running');
+        else if (node.last_run_status === 'success') fileItem.classList.add('file-item-status-passed');
+        else if (node.last_run_status === 'error' || node.last_run_status === 'stopped') fileItem.classList.add('file-item-status-failed');
+        else fileItem.classList.add('file-item-status-unknown');
+
+        const expandArrow = hasChildren
+            ? '<span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>'
+            : '<span class="file-tree-expand" style="visibility:hidden;"><i class="lni lni-chevron-down"></i></span>';
+
+        let runOrStopBtn = currentRunningTestFilename === path
+            ? `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: var(--ctp-red);"><i class="lni lni-hand-stop"></i></button>`
+            : `<button class="file-item-action file-item-action--run" data-action="run" title="Run Test"><i class="lni lni-play"></i></button>`;
+
+        const itemPadding = (10 + depth * 10);
+        fileItem.style.paddingLeft = itemPadding + 'px';
+        fileItem.innerHTML = `
+            ${expandArrow}
+            <span class="file-item-icon"><i class="lni lni-python"></i></span>
+            <span class="file-item-name">${escapeHtml(name)}</span>
+            <div class="file-item-actions">${runOrStopBtn}</div>
+        `;
+
+        // Artifact container: JS-toggled, each child gets explicit depth-based padding
+        const childrenEl = document.createElement('div');
+        childrenEl.className = 'file-tree-artifacts';
+        childrenEl.style.display = 'none';
+        const artifactPadding = (itemPadding + 22) + 'px';
+        if (hasRecording) {
+            const c = document.createElement('div');
+            c.className = 'file-tree-child';
+            c.style.paddingLeft = artifactPadding;
+            c.dataset.filename = path;
+            c.innerHTML = '<i class="lni lni-camera-movie-1"></i> Recording';
+            c.addEventListener('click', (e) => { e.stopPropagation(); openRecordingTab(path, name); });
+            childrenEl.appendChild(c);
+        }
+        if (hasTrace) {
+            const c = document.createElement('div');
+            c.className = 'file-tree-child';
+            c.style.paddingLeft = artifactPadding;
+            c.dataset.filename = path;
+            c.innerHTML = '<i class="lni lni-layers-1"></i> Trace';
+            c.addEventListener('click', (e) => { e.stopPropagation(); openTraceTab(path, name); });
+            childrenEl.appendChild(c);
+        }
+
+        fileItem.addEventListener('click', (e) => {
+            const action = e.target.closest('[data-action]')?.dataset.action;
+            if (action === 'run') {
+                e.stopPropagation();
+                runSavedTest(path, name);
+            } else if (action === 'stop') {
+                e.stopPropagation();
+                if (isStopRequested) return;
+                if (confirm('Stop the running test?')) {
+                    isStopRequested = true;
+                    socket.emit('stop_test');
+                    addLogEntry('info', '⏹ Stop request sent');
+                    if (stopTestBtn) { stopTestBtn.disabled = true; stopTestBtn.textContent = 'STOPPING...'; }
+                }
+            } else if (e.target.closest('.file-tree-expand') && hasChildren) {
+                const expanded = nodeEl.classList.toggle('expanded');
+                childrenEl.style.display = expanded ? 'block' : 'none';
+            } else if (!e.target.closest('.file-item-actions') && !e.target.closest('.file-tree-expand')) {
+                openFileFromExplorer(path, name);
+            }
+        });
+        fileItem.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            showContextMenu(e.clientX, e.clientY, { filename: path, path, name, type: 'test', treeType: 'saved_tests' });
+        });
+        fileItem.draggable = true;
+        fileItem.addEventListener('dragstart', (e) => {
+            e.dataTransfer.setData('application/json', JSON.stringify({ path, type: 'file', treeType: 'saved_tests' }));
+            e.dataTransfer.effectAllowed = 'move';
+        });
+
+        nodeEl.appendChild(fileItem);
+        nodeEl.appendChild(childrenEl);
+        container.appendChild(nodeEl);
+    });
+}
+
 function openFileFromExplorer(filename, name) {
-    const cached = testCache[filename];
+    const path = filename;
+    const cached = testCache[path];
     if (cached && cached.code) {
-        openTab(filename, name, cached.code);
+        openTab(path, name, cached.code, 'test');
         return;
     }
 
-    // Fallback: fetch from server if cache is cold
-    authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`)
+    // Open the tab immediately so the UI feels instant
+    openTab(path, name, '# Loading…', 'test');
+
+    authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(path)}`)
         .then(res => res.json())
         .then(data => {
-            if (data && data.code) {
-                testCache[filename] = data;
-                openTab(filename, name, data.code);
+            if (data && data.code !== undefined) {
+                testCache[path] = { ...(testCache[path] || {}), ...data };
+                const tab = openTabs.find(t => t.id === path);
+                if (tab) {
+                    tab.code = data.code;
+                    if (activeTabId === path) {
+                        lastSavedCode = data.code;
+                        setPlaywrightCode(data.code);
+                    }
+                }
             }
         })
         .catch(err => {
@@ -1766,20 +1821,19 @@ function openTraceTab(filename, testName) {
 
 function deleteFileFromExplorer(filename, name) {
     if (!confirm(`Delete "${name}"?`)) return;
+    const path = filename;
 
-    authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}`, { method: 'DELETE' })
+    authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(path)}`, { method: 'DELETE' })
         .then(res => res.json())
         .then(data => {
             if (data.success) {
-                // Close tab if open
-                closeTab(filename);
-                // Reload file explorer
+                closeTab(path);
                 loadFileExplorer();
                 addLogEntry('info', `Deleted: ${name}`);
             }
         })
         .catch(err => {
-            alert('Failed to delete test: ' + err);
+            alert('Failed to delete: ' + err);
         });
 }
 
@@ -1789,10 +1843,11 @@ if (hasFileExplorer && explorerResizer) {
     let startX = 0;
     let startWidth = 0;
 
-    // Restore saved width on load
+    // Restore saved width on load (clamp to match resize bounds)
     const savedWidth = localStorage.getItem('fileExplorerWidth');
     if (savedWidth) {
-        fileExplorer.style.width = savedWidth + 'px';
+        const clampedWidth = Math.max(150, Math.min(400, parseInt(savedWidth, 10)));
+        fileExplorer.style.width = clampedWidth + 'px';
     }
 
     explorerResizer.addEventListener('mousedown', (e) => {
@@ -1861,12 +1916,16 @@ if (chatResizer) {
     });
 }
 
-// New Test Button
+// New Test Button (creates .py file in tree)
+function sanitizeTestFilename(name) {
+    const base = (name || '').replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '_');
+    return (base || 'New_Test') + '.py';
+}
 if (newTestBtn) {
     newTestBtn.addEventListener('click', async () => {
         const name = prompt('Enter test name:');
         if (!name) return;
-
+        const filename = sanitizeTestFilename(name);
         const code = `from playwright.async_api import async_playwright
 import asyncio
 
@@ -1881,16 +1940,16 @@ async def run():
 
 asyncio.run(run())`;
 
-        // Save to DB immediately
         try {
-            const response = await authFetch('/api/save-test', {
-                method: 'POST',
+            const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(filename)}`, {
+                method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, code, source: 'manual' })
+                body: JSON.stringify({ name: name.trim(), code })
             });
-            const data = await response.json();
-            if (data.success && data.filename) {
-                openTab(data.filename, name, code);
+            const data = await res.json();
+            if (data.path || data.filename) {
+                const path = data.path || data.filename;
+                openTab(path, name.trim(), code, 'test');
                 lastSavedCode = code;
                 loadFileExplorer();
                 addLogEntry('success', `Created test: ${name}`);
@@ -1899,6 +1958,32 @@ asyncio.run(run())`;
             }
         } catch (err) {
             alert('Failed to create test: ' + err);
+        }
+    });
+}
+
+// New Folder (Saved Tests)
+const newFolderTestsBtn = document.getElementById('new-folder-tests-btn');
+if (newFolderTestsBtn) {
+    newFolderTestsBtn.addEventListener('click', async () => {
+        const name = prompt('Folder name:');
+        if (!name || !name.trim()) return;
+        const path = name.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_') || 'NewFolder';
+        try {
+            const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path, type: 'folder' })
+            });
+            const data = await res.json();
+            if (data.success) {
+                loadFileExplorer();
+                addLogEntry('info', `Created folder: ${path}`);
+            } else {
+                alert('Error: ' + (data.error || 'Unknown'));
+            }
+        } catch (err) {
+            alert('Failed to create folder: ' + err);
         }
     });
 }
@@ -1928,19 +2013,20 @@ if (recordTestBtn) {
         let tabIdForRecording = null;
 
         try {
-            if (currentUser && currentWorkspaceId) {
-                const saveRes = await authFetch('/api/save-test', {
-                    method: 'POST',
+            if (currentUser && currentWorkspaceName) {
+                const filename = sanitizeTestFilename(name);
+                const saveRes = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(filename)}`, {
+                    method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, code: emptyCode, source: 'codegen' }),
+                    body: JSON.stringify({ name: name.trim(), code: emptyCode }),
                 });
                 const saveData = await saveRes.json();
-                if (!saveData.success || !saveData.filename) {
+                if (!saveData.path && !saveData.filename) {
                     alert('Error creating test: ' + (saveData.error || 'Unknown error'));
                     return;
                 }
-                tabIdForRecording = saveData.filename;
-                openTab(saveData.filename, name, emptyCode);
+                tabIdForRecording = saveData.path || saveData.filename;
+                openTab(tabIdForRecording, name, emptyCode);
                 loadFileExplorer();
                 addLogEntry('success', `Created test: ${name}`);
             } else {
@@ -1967,6 +2053,13 @@ if (recordTestBtn) {
             }
             currentRecordingId = data.recording_id;
             addLogEntry('info', `Starting recording for ${url}...`, '🎥 Starting recording...');
+            // Show recording state immediately so recording is "on" from the beginning
+            if (browserStatus) {
+                browserStatus.textContent = 'Recording';
+                browserStatus.classList.add('recording');
+                browserStatus.style.background = 'var(--ctp-red)';
+            }
+            if (browserSidebar) browserSidebar.classList.add('active');
         } catch (err) {
             pendingCodegenTabId = null;
             alert('Failed to start recording: ' + err);
@@ -1991,6 +2084,19 @@ if (recorderUrlInput) {
             if (url && !url.startsWith('http')) url = 'https://' + url;
             socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'navigate', url });
         }
+    });
+}
+
+// Recorder "Wait X seconds" — add explicit wait step
+const recorderWaitSeconds = document.getElementById('recorder-wait-seconds');
+const recorderWaitAddBtn = document.getElementById('recorder-wait-add-btn');
+if (recorderWaitAddBtn && recorderWaitSeconds) {
+    recorderWaitAddBtn.addEventListener('click', () => {
+        if (!currentRecordingId) return;
+        const sec = parseInt(recorderWaitSeconds.value, 10) || 1;
+        const clamped = Math.max(1, Math.min(300, sec));
+        if (clamped !== sec) recorderWaitSeconds.value = clamped;
+        socket.emit('recorder_interact', { recording_id: currentRecordingId, action: 'wait', duration_ms: clamped * 1000 });
     });
 }
 
@@ -2124,7 +2230,7 @@ function _setStatValue(id, value) {
 }
 
 async function loadDashboardStats() {
-    if (!currentWorkspaceId) return;
+    if (!currentWorkspaceName) return;
 
     // Show skeletons
     ['dashboard-saved-tests', 'dashboard-passed', 'dashboard-failed', 'dashboard-ai-steps'].forEach(id => {
@@ -2133,17 +2239,34 @@ async function loadDashboardStats() {
     });
 
     try {
-        const [testsResponse, aiStepsResponse] = await Promise.all([
-            authFetch(`/api/saved-tests?workspace_id=${currentWorkspaceId}`),
-            authFetch(`/api/ai-steps?workspace_id=${currentWorkspaceId}`),
+        const [testsTreeRes, aiStepsTreeRes] = await Promise.all([
+            authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`),
+            authFetch(`/api/workspaces/${currentWorkspaceName}/tree/ai_steps`),
         ]);
-        const tests = await testsResponse.json();
-        const aiSteps = await aiStepsResponse.json();
+        const testsTree = (await testsTreeRes.json()).tree || [];
+        const aiStepsTree = (await aiStepsTreeRes.json()).tree || [];
 
-        const totalTests = tests.length;
-        const passedTests = tests.filter(t => t.last_run_status === 'success').length;
-        const failedTests = tests.filter(t => t.last_run_status === 'error').length;
-        const totalAiSteps = aiSteps.length;
+        function countFiles(nodes) {
+            let n = 0;
+            nodes.forEach(node => {
+                if (node.type === 'file') n++;
+                if (node.children) n += countFiles(node.children);
+            });
+            return n;
+        }
+        function countByStatus(nodes, status) {
+            let n = 0;
+            nodes.forEach(node => {
+                if (node.type === 'file' && node.last_run_status === status) n++;
+                if (node.children) n += countByStatus(node.children, status);
+            });
+            return n;
+        }
+
+        const totalTests = countFiles(testsTree);
+        const passedTests = countByStatus(testsTree, 'success');
+        const failedTests = countByStatus(testsTree, 'error') + countByStatus(testsTree, 'stopped');
+        const totalAiSteps = countFiles(aiStepsTree);
 
         _setStatValue('dashboard-saved-tests', totalTests);
         _setStatValue('dashboard-passed', passedTests);
@@ -2175,7 +2298,7 @@ async function loadRecordingsGallery() {
     `;
 
     try {
-        const response = await authFetch(`/api/recent-recordings?workspace_id=${currentWorkspaceId}`);
+        const response = await authFetch(`/api/recent-recordings?workspaceName=${currentWorkspaceName}`);
         const recordings = await response.json();
 
         recordingsGallery.innerHTML = '';
@@ -2273,7 +2396,7 @@ function createRecordingCard(recording) {
         if (recordingBtn) recordingBtn.remove();
 
         try {
-            await authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${recording.test_filename}/artifacts`, { method: 'DELETE' });
+            await authFetch(`/api/workspaces/${currentWorkspaceName}/tests/${recording.test_filename}/artifacts`, { method: 'DELETE' });
         } catch (err) {
             // Rollback
             if (cardParent) cardParent.insertBefore(card, cardNextSibling);
@@ -2342,12 +2465,9 @@ window.addEventListener('load', () => {
 // ========================================
 
 async function loadAiSteps() {
-    if (!aiStepsList) {
-        console.warn('AI steps list element not found');
-        return;
-    }
-
-    if (!currentWorkspaceId) {
+    if (!aiStepsList) return;
+    setupTreeRootDropZones();
+    if (!currentWorkspaceName) {
         aiStepsList.innerHTML = '<div class="file-list-empty">Select a workspace</div>';
         return;
     }
@@ -2355,70 +2475,119 @@ async function loadAiSteps() {
     aiStepsList.innerHTML = '<div class="file-list-loading"><span class="file-list-spinner"></span>Loading…</div>';
 
     try {
-        const response = await authFetch(`/api/workspaces/${currentWorkspaceId}/ai-steps`);
+        const response = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/ai_steps`);
         const data = await response.json();
-        const steps = data.ai_steps || [];
+        const children = data.tree || [];
 
         aiStepsList.innerHTML = '';
-
-        if (steps.length === 0) {
-            aiStepsList.innerHTML = '<div class="file-list-empty">No AI steps yet</div>';
+        if (children.length === 0) {
+            aiStepsList.innerHTML = '<div class="file-list-empty">No AI steps. Add a folder or new step.</div>';
             return;
         }
-
-        steps.forEach(step => {
-            const item = document.createElement('div');
-            item.className = 'file-item';
-            item.dataset.filename = step.filename;
-            const stepDisplayName = getDisplayName(step.name, 'ai-step');
-            item.innerHTML = `
-                <span class="file-item-icon"><i class="lni lni-pencil-1"></i></span>
-                <span class="file-item-name">${escapeHtml(stepDisplayName)}</span>
-                <div class="file-item-actions">
-                    <button class="file-item-action" data-action="run" title="Run AI Step"><i class="lni lni-play"></i></button>
-                    <button class="file-item-action" data-action="edit" title="Edit"><i class="lni lni-pencil-1"></i></button>
-                    <button class="file-item-action" data-action="delete" title="Delete"><i class="lni lni-trash-3"></i></button>
-                </div>
-            `;
-
-            // Event listeners
-            const runBtn = item.querySelector('[data-action="run"]');
-            const editBtn = item.querySelector('[data-action="edit"]');
-            const deleteBtn = item.querySelector('[data-action="delete"]');
-
-            runBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                runAiStep(step.id, step.filename, step.name);
-            });
-
-            editBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                openAiStepInEditor(step.filename, step.name);
-            });
-
-            deleteBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                deleteAiStep(step.filename, step.name);
-            });
-
-            // Click handler for entire item
-            item.addEventListener('click', (e) => {
-                if (!e.target.closest('.file-item-actions')) {
-                    openAiStepInEditor(step.filename, step.name);
-                }
-            });
-
-            item.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-                showContextMenu(e.clientX, e.clientY, { filename: step.filename, name: step.name, type: 'ai-step', id: step.id });
-            });
-
-            aiStepsList.appendChild(item);
-        });
+        renderAiStepsTree(children, aiStepsList, 0);
     } catch (err) {
         console.error('Failed to load AI steps:', err);
         aiStepsList.innerHTML = '<div class="file-list-empty">Error loading AI steps</div>';
     }
+}
+
+function renderAiStepsTree(nodes, container, depth) {
+    nodes.forEach(node => {
+        if (node.type === 'folder') {
+            const nodeEl = document.createElement('div');
+            nodeEl.className = 'file-tree-node file-tree-node--folder';
+            nodeEl.dataset.path = node.path;
+            nodeEl.dataset.type = 'folder';
+            const hasChildren = (node.children && node.children.length > 0);
+            const row = document.createElement('div');
+            row.className = 'file-item file-item--folder';
+            row.style.paddingLeft = (10 + depth * 10) + 'px';
+            row.innerHTML = `
+                <span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>
+                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder"></i></span>
+                <span class="file-item-name">${escapeHtml(node.name)}</span>
+            `;
+            const childrenEl = document.createElement('div');
+            childrenEl.className = 'file-tree-children';
+            if (hasChildren) renderAiStepsTree(node.children, childrenEl, depth + 1);
+            row.addEventListener('click', (e) => {
+                if (e.target.closest('.file-tree-expand')) nodeEl.classList.toggle('expanded');
+                else nodeEl.classList.toggle('expanded');
+            });
+            row.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                showContextMenu(e.clientX, e.clientY, { path: node.path, name: node.name, type: 'folder', treeType: 'ai_steps' });
+            });
+            row.draggable = true;
+            row.addEventListener('dragstart', (e) => {
+                e.dataTransfer.setData('application/json', JSON.stringify({ path: node.path, type: 'folder', treeType: 'ai_steps' }));
+                e.dataTransfer.effectAllowed = 'move';
+            });
+            row.addEventListener('dragover', (e) => {
+                if (!e.dataTransfer.types.includes('application/json')) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                row.classList.add('file-tree-drop-target');
+            });
+            row.addEventListener('dragleave', () => row.classList.remove('file-tree-drop-target'));
+            row.addEventListener('drop', (e) => {
+                e.preventDefault();
+                row.classList.remove('file-tree-drop-target');
+                let data;
+                try { data = JSON.parse(e.dataTransfer.getData('application/json') || '{}'); } catch (_) { return; }
+                if (data.treeType !== 'ai_steps' || !data.path) return;
+                const fromPath = data.path;
+                const basename = fromPath.split('/').pop();
+                const toPath = node.path ? node.path + '/' + basename : basename;
+                if (toPath === fromPath || (data.type === 'folder' && (toPath === fromPath || toPath.startsWith(fromPath + '/')))) return;
+                moveTreeItem(currentWorkspaceName, 'ai_steps', fromPath, toPath).catch(err => alert(err.message || err));
+            });
+            nodeEl.appendChild(row);
+            nodeEl.appendChild(childrenEl);
+            container.appendChild(nodeEl);
+            return;
+        }
+
+        const path = node.path;
+        const name = node.display_name || node.name || path.replace(/\.md$/, '').replace(/_/g, ' ');
+        const nodeEl = document.createElement('div');
+        nodeEl.className = 'file-tree-node';
+        nodeEl.dataset.path = path;
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        item.dataset.filename = path;
+        item.dataset.path = path;
+        item.style.paddingLeft = (10 + depth * 10) + 'px';
+        item.innerHTML = `
+            <span class="file-tree-expand" style="visibility:hidden;"><i class="lni lni-chevron-down"></i></span>
+            <span class="file-item-icon"><i class="lni lni-pencil-1"></i></span>
+            <span class="file-item-name">${escapeHtml(name)}</span>
+            <div class="file-item-actions">
+                <button class="file-item-action" data-action="run" title="Run"><i class="lni lni-play"></i></button>
+                <button class="file-item-action" data-action="edit" title="Edit"><i class="lni lni-pencil-1"></i></button>
+                <button class="file-item-action" data-action="delete" title="Delete"><i class="lni lni-trash-3"></i></button>
+            </div>
+        `;
+
+        item.querySelector('[data-action="run"]').addEventListener('click', (e) => { e.stopPropagation(); runAiStep(null, path, name); });
+        item.querySelector('[data-action="edit"]').addEventListener('click', (e) => { e.stopPropagation(); openAiStepInEditor(path, name); });
+        item.querySelector('[data-action="delete"]').addEventListener('click', (e) => { e.stopPropagation(); deleteAiStep(path, name); });
+        item.addEventListener('click', (e) => {
+            if (!e.target.closest('.file-item-actions')) openAiStepInEditor(path, name);
+        });
+        item.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            showContextMenu(e.clientX, e.clientY, { filename: path, path, name, type: 'ai-step', treeType: 'ai_steps' });
+        });
+        item.draggable = true;
+        item.addEventListener('dragstart', (e) => {
+            e.dataTransfer.setData('application/json', JSON.stringify({ path, type: 'file', treeType: 'ai_steps' }));
+            e.dataTransfer.effectAllowed = 'move';
+        });
+
+        nodeEl.appendChild(item);
+        container.appendChild(nodeEl);
+    });
 }
 
 let runningAiStepTabId = null;  // Track which AI step tab is running
@@ -2482,22 +2651,25 @@ function runAiStep(stepId, filename, name) {
     socket.emit('run_ai_step', {
         id: stepId,
         filename,
-        workspaceId: currentWorkspaceId
+        workspaceName: currentWorkspaceName
     });
 
     addLogEntry('info', `🤖 Running AI steps: ${name}`);
 }
 
 function openAiStepInEditor(filename, name) {
-    authFetch(`/api/ai-steps/${filename}/markdown?workspace_id=${currentWorkspaceId}`)
-        .then(res => res.json())
+    const path = filename;
+    authFetch(`/api/workspaces/${currentWorkspaceName}/tree/ai_steps/${encodeURIComponent(path)}`)
+        .then(res => res.ok ? res.json() : Promise.reject(res))
         .then(data => {
-            if (data.markdown) {
-                openTab(filename, name, data.markdown, 'ai-step');
-            }
+            const content = data.steps != null ? data.steps : data.markdown;
+            if (content != null) openTab(path, name, content, 'ai-step');
         })
-        .catch(err => {
-            alert('Failed to load AI step: ' + err);
+        .catch(() => {
+            authFetch(`/api/ai-steps/${path}/markdown?workspaceName=${currentWorkspaceName}`)
+                .then(r => r.json())
+                .then(data => { if (data.markdown) openTab(path, name, data.markdown, 'ai-step'); })
+                .catch(err => { alert('Failed to load AI step: ' + err); });
         });
 }
 
@@ -2548,7 +2720,7 @@ function showTestResultsModal(total, passed, failed, duration) {
     // Load video if available from the last completed test
     const lastTest = batchRunResults[batchRunResults.length - 1];
     if (lastTest && lastTest.filename) {
-        authFetch(`/api/saved-tests/${lastTest.filename}/artifacts?workspace_id=${currentWorkspaceId}`)
+        authFetch(`/api/saved-tests/${lastTest.filename}/artifacts?workspaceName=${currentWorkspaceName}`)
             .then(res => res.json())
             .then(artifacts => {
                 if (artifacts.length > 0) {
@@ -2623,7 +2795,7 @@ async function showVideoViewerModal(filename, testName) {
     modal.style.display = 'block';
 
     try {
-        const res = await authFetch(`/api/workspaces/${currentWorkspaceId}/tests/${filename}/artifacts`);
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tests/${filename}/artifacts`);
         const artifacts = await res.json();
         const validArtifacts = artifacts.filter(a => a.video_url);
 
@@ -2686,6 +2858,11 @@ async function showVideoViewerModal(filename, testName) {
     }
 }
 
+function sanitizeAiStepFilename(name) {
+    const base = (name || '').replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '_');
+    return (base || 'New_Step') + '.md';
+}
+
 async function saveAiStep() {
     const name = aiStepNameInput.value.trim();
     const steps = aiStepStepsInput.value.trim();
@@ -2695,47 +2872,80 @@ async function saveAiStep() {
         return;
     }
 
-    const method = currentEditingAiStep ? 'PUT' : 'POST';
-    const url = currentEditingAiStep
-        ? `/api/ai-steps/${currentEditingAiStep}`
-        : '/api/ai-steps';
-
     try {
+        const path = currentEditingAiStep || sanitizeAiStepFilename(name);
+        const url = `/api/workspaces/${currentWorkspaceName}/tree/ai_steps/${encodeURIComponent(path)}`;
         const response = await authFetch(url, {
-            method,
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name, steps})
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, steps })
         });
 
         if (response.ok) {
+            const data = await response.json();
             loadAiSteps();
             aiStepModal.style.display = 'none';
-            addLogEntry('success', `💾 AI step saved: ${name}`);
+            addLogEntry('success', `Saved: ${name}`);
+            if (!currentEditingAiStep && data.path) {
+                currentEditingAiStep = data.path;
+            }
         } else {
-            alert('Failed to save AI step');
+            const err = await response.json().catch(() => ({}));
+            alert('Failed to save: ' + (err.error || response.status));
         }
     } catch (err) {
-        alert('Failed to save AI step: ' + err);
+        alert('Failed to save: ' + err);
     }
 }
 
 async function deleteAiStep(filename, name) {
     if (!confirm(`Delete AI step "${name}"?`)) return;
+    const path = filename;
 
     try {
-        const response = await authFetch(`/api/ai-steps/${filename}?workspace_id=${currentWorkspaceId}`, {
-            method: 'DELETE'
-        });
-
-        if (response.ok) {
+        let res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/ai_steps/${encodeURIComponent(path)}`, { method: 'DELETE' });
+        const data = res.ok ? await res.json() : null;
+        if (data && data.success) {
             loadAiSteps();
-            addLogEntry('info', `Deleted AI step: ${name}`);
+            addLogEntry('info', `Deleted: ${name}`);
+            return;
+        }
+        res = await authFetch(`/api/ai-steps/${path}?workspaceName=${currentWorkspaceName}`, { method: 'DELETE' });
+        if (res.ok) {
+            loadAiSteps();
+            addLogEntry('info', `Deleted: ${name}`);
         } else {
             alert('Failed to delete AI step');
         }
     } catch (err) {
-        alert('Failed to delete AI step: ' + err);
+        alert('Failed to delete: ' + err);
     }
+}
+
+// New Folder (AI Steps)
+const newFolderAiStepsBtn = document.getElementById('new-folder-ai-steps-btn');
+if (newFolderAiStepsBtn) {
+    newFolderAiStepsBtn.addEventListener('click', async () => {
+        const name = prompt('Folder name:');
+        if (!name || !name.trim()) return;
+        const path = name.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_') || 'NewFolder';
+        try {
+            const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/ai_steps`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path, type: 'folder' })
+            });
+            const data = await res.json();
+            if (data.success) {
+                loadAiSteps();
+                addLogEntry('info', `Created folder: ${path}`);
+            } else {
+                alert('Error: ' + (data.error || 'Unknown'));
+            }
+        } catch (err) {
+            alert('Failed to create folder: ' + err);
+        }
+    });
 }
 
 // Event Listeners for AI Steps
@@ -2938,10 +3148,12 @@ let contextMenuTarget = null; // { filename, name, type: 'test'|'ai-step', id? }
 
 function showContextMenu(x, y, target) {
     contextMenuTarget = target;
+    const isFolder = target.type === 'folder';
+    contextMenu.querySelectorAll('[data-show="folder"]').forEach(el => { el.style.display = isFolder ? '' : 'none'; });
+    contextMenu.querySelectorAll('[data-hide="folder"]').forEach(el => { el.style.display = isFolder ? 'none' : ''; });
     contextMenu.style.left = x + 'px';
     contextMenu.style.top = y + 'px';
     contextMenu.style.display = 'block';
-    // Flip if off-screen
     const rect = contextMenu.getBoundingClientRect();
     if (rect.right > window.innerWidth)  contextMenu.style.left = (x - rect.width) + 'px';
     if (rect.bottom > window.innerHeight) contextMenu.style.top = (y - rect.height) + 'px';
@@ -2958,35 +3170,91 @@ contextMenu.addEventListener('click', (e) => {
     e.stopPropagation();
     const btn = e.target.closest('[data-action]');
     if (!btn || !contextMenuTarget) return;
-    const { filename, name, type, id } = contextMenuTarget;
+    const { filename, name, type, id, path, treeType } = contextMenuTarget;
     const action = btn.dataset.action;
     hideContextMenu();
+
+    const basePath = path || filename;
+    const treeBase = treeType === 'ai_steps' ? 'ai_steps' : 'saved_tests';
+
+    if (action === 'new-folder') {
+        const folderName = prompt('Folder name:');
+        if (!folderName || !folderName.trim()) return;
+        const segment = folderName.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_') || 'NewFolder';
+        const newPath = basePath ? `${basePath}/${segment}` : segment;
+        authFetch(`/api/workspaces/${currentWorkspaceName}/tree/${treeBase}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: newPath, type: 'folder' })
+        }).then(res => res.json()).then(data => {
+            if (data.success) { if (treeBase === 'saved_tests') loadFileExplorer(); else loadAiSteps(); }
+            else alert('Error: ' + (data.error || ''));
+        }).catch(err => alert(err));
+        return;
+    }
+
+    if (action === 'new-file') {
+        if (treeBase === 'saved_tests') {
+            const testName = prompt('Test name:');
+            if (!testName) return;
+            const filePath = (basePath ? basePath + '/' : '') + sanitizeTestFilename(testName);
+            const code = 'from playwright.async_api import async_playwright\nimport asyncio\n\nasync def run():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=False)\n        page = await browser.new_page()\n        await browser.close()\nasyncio.run(run())';
+            authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(filePath)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: testName.trim(), code })
+            }).then(() => { loadFileExplorer(); addLogEntry('info', 'Created: ' + testName); }).catch(err => alert(err));
+        } else {
+            showAiStepModal();
+        }
+        return;
+    }
 
     if (action === 'rename') {
         const newName = prompt('New name:', name);
         if (!newName || newName.trim() === name) return;
-        const url = type === 'test'
-            ? `/api/workspaces/${currentWorkspaceId}/tests/${filename}`
-            : `/api/ai-steps/${filename}`;
-        authFetch(url, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: newName.trim() }),
-        }).then(() => {
-            if (type === 'test') loadFileExplorer();
-            else loadAiSteps();
-        });
+        if (type === 'folder') {
+            alert('Renaming folders is not supported in this prototype.');
+            return;
+        }
+        const parent = basePath.includes('/') ? basePath.split('/').slice(0, -1).join('/') + '/' : '';
+        const newPath = parent + (treeBase === 'saved_tests' ? sanitizeTestFilename(newName) : sanitizeAiStepFilename(newName));
+        if (newPath === basePath) return;
+        authFetch(`/api/workspaces/${currentWorkspaceName}/tree/${treeBase}/${encodeURIComponent(basePath)}`)
+            .then(r => r.json())
+            .then(data => {
+                const body = treeBase === 'saved_tests' ? { name: newName.trim(), code: data.code || '' } : { name: newName.trim(), steps: data.steps || '' };
+                return authFetch(`/api/workspaces/${currentWorkspaceName}/tree/${treeBase}/${encodeURIComponent(newPath)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            })
+            .then(() => authFetch(`/api/workspaces/${currentWorkspaceName}/tree/${treeBase}/${encodeURIComponent(basePath)}`, { method: 'DELETE' }))
+            .then(() => { if (treeBase === 'saved_tests') loadFileExplorer(); else loadAiSteps(); addLogEntry('info', 'Renamed'); })
+            .catch(err => alert('Rename failed: ' + err));
+        return;
+    }
 
-    } else if (action === 'run') {
-        if (type === 'test') runSavedTest(filename, name);
-        else runAiStep(id, filename, name);
+    if (action === 'run') {
+        if (type === 'test') runSavedTest(basePath, name);
+        else runAiStep(id, basePath, name);
+        return;
+    }
 
-    } else if (action === 'delete') {
-        if (type === 'test') deleteFileFromExplorer(filename, name);
-        else deleteAiStep(filename, name);
+    if (action === 'delete') {
+        if (type === 'folder') {
+            if (!confirm(`Delete folder "${name}" and its contents?`)) return;
+            authFetch(`/api/workspaces/${currentWorkspaceName}/tree/${treeBase}/${encodeURIComponent(basePath)}`, { method: 'DELETE' })
+                .then(r => r.json()).then(data => {
+                    if (data.success) { if (treeBase === 'saved_tests') loadFileExplorer(); else loadAiSteps(); }
+                    else alert(data.error || 'Failed');
+                }).catch(err => alert(err));
+        } else {
+            if (type === 'test') deleteFileFromExplorer(basePath, name);
+            else deleteAiStep(basePath, name);
+        }
+        return;
+    }
 
-    } else if (action === 'ask-ai') {
-        openFileFromExplorer(filename, name);
+    if (action === 'ask-ai') {
+        openFileFromExplorer(basePath, name);
         openChat();
         setTimeout(() => chatInput.focus(), 300);
     }
@@ -3711,7 +3979,7 @@ function sendChatMessage() {
         existing_code: existingCode || null,
         image: currentImage,
         file_type: fileType,
-        workspace_id: currentWorkspaceId,
+        workspaceName: currentWorkspaceName,
         user_id: currentUser ? currentUser.id : null,
     });
 
@@ -4002,22 +4270,23 @@ socket.on('file_created', (data) => {
     // Remove any tool-call indicators now that the agent finished a create action
     chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
     // Refresh the file explorer so the new file appears immediately
-    if (currentWorkspaceId) {
-        loadFileExplorer(currentWorkspaceId);
+    if (currentWorkspaceName) {
+        loadFileExplorer();
     }
     // Auto-open the newly created file in a tab
     const { filename, name, type } = data;
-    if (filename && name && currentWorkspaceId) {
+    if (filename && name && currentWorkspaceName) {
         const fileType = type === 'ai_step' ? 'ai-step' : 'test';
         const apiPath = fileType === 'ai-step'
-            ? `/api/ai-steps/${filename}`
-            : `/api/workspaces/${currentWorkspaceId}/tests/${filename}`;
+            ? `/api/workspaces/${currentWorkspaceName}/tree/ai_steps/${encodeURIComponent(filename)}`
+            : `/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(filename)}`;
         authFetch(apiPath)
             .then(res => res.json())
             .then(freshData => {
-                if (freshData && freshData.code !== undefined) {
+                const code = freshData.code !== undefined ? freshData.code : freshData.steps;
+                if (code !== undefined) {
                     testCache[filename] = freshData;
-                    openTab(filename, name, freshData.code, fileType);
+                    openTab(filename, name, code, fileType);
                 }
             })
             .catch(err => console.error('Failed to open new tab after file_created:', err));
@@ -4030,27 +4299,28 @@ socket.on('file_updated', (data) => {
     // while async fetches are in-flight will fall back to a fresh API call.
     const { filename, type } = data;
     if (filename) delete testCache[filename];
-    if (currentWorkspaceId) {
-        loadFileExplorer(currentWorkspaceId);
+    if (currentWorkspaceName) {
+        loadFileExplorer();
     }
     // If the updated file is open in a tab, refresh its content live
-    if (filename && currentWorkspaceId) {
+    if (filename && currentWorkspaceName) {
         const openTab = openTabs.find(t => t.id === filename);
         if (openTab) {
             const fileType = type === 'ai_step' ? 'ai-step' : 'test';
             const apiPath = fileType === 'ai-step'
-                ? `/api/ai-steps/${filename}`
-                : `/api/workspaces/${currentWorkspaceId}/tests/${filename}`;
+                ? `/api/workspaces/${currentWorkspaceName}/tree/ai_steps/${encodeURIComponent(filename)}`
+                : `/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(filename)}`;
             authFetch(apiPath)
                 .then(res => res.json())
                 .then(freshData => {
-                    if (freshData && freshData.code !== undefined) {
+                    const code = freshData.code !== undefined ? freshData.code : freshData.steps;
+                    if (code !== undefined) {
                         testCache[filename] = freshData;
-                        openTab.code = freshData.code;
+                        openTab.code = code;
                         // Update CodeMirror immediately if this tab is active
                         if (activeTabId === filename) {
-                            lastSavedCode = freshData.code;
-                            setPlaywrightCode(freshData.code);
+                            lastSavedCode = code;
+                            setPlaywrightCode(code);
                         }
                     }
                 })
@@ -4061,7 +4331,7 @@ socket.on('file_updated', (data) => {
 
 socket.on('propose_change', (data) => {
     chatMessages.querySelectorAll('.chat-message.tool-call').forEach(el => el.remove());
-    const { filename, type, old_content, new_content, workspace_id } = data;
+    const { filename, type, old_content, new_content, workspaceName } = data;
     const isSteps = type === 'ai_step';
     pendingCodeSuggestion = {
         code: new_content,
@@ -4072,7 +4342,7 @@ socket.on('propose_change', (data) => {
         agentPending: true,
         filename,
         fileType: type,
-        workspaceId: workspace_id,
+        workspaceName: workspaceName,
     };
     showCodePreview();
 });
@@ -4173,11 +4443,11 @@ acceptCodeBtn.addEventListener('click', () => {
 
     if (pendingCodeSuggestion.agentPending) {
         // Agent-proposed change: commit to DB via API, then apply to editor
-        const { filename, fileType, workspaceId, code } = pendingCodeSuggestion;
+        const { filename, fileType, workspaceName, code } = pendingCodeSuggestion;
         const isSteps = fileType === 'ai_step';
         const apiPath = isSteps
-            ? `/api/ai-steps/${filename}?workspace_id=${workspaceId}`
-            : `/api/workspaces/${workspaceId}/tests/${filename}`;
+            ? `/api/workspaces/${workspaceName}/tree/ai_steps/${encodeURIComponent(filename)}`
+            : `/api/workspaces/${workspaceName}/tree/saved_tests/${encodeURIComponent(filename)}`;
         const body = isSteps ? { steps: code } : { code };
 
         closeCodePreview();
@@ -4199,7 +4469,7 @@ acceptCodeBtn.addEventListener('click', () => {
                     renderTabs();
                 }
                 delete testCache[filename];
-                if (currentWorkspaceId) loadFileExplorer(currentWorkspaceId);
+                if (currentWorkspaceName) loadFileExplorer();
                 addLogEntry('success', `✓ Changes to ${filename} saved`);
                 appendChatMessage('system', `✓ Changes accepted and saved to ${filename}`);
             })
@@ -4310,7 +4580,7 @@ clearChatBtn.addEventListener('click', () => {
     if (confirm('Clear all chat messages?')) {
         chatMessages.innerHTML = '';
         hideChatThinking();
-        socket.emit('clear_chat', { workspace_id: currentWorkspaceId });
+        socket.emit('clear_chat', { workspaceName: currentWorkspaceName });
         appendChatMessage('system', 'Chat history cleared');
     }
 });
@@ -4487,85 +4757,18 @@ async function loadUserWorkspaces() {
                 showLoginModal();
                 return;
             }
-            throw new Error('Failed to load workspaces');
+            throw new Error('Failed to get user info');
         }
 
         const data = await response.json();
         currentUser = data.user;
 
-        // Try to restore previously selected workspace from localStorage, then DB
-        let savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
-        let workspaceFound = false;
-
-        // Fall back to DB if localStorage is empty
-        if (!savedWorkspaceId) {
-            const dbPrefs = await loadPreferencesFromDb();
-            if (dbPrefs && dbPrefs.selectedWorkspaceId) {
-                savedWorkspaceId = dbPrefs.selectedWorkspaceId;
-                localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
-            }
-            // Also restore editorTabsState from DB if missing locally
-            if (dbPrefs && dbPrefs.editorTabsState && !localStorage.getItem('editorTabsState')) {
-                localStorage.setItem('editorTabsState', dbPrefs.editorTabsState);
-            }
-        }
-
-        if (savedWorkspaceId && data.workspaces && data.workspaces.length > 0) {
-            const savedId = parseInt(savedWorkspaceId);
-            const hasAccess = data.workspaces.some(w => w.id === savedId);
-
-            if (hasAccess) {
-                currentWorkspaceId = savedId;
-                workspaceFound = true;
-                console.log('Restored workspace from localStorage:', savedId);
-            }
-        }
-
-        // Fall back to first workspace if no saved workspace or user doesn't have access
-        if (!workspaceFound && data.workspaces && data.workspaces.length > 0) {
-            currentWorkspaceId = data.workspaces[0].id;
-            console.log('Using default workspace:', currentWorkspaceId);
-        }
-
-        // Persist the selection so it survives page reloads and re-login
-        if (currentWorkspaceId) {
-            localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
-            // Only PUT when we changed from saved (e.g. used default) to avoid duplicate preference saves on startup
-            const unchanged = savedWorkspaceId != null && parseInt(savedWorkspaceId, 10) === currentWorkspaceId;
-            if (!unchanged) {
-                savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
-            }
-        }
-
-        // Use workspaces from current-user response (avoid extra GET /api/workspaces on init)
-        userWorkspaces = data.workspaces || [];
-        if (userWorkspaces.length === 0) {
-            showFirstWorkspaceModal();
-            return;
-        }
-        if (workspaceDropdown) {
-            while (workspaceDropdown.firstChild) workspaceDropdown.removeChild(workspaceDropdown.firstChild);
-            userWorkspaces.forEach(workspace => {
-                const option = document.createElement('option');
-                option.value = workspace.id;
-                option.textContent = `${workspace.name} ${workspace.type === 'shared' ? '(Shared)' : ''}`;
-                workspaceDropdown.appendChild(option);
-            });
-            workspaceDropdown.value = currentWorkspaceId;
-        }
-
-        await loadWorkspaceDetails();
-
         console.log('User authenticated:', currentUser.username);
-        console.log('Current workspace:', currentWorkspaceId);
 
-        // Load tests and AI steps for the current workspace
-        if (hasFileExplorer && currentWorkspaceId) {
-            loadFileExplorer();
-            loadAiSteps();
-        }
+        // Load workspaces from local filesystem
+        await loadWorkspaces();
     } catch (error) {
-        console.error('Failed to load workspaces:', error);
+        console.error('Failed to load user workspaces:', error);
     }
 }
 
@@ -4621,7 +4824,7 @@ async function handleLogin(event) {
             await restoreThemeFromDb();
 
             // Reload file lists for the current workspace
-            if (hasFileExplorer && currentWorkspaceId) {
+            if (hasFileExplorer && currentWorkspaceName) {
                 loadFileExplorer();
                 loadAiSteps();
             }
@@ -4708,7 +4911,7 @@ async function handleRegister(event) {
             await restoreThemeFromDb();
 
             // Reload file lists for the current workspace
-            if (hasFileExplorer && currentWorkspaceId) {
+            if (hasFileExplorer && currentWorkspaceName) {
                 loadFileExplorer();
                 loadAiSteps();
             }
@@ -4766,144 +4969,60 @@ async function loadWorkspaces() {
         while (workspaceDropdown.firstChild) workspaceDropdown.removeChild(workspaceDropdown.firstChild);
         userWorkspaces.forEach(workspace => {
             const option = document.createElement('option');
-            option.value = workspace.id;
-            option.textContent = `${workspace.name} ${workspace.type === 'shared' ? '(Shared)' : ''}`;
+            option.value = workspace.name;
+            option.textContent = workspace.name;
             workspaceDropdown.appendChild(option);
         });
 
-        // Set current workspace - try localStorage, then DB, then default
+        // Set current workspace - try localStorage, then default
         if (userWorkspaces.length > 0) {
-            let savedWorkspaceId = localStorage.getItem('selectedWorkspaceId');
+            let savedWorkspaceName = localStorage.getItem('pref_selectedWorkspaceName');
 
-            // Fall back to DB if localStorage is empty
-            if (!savedWorkspaceId) {
-                const dbPrefs = await loadPreferencesFromDb();
-                if (dbPrefs) {
-                    if (dbPrefs.selectedWorkspaceId) {
-                        savedWorkspaceId = dbPrefs.selectedWorkspaceId;
-                        localStorage.setItem('selectedWorkspaceId', savedWorkspaceId);
-                    }
-                    // Also restore editorTabsState from DB if missing locally
-                    if (!localStorage.getItem('editorTabsState') && dbPrefs.editorTabsState) {
-                        localStorage.setItem('editorTabsState', dbPrefs.editorTabsState);
-                    }
-                    // Apply saved theme from DB
-                    if (dbPrefs.theme && VALID_THEMES.includes(dbPrefs.theme)) {
-                        applyTheme(dbPrefs.theme);
-                        localStorage.setItem('theme', dbPrefs.theme);
-                    }
-                }
-            }
-
-            if (savedWorkspaceId) {
-                const savedId = parseInt(savedWorkspaceId);
-                const hasAccess = userWorkspaces.some(w => w.id === savedId);
+            if (savedWorkspaceName) {
+                const hasAccess = userWorkspaces.some(w => w.name === savedWorkspaceName);
                 if (hasAccess) {
-                    currentWorkspaceId = savedId;
+                    currentWorkspaceName = savedWorkspaceName;
                 } else {
-                    currentWorkspaceId = userWorkspaces[0].id;
+                    currentWorkspaceName = userWorkspaces[0].name;
                 }
-            } else if (!currentWorkspaceId) {
-                currentWorkspaceId = userWorkspaces[0].id;
+            } else if (!currentWorkspaceName) {
+                currentWorkspaceName = userWorkspaces[0].name;
             }
             // Persist the selection so it survives page reloads and re-login
-            localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
-            // Only PUT when the value changed to avoid duplicate preference saves on startup
-            const unchanged = savedWorkspaceId != null && parseInt(savedWorkspaceId, 10) === currentWorkspaceId;
-            if (!unchanged) {
-                savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
-            }
+            localStorage.setItem('pref_selectedWorkspaceName', currentWorkspaceName);
         }
 
         // Select current workspace
-        workspaceDropdown.value = currentWorkspaceId;
+        workspaceDropdown.value = currentWorkspaceName;
 
-        // Load workspace details
-        await loadWorkspaceDetails();
+        // Load file explorer and AI steps
+        if (hasFileExplorer) {
+            loadFileExplorer();
+            loadAiSteps();
+        }
 
     } catch (error) {
         console.error('Failed to load workspaces:', error);
     }
 }
 
-async function loadWorkspaceDetails() {
-    if (!currentWorkspaceId) return;
-
-    try {
-        const response = await authFetch(`/api/workspaces/${currentWorkspaceId}`);
-        if (!response.ok) {
-            throw new Error('Failed to load workspace details');
-        }
-
-        const data = await response.json();
-        currentWorkspace = data.workspace;
-
-        // Show/hide members section based on workspace type and ownership
-        if (currentWorkspace.type === 'shared' && currentWorkspace.owner_id === currentUser.id) {
-            workspaceMembersContainer.style.display = 'block';
-            displayWorkspaceMembers(currentWorkspace.members || []);
-        } else {
-            workspaceMembersContainer.style.display = 'none';
-        }
-
-    } catch (error) {
-        console.error('Failed to load workspace details:', error);
-    }
+function loadWorkspaceDetails() {
+    // No-op: workspace details are no longer fetched from the DB
 }
 
-function displayWorkspaceMembers(members) {
-    workspaceMembersList.innerHTML = '';
-
-    if (members.length === 0) {
-        const emptyMsg = document.createElement('div');
-        emptyMsg.style.cssText = 'color: var(--ctp-overlay1); font-size: 12px; padding: 8px;';
-        emptyMsg.textContent = 'No members yet';
-        workspaceMembersList.appendChild(emptyMsg);
-        return;
-    }
-
-    members.forEach(member => {
-        const memberEl = document.createElement('div');
-        memberEl.className = 'workspace-member-item';
-        memberEl.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--ctp-surface0);';
-
-        const infoDiv = document.createElement('div');
-
-        const nameDiv = document.createElement('div');
-        nameDiv.style.cssText = 'font-size: 13px; color: var(--ctp-text);';
-        nameDiv.textContent = member.username;
-
-        const roleDiv = document.createElement('div');
-        roleDiv.style.cssText = 'font-size: 11px; color: var(--ctp-overlay1);';
-        roleDiv.textContent = member.role;
-
-        infoDiv.appendChild(nameDiv);
-        infoDiv.appendChild(roleDiv);
-
-        const removeBtn = document.createElement('button');
-        removeBtn.className = 'btn-icon-small remove-member-btn';
-        removeBtn.textContent = '✕';
-        removeBtn.title = 'Remove';
-        removeBtn.dataset.userId = member.user_id;
-        removeBtn.addEventListener('click', async () => {
-            await removeMember(member.user_id);
-        });
-
-        memberEl.appendChild(infoDiv);
-        memberEl.appendChild(removeBtn);
-        workspaceMembersList.appendChild(memberEl);
-    });
+function displayWorkspaceMembers() {
+    // No-op: member management removed
 }
 
-async function switchWorkspace(workspaceId) {
+async function switchWorkspace(name) {
     const wsSwitchOverlay = document.getElementById('workspace-switch-overlay');
     if (wsSwitchOverlay) wsSwitchOverlay.style.display = 'flex';
 
     try {
-        currentWorkspaceId = parseInt(workspaceId);
+        currentWorkspaceName = name;
 
         // Sync the dropdown immediately so it reflects the selection
-        if (workspaceDropdown) workspaceDropdown.value = currentWorkspaceId;
+        if (workspaceDropdown) workspaceDropdown.value = currentWorkspaceName;
 
         // Close all open tabs — tests belong to a specific workspace
         openTabs = [];
@@ -4913,11 +5032,8 @@ async function switchWorkspace(workspaceId) {
         renderTabs();
         saveTabsState();
 
-        // Save selected workspace to localStorage and DB
-        localStorage.setItem('selectedWorkspaceId', currentWorkspaceId);
-        savePreferenceToDb('selectedWorkspaceId', String(currentWorkspaceId));
-
-        await loadWorkspaceDetails();
+        // Save selected workspace to localStorage
+        localStorage.setItem('pref_selectedWorkspaceName', currentWorkspaceName);
 
         // Reload file lists for new workspace
         if (hasFileExplorer) {
@@ -4928,7 +5044,7 @@ async function switchWorkspace(workspaceId) {
         // Re-open dashboard tab so the main area shows workspace stats (not "No file open")
         openDashboardTab();
 
-        addLogEntry('info', `Switched to workspace: ${currentWorkspace.name}`);
+        addLogEntry('info', `Switched to workspace: ${currentWorkspaceName}`);
     } finally {
         if (wsSwitchOverlay) wsSwitchOverlay.style.display = 'none';
     }
@@ -4953,7 +5069,6 @@ async function createWorkspace(event) {
     event.preventDefault();
 
     const name = document.getElementById('workspace-name').value.trim();
-    const type = document.getElementById('workspace-type').value;
 
     const submitBtn = document.getElementById('create-workspace-btn');
     submitBtn.disabled = true;
@@ -4963,7 +5078,7 @@ async function createWorkspace(event) {
         const response = await authFetch('/api/workspaces', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, type })
+            body: JSON.stringify({ name })
         });
 
         const data = await response.json();
@@ -4982,9 +5097,9 @@ async function createWorkspace(event) {
 
             addLogEntry('info', `Created workspace: ${name}`);
 
-            // Reload workspaces then switch (tabs are closed inside switchWorkspace)
+            // Reload workspaces (updates dropdown), then switch to new one
             await loadWorkspaces();
-            await switchWorkspace(data.workspace.id);
+            await switchWorkspace(data.workspace.name);
         } else {
             newWorkspaceError.textContent = data.error || 'Failed to create workspace';
             newWorkspaceError.style.display = 'block';
@@ -4999,60 +5114,12 @@ async function createWorkspace(event) {
     }
 }
 
-async function inviteMember(event) {
-    event.preventDefault();
-
-    const username = document.getElementById('invite-username').value.trim();
-    const role = document.getElementById('invite-role').value;
-
-    try {
-        const response = await authFetch(`/api/workspaces/${currentWorkspaceId}/members`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, role })
-        });
-
-        const data = await response.json();
-
-        if (response.ok) {
-            inviteMemberModal.style.display = 'none';
-            inviteMemberForm.reset();
-            addLogEntry('info', `✓ Invited ${username} to workspace`);
-
-            // Reload workspace details
-            await loadWorkspaceDetails();
-        } else {
-            inviteMemberError.textContent = data.error || 'Failed to invite member';
-            inviteMemberError.style.display = 'block';
-        }
-    } catch (error) {
-        console.error('Failed to invite member:', error);
-        inviteMemberError.textContent = 'Failed to invite member';
-        inviteMemberError.style.display = 'block';
-    }
+function inviteMember() {
+    // No-op: invite member functionality removed
 }
 
-async function removeMember(userId) {
-    if (!confirm('Remove this member from the workspace?')) {
-        return;
-    }
-
-    try {
-        const response = await authFetch(`/api/workspaces/${currentWorkspaceId}/members/${userId}`, {
-            method: 'DELETE'
-        });
-
-        if (response.ok) {
-            addLogEntry('info', '✓ Member removed');
-            await loadWorkspaceDetails();
-        } else {
-            const data = await response.json();
-            alert(data.error || 'Failed to remove member');
-        }
-    } catch (error) {
-        console.error('Failed to remove member:', error);
-        alert('Failed to remove member');
-    }
+function removeMember() {
+    // No-op: remove member functionality removed
 }
 
 async function handleLogout() {
@@ -5064,11 +5131,67 @@ async function handleLogout() {
     // Always clear tokens and state regardless of server response
     clearTokens();
     currentUser = null;
-    currentWorkspaceId = null;
+    currentWorkspaceName = null;
     userWorkspaces = [];
     showLoginModal();
     addLogEntry('info', '👋 Logged out successfully');
 }
+
+// ========== WORKSPACE RENAME ==========
+const renameWorkspaceBtn = document.getElementById('rename-workspace-btn');
+const workspaceRenameRow = document.getElementById('workspace-rename-row');
+const workspaceRenameInput = document.getElementById('workspace-rename-input');
+const workspaceRenameConfirm = document.getElementById('workspace-rename-confirm');
+const workspaceRenameCancel = document.getElementById('workspace-rename-cancel');
+
+function showRenameRow() {
+    workspaceRenameRow.style.display = 'flex';
+    document.querySelector('.workspace-dropdown-row').style.display = 'none';
+    workspaceRenameInput.value = currentWorkspaceName || '';
+    workspaceRenameInput.focus();
+    workspaceRenameInput.select();
+}
+
+function hideRenameRow() {
+    workspaceRenameRow.style.display = 'none';
+    document.querySelector('.workspace-dropdown-row').style.display = 'flex';
+}
+
+async function confirmRename() {
+    const newName = workspaceRenameInput.value.trim();
+    if (!newName || newName === currentWorkspaceName) {
+        hideRenameRow();
+        return;
+    }
+
+    try {
+        const res = await authFetch(`/api/workspaces/${encodeURIComponent(currentWorkspaceName)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(data.error || 'Failed to rename workspace');
+            return;
+        }
+        // Update local state and reload workspaces
+        localStorage.setItem('pref_selectedWorkspaceName', newName);
+        currentWorkspaceName = newName;
+        hideRenameRow();
+        await loadWorkspaces();
+    } catch (err) {
+        alert('Failed to rename workspace: ' + err);
+    }
+}
+
+if (renameWorkspaceBtn) renameWorkspaceBtn.addEventListener('click', showRenameRow);
+if (workspaceRenameConfirm) workspaceRenameConfirm.addEventListener('click', confirmRename);
+if (workspaceRenameCancel) workspaceRenameCancel.addEventListener('click', hideRenameRow);
+if (workspaceRenameInput) workspaceRenameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') confirmRename();
+    if (e.key === 'Escape') hideRenameRow();
+});
 
 // Event listeners for workspace management
 if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
@@ -5077,20 +5200,12 @@ if (newWorkspaceBtn) newWorkspaceBtn.addEventListener('click', () => {
     newWorkspaceModal.style.display = 'block';
     newWorkspaceError.style.display = 'none';
 });
-if (inviteMemberBtn) inviteMemberBtn.addEventListener('click', () => {
-    inviteMemberModal.style.display = 'block';
-    inviteMemberError.style.display = 'none';
-});
 
 if (newWorkspaceForm) newWorkspaceForm.addEventListener('submit', createWorkspace);
-if (inviteMemberForm) inviteMemberForm.addEventListener('submit', inviteMember);
 
 // Close modal buttons
 closeNewWorkspaceBtns.forEach(btn => {
     btn.addEventListener('click', () => newWorkspaceModal.style.display = 'none');
-});
-closeInviteMemberBtns.forEach(btn => {
-    btn.addEventListener('click', () => inviteMemberModal.style.display = 'none');
 });
 
 // ========== END WORKSPACE MANAGEMENT FUNCTIONS ==========

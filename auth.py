@@ -11,10 +11,17 @@ from functools import wraps
 from flask import Blueprint, jsonify, request, g
 import db
 from supabase_client import get_supabase_client
+import config as _config
+from config import Config
 
 # In-memory cache: token -> (user_dict, expiry_timestamp)
 _user_cache: dict[str, tuple[dict, float]] = {}
 _CACHE_TTL = 300  # 5 minutes
+
+# Local mode: skip Supabase entirely (controlled by LOCAL_MODE env var, default true)
+_LOCAL_MODE: bool = _config.LOCAL_MODE
+_LOCAL_TOKEN = 'local-session'
+_LOCAL_USER = {'id': 'local', 'username': 'local', 'email': 'local@localhost'}
 
 # Create Blueprint
 auth_bp = Blueprint('auth', __name__, url_prefix='/api')
@@ -31,6 +38,9 @@ def login_required(f):
     """Decorator that validates the Supabase JWT and loads the local User into g."""
     @wraps(f)
     def decorated(*args, **kwargs):
+        if _LOCAL_MODE:
+            g._current_user = _LOCAL_USER
+            return f(*args, **kwargs)
         user = get_current_user()
         if user is None:
             return jsonify({'error': 'Authentication required'}), 401
@@ -41,9 +51,14 @@ def login_required(f):
 def get_current_user():
     """Return the currently authenticated user dict (or None).
 
-    Reads the Authorization header, validates the token with Supabase,
+    In local mode (no Supabase URL configured) always returns the local user.
+    Otherwise reads the Authorization header, validates the token with Supabase,
     and caches the result in-memory to avoid repeated remote calls.
     """
+    if _LOCAL_MODE:
+        g._current_user = _LOCAL_USER
+        return _LOCAL_USER
+
     if hasattr(g, '_current_user'):
         return g._current_user
 
@@ -262,7 +277,15 @@ def login():
 
 @auth_bp.route('/auto-login', methods=['POST'])
 def auto_login():
-    """Auto-login using the encrypted local session (~/.autogen/session.enc)."""
+    """Auto-login. In local mode returns immediately; otherwise uses saved Supabase session."""
+    if _LOCAL_MODE:
+        return jsonify({
+            'message': 'Local session',
+            'user': _LOCAL_USER,
+            'access_token': _LOCAL_TOKEN,
+            'refresh_token': _LOCAL_TOKEN,
+        }), 200
+
     import token_store
     saved = token_store.load_tokens()
     if not saved or not saved.get('refresh_token'):
@@ -315,12 +338,11 @@ def current_user_endpoint():
     """Get current authenticated user info."""
     try:
         user = get_current_user()
-        workspaces = db.get_workspaces_for_user(user['id'])
+        if _LOCAL_MODE:
+            return jsonify({'user': user, 'workspaces': []}), 200
 
-        return jsonify({
-            'user': user,
-            'workspaces': workspaces
-        }), 200
+        workspaces = db.get_workspaces_for_user(user['id'])
+        return jsonify({'user': user, 'workspaces': workspaces}), 200
 
     except Exception as e:
         print(f"Get current user error: {e}")
@@ -343,6 +365,12 @@ def check_auth():
 @auth_bp.route('/refresh-token', methods=['POST'])
 def refresh_token():
     """Refresh an expired access token using the refresh token."""
+    if _LOCAL_MODE:
+        return jsonify({
+            'access_token': _LOCAL_TOKEN,
+            'refresh_token': _LOCAL_TOKEN,
+        }), 200
+
     try:
         data = request.get_json()
         refresh = data.get('refresh_token', '')
@@ -364,41 +392,3 @@ def refresh_token():
         return jsonify({'error': 'Token refresh failed'}), 401
 
 
-ALLOWED_PREFERENCE_KEYS = {'selectedWorkspaceId', 'editorTabsState', 'theme'}
-
-
-@auth_bp.route('/preferences', methods=['GET'])
-@login_required
-def get_preferences():
-    """Get all user preferences."""
-    try:
-        user = get_current_user()
-        prefs = db.get_preferences(user['id'])
-        return jsonify({'preferences': prefs}), 200
-    except Exception as e:
-        print(f"Get preferences error: {e}")
-        return jsonify({'error': 'Failed to get preferences'}), 500
-
-
-@auth_bp.route('/preferences', methods=['PUT'])
-@login_required
-def update_preferences():
-    """Update one or more user preferences."""
-    try:
-        user = get_current_user()
-        data = request.get_json()
-        preferences = data.get('preferences', {})
-
-        if not preferences:
-            return jsonify({'error': 'No preferences provided'}), 400
-
-        invalid_keys = set(preferences.keys()) - ALLOWED_PREFERENCE_KEYS
-        if invalid_keys:
-            return jsonify({'error': f'Invalid preference keys: {", ".join(invalid_keys)}'}), 400
-
-        db.update_preferences(user['id'], preferences)
-        return jsonify({'message': 'Preferences updated'}), 200
-
-    except Exception as e:
-        print(f"Update preferences error: {e}")
-        return jsonify({'error': 'Failed to update preferences'}), 500
