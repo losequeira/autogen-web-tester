@@ -105,81 +105,197 @@
                     </div>
                 </div>
 
-                <!-- File Explorer Sidebar (Left) -->
-                <div id="file-explorer" class="file-explorer">
-                    <!-- Dashboard Section -->
-                    <div class="file-explorer-section dashboard-section">
-                        <button id="dashboard-btn" class="dashboard-menu-item">
-                            <span class="dashboard-icon"><i class="lni lni-dashboard-square-1"></i></span>
-                            <span class="dashboard-label">DASHBOARD</span>
+                <!-- Activity Bar (VS Code-like) -->
+                <div class="activity-bar">
+                    <div class="activity-bar-top">
+                        <button class="activity-bar-btn active" data-panel="explorer" title="Explorer">
+                            <i class="lni lni-files-1"></i>
+                        </button>
+                        <button class="activity-bar-btn" data-panel="scm" title="Source Control">
+                            <i class="lni lni-git-fork"></i>
+                            <span class="activity-bar-badge" id="scm-change-count" style="display:none;">0</span>
                         </button>
                     </div>
+                    <div class="activity-bar-bottom">
+                        <button class="activity-bar-btn" data-panel="settings" title="Settings">
+                            <i class="lni lni-cog"></i>
+                        </button>
+                    </div>
+                </div>
 
-                    <!-- User & Workspace Section -->
-                    <div class="file-explorer-section workspace-section">
-                        <div class="workspace-selector-container">
-                            <div class="user-info">
-                                <span class="user-icon"><i class="lni lni-user-4"></i></span>
-                                <span id="current-username" class="current-username">Loading...</span>
-                                <button id="logout-btn" class="btn-icon-small" title="Logout"><i class="lni lni-exit"></i></button>
-                            </div>
+                <!-- File Explorer Sidebar (Left) -->
+                <div id="file-explorer" class="file-explorer">
 
-                            <div class="workspace-selector">
-                                <label for="workspace-dropdown" style="font-size: 11px; color: var(--ctp-overlay1); margin-bottom: 6px; display: block; letter-spacing: 0.05em;">WORKSPACE</label>
-                                <div class="workspace-dropdown-row">
-                                    <select id="workspace-dropdown" class="workspace-dropdown">
-                                        <option value="">Loading workspaces...</option>
-                                    </select>
-                                    <button id="rename-workspace-btn" class="btn-icon-small workspace-rename-btn" title="Rename workspace"><i class="lni lni-pencil-1"></i></button>
-                                </div>
-                                <div id="workspace-rename-row" class="workspace-rename-row" style="display:none;">
-                                    <input id="workspace-rename-input" class="workspace-rename-input" type="text" placeholder="New name…" />
-                                    <button id="workspace-rename-confirm" class="btn-icon-small workspace-rename-confirm" title="Save"><i class="lni lni-checkmark"></i></button>
-                                    <button id="workspace-rename-cancel" class="btn-icon-small workspace-rename-cancel" title="Cancel"><i class="lni lni-close"></i></button>
-                                </div>
-                                <button id="new-workspace-btn" class="btn-icon-small" title="New Workspace" style="margin-top: 8px;">+ New</button>
-                            </div>
+                    <!-- ===== EXPLORER PANEL ===== -->
+                    <div id="panel-explorer" class="sidebar-panel">
+
+                        <!-- Compact workspace header row -->
+                        <div class="explorer-workspace-header">
+                            <button id="dashboard-btn" class="activity-bar-btn explorer-dashboard-btn" title="Dashboard">
+                                <i class="lni lni-dashboard-square-1"></i>
+                            </button>
+                            <select id="workspace-dropdown" class="workspace-dropdown-compact">
+                                <option value="">Loading workspaces...</option>
+                            </select>
+                            <button id="rename-workspace-btn" class="btn-icon-small workspace-rename-btn" title="Rename workspace"><i class="lni lni-pencil-1"></i></button>
+                            <button id="new-workspace-btn" class="btn-icon-small" title="New Workspace"><i class="lni lni-folder-plus"></i></button>
                         </div>
 
-                        <!-- Workspace Members section removed (local workspaces have no members) -->
-                    </div>
+                        <!-- Rename row -->
+                        <div id="workspace-rename-row" class="workspace-rename-row" style="display:none;">
+                            <input id="workspace-rename-input" class="workspace-rename-input" type="text" placeholder="New name…" />
+                            <button id="workspace-rename-confirm" class="btn-icon-small workspace-rename-confirm" title="Save"><i class="lni lni-checkmark"></i></button>
+                            <button id="workspace-rename-cancel" class="btn-icon-small workspace-rename-cancel" title="Cancel"><i class="lni lni-close"></i></button>
+                        </div>
 
-                    <!-- Saved Tests Section -->
-                    <div class="file-explorer-section">
-                        <div class="file-explorer-header">
-                            <span class="file-explorer-title">SAVED TESTS</span>
+                        <!-- User row -->
+                        <div class="explorer-user-row">
+                            <span class="user-icon"><i class="lni lni-user-4"></i></span>
+                            <span id="current-username" class="current-username">Loading...</span>
+                            <button id="logout-btn" class="btn-icon-small" title="Logout"><i class="lni lni-exit"></i></button>
+                        </div>
+
+                        <!-- EXPLORER section header -->
+                        <div class="unified-tree-header">
+                            <span class="file-explorer-title">EXPLORER</span>
                             <div class="file-explorer-header-actions">
-                                <button id="new-folder-tests-btn" class="btn-icon-small" title="New Folder">📁+</button>
-                                <button id="run-all-tests-btn" class="btn-icon-small" title="Run All Tests">▶▶</button>
-                                <button id="record-test-btn" class="btn-icon-small" title="Record New Test">⏺</button>
-                                <button id="new-test-btn" class="btn-icon-small" title="New Test">+</button>
+                                <button id="new-folder-tests-btn" class="btn-icon-small" title="New Folder"><i class="lni lni-folder-plus"></i></button>
+                                <button id="run-all-tests-btn" class="btn-icon-small" title="Run All Tests"><i class="lni lni-play-1"></i></button>
+                                <button id="record-test-btn" class="btn-icon-small" title="Record New Test"><i class="lni lni-radio-button"></i></button>
+                                <button id="new-test-btn" class="btn-icon-small" title="New Test"><i class="lni lni-file-add"></i></button>
                             </div>
                         </div>
-                        <div id="file-list" class="file-list">
-                            <!-- Files will be loaded here -->
-                        </div>
-                    </div>
 
-                    <!-- AI Steps Section -->
-                    <div class="file-explorer-section">
-                        <div class="file-explorer-header">
-                            <span class="file-explorer-title">AI STEPS</span>
+                        <!-- Unified file tree -->
+                        <div id="unified-file-tree" class="unified-file-tree">
+
+                            <!-- SAVED TESTS root node -->
+                            <div id="tests-root-node" class="file-tree-node file-tree-node--root expanded">
+                                <div id="tests-root-row" class="file-item file-item--root">
+                                    <span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>
+                                    <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder"></i></span>
+                                    <span class="file-item-name">SAVED TESTS</span>
+                                    <div class="file-explorer-header-actions">
+                                        <button id="new-folder-tests-btn-2" class="btn-icon-small" title="New Folder"><i class="lni lni-folder-plus"></i></button>
+                                        <button id="new-test-btn-2" class="btn-icon-small" title="New Test"><i class="lni lni-file-add"></i></button>
+                                    </div>
+                                </div>
+                                <div id="file-list" class="file-list file-tree-children">
+                                    <!-- Files will be loaded here -->
+                                </div>
+                            </div>
+
+                            <!-- AI STEPS root node -->
+                            <div id="ai-steps-root-node" class="file-tree-node file-tree-node--root expanded">
+                                <div id="ai-steps-root-row" class="file-item file-item--root">
+                                    <span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>
+                                    <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder"></i></span>
+                                    <span class="file-item-name">AI STEPS</span>
+                                    <div class="file-explorer-header-actions">
+                                        <button id="new-folder-ai-steps-btn" class="btn-icon-small" title="New Folder"><i class="lni lni-folder-plus"></i></button>
+                                        <button id="new-ai-step-btn" class="btn-icon-small" title="New AI Step"><i class="lni lni-file-add"></i></button>
+                                    </div>
+                                </div>
+                                <div id="ai-steps-list" class="file-list file-tree-children">
+                                    <!-- AI step items loaded here -->
+                                </div>
+                            </div>
+
+                        </div><!-- end unified-file-tree -->
+
+                        <!-- Compact theme swatches row -->
+                        <div class="explorer-theme-row">
+                            <button class="theme-swatch-btn theme-option" data-theme="mocha" title="Mocha (Dark)" style="background:#1e1e2e;"></button>
+                            <button class="theme-swatch-btn theme-option" data-theme="macchiato" title="Macchiato (Dark)" style="background:#24273a;"></button>
+                            <button class="theme-swatch-btn theme-option" data-theme="frappe" title="Frappé (Dark)" style="background:#303446;"></button>
+                            <button class="theme-swatch-btn theme-option" data-theme="latte" title="Latte (Light)" style="background:#eff1f5;border:1px solid #ccd0da;"></button>
+                        </div>
+
+                    </div><!-- end panel-explorer -->
+
+                    <!-- ===== SOURCE CONTROL PANEL ===== -->
+                    <div id="panel-scm" class="sidebar-panel sidebar-panel--hidden">
+
+                        <!-- SCM header -->
+                        <div class="unified-tree-header">
+                            <span class="file-explorer-title">SOURCE CONTROL</span>
                             <div class="file-explorer-header-actions">
-                                <button id="new-folder-ai-steps-btn" class="btn-icon-small" title="New Folder">📁+</button>
-                                <button id="new-ai-step-btn" class="btn-icon-small" title="New AI Step">+</button>
+                                <button id="scm-refresh-btn" class="btn-icon-small" title="Refresh"><i class="lni lni-reload"></i></button>
+                                <button id="scm-pull-btn" class="btn-icon-small" title="Pull"><i class="lni lni-arrow-down-circle"></i></button>
+                                <button id="scm-push-btn" class="btn-icon-small" title="Push"><i class="lni lni-arrow-up-circle"></i></button>
                             </div>
                         </div>
-                        <div id="ai-steps-list" class="file-list">
-                            <!-- AI step items loaded here -->
-                        </div>
-                    </div>
 
-                    <!-- Theme Picker -->
-                    <div class="file-explorer-section theme-section">
-                        <div class="file-explorer-header">
+                        <!-- Branch row -->
+                        <div class="scm-branch-row">
+                            <i class="lni lni-git-fork scm-branch-icon"></i>
+                            <span id="scm-branch-name" class="scm-branch-name">—</span>
+                            <button id="scm-branch-toggle" class="btn-icon-small" title="Switch branch"><i class="lni lni-chevron-down"></i></button>
+                        </div>
+
+                        <!-- Branch picker (hidden by default) -->
+                        <div id="scm-branch-picker" class="scm-branch-picker" style="display:none;">
+                            <input id="scm-branch-filter" type="text" class="scm-branch-filter" placeholder="Filter branches…">
+                            <div id="scm-branch-list" class="scm-branch-list"></div>
+                        </div>
+
+                        <!-- Commit area -->
+                        <div class="scm-commit-area">
+                            <textarea id="scm-commit-msg" class="scm-commit-msg" placeholder="Commit message…" rows="2"></textarea>
+                            <div class="scm-commit-actions">
+                                <button id="scm-stage-all-btn" class="btn btn-small btn-secondary" title="Stage All">Stage All</button>
+                                <button id="scm-commit-btn" class="btn btn-small btn-primary">Commit</button>
+                            </div>
+                        </div>
+
+                        <!-- Staged changes -->
+                        <div class="scm-section" id="scm-staged-section">
+                            <div class="scm-section-header" data-toggle="scm-staged-list">
+                                <span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>
+                                <span class="scm-section-title">STAGED CHANGES</span>
+                                <span class="scm-section-count" id="scm-staged-count">0</span>
+                            </div>
+                            <div id="scm-staged-list" class="scm-change-list"></div>
+                        </div>
+
+                        <!-- Unstaged changes -->
+                        <div class="scm-section" id="scm-unstaged-section">
+                            <div class="scm-section-header" data-toggle="scm-unstaged-list">
+                                <span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>
+                                <span class="scm-section-title">CHANGES</span>
+                                <span class="scm-section-count" id="scm-unstaged-count">0</span>
+                            </div>
+                            <div id="scm-unstaged-list" class="scm-change-list"></div>
+                        </div>
+
+                        <!-- Untracked files -->
+                        <div class="scm-section" id="scm-untracked-section">
+                            <div class="scm-section-header" data-toggle="scm-untracked-list">
+                                <span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>
+                                <span class="scm-section-title">UNTRACKED</span>
+                                <span class="scm-section-count" id="scm-untracked-count">0</span>
+                            </div>
+                            <div id="scm-untracked-list" class="scm-change-list"></div>
+                        </div>
+
+                        <!-- Diff panel (hidden by default) -->
+                        <div id="scm-diff-panel" class="scm-diff-panel" style="display:none;">
+                            <div class="scm-diff-header">
+                                <span id="scm-diff-filepath" class="scm-diff-filepath"></span>
+                                <button id="scm-diff-close" class="btn-icon-small"><i class="lni lni-close"></i></button>
+                            </div>
+                            <pre id="scm-diff-content" class="scm-diff-content"></pre>
+                        </div>
+
+                    </div><!-- end panel-scm -->
+
+                    <!-- ===== SETTINGS PANEL (stub) ===== -->
+                    <div id="panel-settings" class="sidebar-panel sidebar-panel--hidden">
+                        <!-- Theme Picker (full, accessible via settings panel) -->
+                        <div class="unified-tree-header">
                             <span class="file-explorer-title">THEME</span>
                         </div>
-                        <div class="theme-picker">
+                        <div class="theme-picker" style="padding: 8px 12px;">
                             <button class="theme-option" data-theme="mocha" title="Mocha (Dark)">
                                 <span class="theme-swatch theme-swatch-mocha"></span>
                                 <span class="theme-name">Mocha</span>
@@ -188,17 +304,18 @@
                                 <span class="theme-swatch theme-swatch-macchiato"></span>
                                 <span class="theme-name">Macchiato</span>
                             </button>
-                            <button class="theme-option" data-theme="frappe" title="Frapp&eacute; (Dark)">
+                            <button class="theme-option" data-theme="frappe" title="Frappé (Dark)">
                                 <span class="theme-swatch theme-swatch-frappe"></span>
-                                <span class="theme-name">Frapp&eacute;</span>
+                                <span class="theme-name">Frappé</span>
                             </button>
                             <button class="theme-option" data-theme="latte" title="Latte (Light)">
                                 <span class="theme-swatch theme-swatch-latte"></span>
                                 <span class="theme-name">Latte</span>
                             </button>
                         </div>
-                    </div>
-                </div>
+                    </div><!-- end panel-settings -->
+
+                </div><!-- end file-explorer -->
 
                 <!-- Resizer -->
                 <div id="explorer-resizer" class="explorer-resizer"></div>
@@ -648,6 +765,11 @@
                         <label for="workspace-name">Workspace Name</label>
                         <input type="text" id="workspace-name" name="name" required
                                placeholder="e.g., My Tests, Team QA">
+                    </div>
+                    <div class="form-group">
+                        <label for="clone-url-input">Clone from URL <span style="color: var(--ctp-overlay1); font-weight: 400;">(optional)</span></label>
+                        <input type="text" id="clone-url-input" name="clone_url"
+                               placeholder="https://github.com/user/repo.git">
                     </div>
                     <div id="new-workspace-error" class="error-message" style="display: none;"></div>
                     <div class="button-group">

@@ -29,5 +29,8 @@ supabase~=2.0
 # Encrypted local session persistence
 cryptography>=41.0.0
 
+# Git integration
+gitpython~=3.1
+
 # Code formatting
 black~=24.1.0

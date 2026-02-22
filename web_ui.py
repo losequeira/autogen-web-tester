@@ -32,6 +32,8 @@ from code_agent import CodeGenerationAgent
 import config
 from config import Config
 import local_tree
+import git_ops
+import git.exc
 
 # Playwright trace viewer static assets (bundled with the playwright package)
 import playwright as _playwright_pkg
@@ -1754,7 +1756,7 @@ def get_workspaces():
 @app.route('/api/workspaces', methods=['POST'])
 @login_required
 def create_workspace():
-    """Create a new workspace directory."""
+    """Create a new workspace directory, optionally cloning from a git URL."""
     try:
         data = request.get_json() or {}
         name = _validate_workspace_name(data.get('name', ''))
@@ -1765,9 +1767,19 @@ def create_workspace():
         if ws_dir.exists():
             return jsonify({'error': 'A workspace with that name already exists'}), 409
 
-        ws_dir.mkdir(parents=True, exist_ok=True)
-        (ws_dir / 'saved_tests').mkdir(exist_ok=True)
-        (ws_dir / 'ai_steps').mkdir(exist_ok=True)
+        clone_url = data.get('clone_url', '').strip()
+        if clone_url:
+            try:
+                git_ops.clone_repo(clone_url, ws_dir)
+            except Exception as e:
+                return jsonify({'error': f'Clone failed: {e}'}), 400
+            (ws_dir / 'saved_tests').mkdir(exist_ok=True)
+            (ws_dir / 'ai_steps').mkdir(exist_ok=True)
+        else:
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            (ws_dir / 'saved_tests').mkdir(exist_ok=True)
+            (ws_dir / 'ai_steps').mkdir(exist_ok=True)
+            git_ops.init_repo(ws_dir)
 
         return jsonify({'message': 'Workspace created', 'workspace': {'name': name}}), 201
 
@@ -1824,10 +1836,243 @@ def delete_workspace(workspace_name):
 # ========== END WORKSPACE MANAGEMENT API ENDPOINTS ==========
 
 
+# ========== GIT API ENDPOINTS ==========
+
+def _ws_dir(workspace_name: str) -> Path:
+    return Config.AUTOGEN_WORKSPACES_DIR / workspace_name
+
+
+def _ensure_git_repo(workspace_name: str) -> None:
+    """Silently initialize a git repo if the workspace dir has no .git/."""
+    ws = _ws_dir(workspace_name)
+    if ws.is_dir() and not (ws / '.git').exists():
+        try:
+            git_ops.init_repo(ws)
+        except Exception:
+            pass
+
+
+def _enrich_tree_git_status(nodes: list, git_status: dict) -> None:
+    """
+    Annotate file nodes in-place with git_status: 'M'|'A'|'D'|None.
+    git_status is the result of git_ops.get_status().
+    """
+    staged_map = {item['path']: item['status'] for item in git_status.get('staged', [])}
+    unstaged_map = {item['path']: item['status'] for item in git_status.get('unstaged', [])}
+    untracked = set(git_status.get('untracked', []))
+
+    _GIT_STATUS_MAP = {'A': 'A', 'M': 'M', 'D': 'D', 'R': 'R'}
+
+    def _annotate(node_list):
+        for node in node_list:
+            if node.get('type') == 'file':
+                p = node.get('path', '')
+                if p in staged_map:
+                    node['git_status'] = _GIT_STATUS_MAP.get(staged_map[p], 'M')
+                elif p in unstaged_map:
+                    node['git_status'] = _GIT_STATUS_MAP.get(unstaged_map[p], 'M')
+                elif p in untracked:
+                    node['git_status'] = 'U'
+                else:
+                    node['git_status'] = None
+            elif node.get('type') == 'folder':
+                _annotate(node.get('children', []))
+
+    _annotate(nodes)
+
+
+@app.route('/api/workspaces/<workspace_name>/git/status', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def git_status(workspace_name):
+    try:
+        _ensure_git_repo(workspace_name)
+        status = git_ops.get_status(_ws_dir(workspace_name))
+        return jsonify(status), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        app.logger.exception("git status error: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/workspaces/<workspace_name>/git/stage', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_stage(workspace_name):
+    data = request.get_json() or {}
+    filepath = data.get('path', '').strip()
+    if not filepath:
+        return jsonify({'error': 'path is required'}), 400
+    try:
+        git_ops.stage_file(_ws_dir(workspace_name), filepath)
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/unstage', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_unstage(workspace_name):
+    data = request.get_json() or {}
+    filepath = data.get('path', '').strip()
+    if not filepath:
+        return jsonify({'error': 'path is required'}), 400
+    try:
+        git_ops.unstage_file(_ws_dir(workspace_name), filepath)
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/stage_all', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_stage_all(workspace_name):
+    try:
+        git_ops.stage_all(_ws_dir(workspace_name))
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/commit', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_commit(workspace_name):
+    data = request.get_json() or {}
+    message = data.get('message', '').strip()
+    if not message:
+        return jsonify({'error': 'Commit message is required'}), 400
+    try:
+        sha = git_ops.commit(_ws_dir(workspace_name), message)
+        return jsonify({'success': True, 'sha': sha}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/push', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_push(workspace_name):
+    data = request.get_json() or {}
+    try:
+        git_ops.push(
+            _ws_dir(workspace_name),
+            remote=data.get('remote', 'origin'),
+            branch=data.get('branch') or None,
+            token=data.get('token') or None,
+        )
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/pull', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_pull(workspace_name):
+    data = request.get_json() or {}
+    try:
+        git_ops.pull(
+            _ws_dir(workspace_name),
+            remote=data.get('remote', 'origin'),
+            branch=data.get('branch') or None,
+        )
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/branches', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def git_branches(workspace_name):
+    try:
+        branches = git_ops.get_branches(_ws_dir(workspace_name))
+        return jsonify(branches), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/checkout', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_checkout(workspace_name):
+    data = request.get_json() or {}
+    branch = data.get('branch', '').strip()
+    if not branch:
+        return jsonify({'error': 'branch is required'}), 400
+    create = bool(data.get('create', False))
+    try:
+        git_ops.checkout_branch(_ws_dir(workspace_name), branch, create=create)
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/diff', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def git_diff(workspace_name):
+    filepath = request.args.get('path', '').strip()
+    staged = request.args.get('staged', '0') == '1'
+    if not filepath:
+        return jsonify({'error': 'path is required'}), 400
+    try:
+        diff = git_ops.get_diff(_ws_dir(workspace_name), filepath, staged=staged)
+        return jsonify({'diff': diff}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/log', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def git_log(workspace_name):
+    try:
+        limit = int(request.args.get('limit', 20))
+    except ValueError:
+        limit = 20
+    try:
+        commits = git_ops.get_log(_ws_dir(workspace_name), max_count=limit)
+        return jsonify({'commits': commits}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+# ========== END GIT API ENDPOINTS ==========
+
+
 # ========== LOCAL TREE API (Saved Tests / AI Steps under ~/.autogen/workspaces) ==========
 
 def _tree_root(workspace_name: str, tree_type: str) -> Path:
     return Config.AUTOGEN_WORKSPACES_DIR / workspace_name / tree_type
+
+
+def _remap_git_status_for_subtree(git_status: dict, subtree: str) -> dict:
+    """
+    Remap git status paths so they are relative to the subtree directory
+    (e.g. 'saved_tests/foo.py' → 'foo.py').
+    """
+    prefix = subtree.rstrip('/') + '/'
+
+    def _remap_items(items):
+        result = []
+        for item in items:
+            path = item.get('path', '')
+            if path.startswith(prefix):
+                result.append({'path': path[len(prefix):], 'status': item['status']})
+        return result
+
+    untracked = [p[len(prefix):] for p in git_status.get('untracked', []) if p.startswith(prefix)]
+
+    return {
+        'staged': _remap_items(git_status.get('staged', [])),
+        'unstaged': _remap_items(git_status.get('unstaged', [])),
+        'untracked': untracked,
+    }
 
 
 def _collect_tree_paths(nodes: list) -> set:
@@ -1878,10 +2123,17 @@ def _enrich_tree_artifacts(nodes: list, workspace_name: str, root: Path) -> None
 def get_tree_saved_tests(workspace_name):
     """Get folder tree for Saved Tests (local filesystem only)."""
     try:
+        _ensure_git_repo(workspace_name)
         root = _tree_root(workspace_name, "saved_tests")
         root.mkdir(parents=True, exist_ok=True)
         children = local_tree.list_tree(root, "saved_tests")
         _enrich_tree_artifacts(children, workspace_name, root)
+        try:
+            status = git_ops.get_status(_ws_dir(workspace_name))
+            # Remap paths relative to saved_tests/ root
+            _enrich_tree_git_status(children, _remap_git_status_for_subtree(status, 'saved_tests'))
+        except Exception:
+            pass
         return jsonify({"tree": children}), 200
     except Exception as e:
         app.logger.exception("Error listing saved_tests tree: %s", e)
@@ -1894,9 +2146,15 @@ def get_tree_saved_tests(workspace_name):
 def get_tree_ai_steps(workspace_name):
     """Get folder tree for AI Steps (local filesystem only)."""
     try:
+        _ensure_git_repo(workspace_name)
         root = _tree_root(workspace_name, "ai_steps")
         root.mkdir(parents=True, exist_ok=True)
         children = local_tree.list_tree(root, "ai_steps")
+        try:
+            status = git_ops.get_status(_ws_dir(workspace_name))
+            _enrich_tree_git_status(children, _remap_git_status_for_subtree(status, 'ai_steps'))
+        except Exception:
+            pass
         return jsonify({"tree": children}), 200
     except Exception as e:
         app.logger.exception("Error listing ai_steps tree: %s", e)

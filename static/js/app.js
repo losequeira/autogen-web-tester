@@ -1705,6 +1705,17 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
             <div class="file-item-actions">${runOrStopBtn}</div>
         `;
 
+        // Append git status badge via DOM (avoids XSS concerns with innerHTML)
+        if (node.git_status) {
+            const nameEl = fileItem.querySelector('.file-item-name');
+            if (nameEl) {
+                const badge = document.createElement('span');
+                badge.className = `git-status-badge ${node.git_status}`;
+                badge.textContent = node.git_status;
+                nameEl.appendChild(badge);
+            }
+        }
+
         // Artifact container: JS-toggled, each child gets explicit depth-based padding
         const childrenEl = document.createElement('div');
         childrenEl.className = 'file-tree-artifacts';
@@ -2458,6 +2469,8 @@ window.addEventListener('load', () => {
 
         // Dashboard opening is now handled by the main load handler after tab restoration
     }
+    initUnifiedTree();
+    initScmPanel();
 });
 
 // ========================================
@@ -2568,6 +2581,17 @@ function renderAiStepsTree(nodes, container, depth) {
                 <button class="file-item-action" data-action="delete" title="Delete"><i class="lni lni-trash-3"></i></button>
             </div>
         `;
+
+        // Append git status badge via DOM
+        if (node.git_status) {
+            const nameEl = item.querySelector('.file-item-name');
+            if (nameEl) {
+                const badge = document.createElement('span');
+                badge.className = `git-status-badge ${node.git_status}`;
+                badge.textContent = node.git_status;
+                nameEl.appendChild(badge);
+            }
+        }
 
         item.querySelector('[data-action="run"]').addEventListener('click', (e) => { e.stopPropagation(); runAiStep(null, path, name); });
         item.querySelector('[data-action="edit"]').addEventListener('click', (e) => { e.stopPropagation(); openAiStepInEditor(path, name); });
@@ -5069,16 +5093,18 @@ async function createWorkspace(event) {
     event.preventDefault();
 
     const name = document.getElementById('workspace-name').value.trim();
+    const cloneUrlInput = document.getElementById('clone-url-input');
+    const clone_url = cloneUrlInput ? cloneUrlInput.value.trim() : '';
 
     const submitBtn = document.getElementById('create-workspace-btn');
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Creating…';
+    submitBtn.textContent = clone_url ? 'Cloning…' : 'Creating…';
 
     try {
         const response = await authFetch('/api/workspaces', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name })
+            body: JSON.stringify({ name, ...(clone_url && { clone_url }) })
         });
 
         const data = await response.json();
@@ -5324,3 +5350,381 @@ window.addEventListener('load', async () => {
 
     dismissLoadingOverlay();
 });
+
+// ========================================
+// ACTIVITY BAR SWITCHING
+// ========================================
+
+function switchPanel(panelId) {
+    document.querySelectorAll('.activity-bar-btn[data-panel]').forEach(btn =>
+        btn.classList.toggle('active', btn.dataset.panel === panelId));
+    document.querySelectorAll('.sidebar-panel').forEach(p =>
+        p.classList.toggle('sidebar-panel--hidden', p.id !== `panel-${panelId}`));
+    if (panelId === 'scm') refreshScmPanel();
+}
+
+document.querySelectorAll('.activity-bar-btn[data-panel]').forEach(btn =>
+    btn.addEventListener('click', () => switchPanel(btn.dataset.panel)));
+
+
+// ========================================
+// UNIFIED TREE ROOT COLLAPSE
+// ========================================
+
+function initUnifiedTree() {
+    const testsRootRow = document.getElementById('tests-root-row');
+    const testsRootNode = document.getElementById('tests-root-node');
+    if (testsRootRow && testsRootNode) {
+        testsRootRow.addEventListener('click', (e) => {
+            if (!e.target.closest('.file-explorer-header-actions')) {
+                testsRootNode.classList.toggle('expanded');
+            }
+        });
+    }
+
+    const aiStepsRootRow = document.getElementById('ai-steps-root-row');
+    const aiStepsRootNode = document.getElementById('ai-steps-root-node');
+    if (aiStepsRootRow && aiStepsRootNode) {
+        aiStepsRootRow.addEventListener('click', (e) => {
+            if (!e.target.closest('.file-explorer-header-actions')) {
+                aiStepsRootNode.classList.toggle('expanded');
+            }
+        });
+    }
+
+    // Wire duplicate header buttons to the primary ones
+    const newFolderBtn2 = document.getElementById('new-folder-tests-btn-2');
+    const newFolderBtn1 = document.getElementById('new-folder-tests-btn');
+    if (newFolderBtn2 && newFolderBtn1) {
+        newFolderBtn2.addEventListener('click', () => newFolderBtn1.click());
+    }
+    const newTestBtn2 = document.getElementById('new-test-btn-2');
+    const newTestBtn1 = document.getElementById('new-test-btn');
+    if (newTestBtn2 && newTestBtn1) {
+        newTestBtn2.addEventListener('click', () => newTestBtn1.click());
+    }
+}
+
+
+// ========================================
+// SCM PANEL
+// ========================================
+
+async function refreshScmPanel() {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/status`);
+        const state = await res.json();
+        if (res.ok) renderScmState(state);
+    } catch (e) {
+        console.warn('SCM refresh failed:', e);
+    }
+}
+
+function renderScmState(state) {
+    // Branch name
+    const branchEl = document.getElementById('scm-branch-name');
+    if (branchEl) branchEl.textContent = state.branch || '—';
+
+    // Change count badge
+    const totalChanges = (state.staged || []).length + (state.unstaged || []).length + (state.untracked || []).length;
+    const badge = document.getElementById('scm-change-count');
+    if (badge) {
+        if (totalChanges > 0) {
+            badge.textContent = totalChanges;
+            badge.style.display = '';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+
+    // Staged
+    renderScmChangeList('scm-staged-list', 'scm-staged-count', state.staged || [], 'staged');
+    // Unstaged
+    renderScmChangeList('scm-unstaged-list', 'scm-unstaged-count', state.unstaged || [], 'unstaged');
+    // Untracked
+    const untracked = (state.untracked || []).map(p => ({ path: p, status: 'U' }));
+    renderScmChangeList('scm-untracked-list', 'scm-untracked-count', untracked, 'untracked');
+}
+
+function renderScmChangeList(listId, countId, items, listType) {
+    const list = document.getElementById(listId);
+    const countEl = document.getElementById(countId);
+    if (countEl) countEl.textContent = items.length;
+    if (!list) return;
+    list.innerHTML = '';
+
+    items.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'scm-change-item';
+
+        const badge = document.createElement('span');
+        badge.className = `git-status-badge ${item.status || 'M'}`;
+        badge.textContent = item.status || 'M';
+
+        const pathSpan = document.createElement('span');
+        pathSpan.className = 'scm-change-path';
+        pathSpan.title = item.path;
+        pathSpan.textContent = item.path;
+
+        // Stage/unstage action button
+        const actionBtn = document.createElement('button');
+        actionBtn.className = 'btn-icon-small scm-change-action';
+        const actionIcon = document.createElement('i');
+
+        if (listType === 'staged') {
+            actionIcon.className = 'lni lni-minus-circle';
+            actionBtn.title = 'Unstage';
+            actionBtn.appendChild(actionIcon);
+            actionBtn.addEventListener('click', (e) => { e.stopPropagation(); scmUnstageFile(item.path); });
+        } else {
+            actionIcon.className = 'lni lni-plus-circle';
+            actionBtn.title = 'Stage';
+            actionBtn.appendChild(actionIcon);
+            actionBtn.addEventListener('click', (e) => { e.stopPropagation(); scmStageFile(item.path); });
+        }
+
+        // Click row to view diff
+        const isStaged = listType === 'staged';
+        row.addEventListener('click', () => showScmDiff(item.path, isStaged));
+
+        row.appendChild(badge);
+        row.appendChild(pathSpan);
+        row.appendChild(actionBtn);
+        list.appendChild(row);
+    });
+}
+
+async function scmStageFile(filepath) {
+    if (!currentWorkspaceName) return;
+    await authFetch(`/api/workspaces/${currentWorkspaceName}/git/stage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: filepath })
+    });
+    refreshScmPanel();
+}
+
+async function scmUnstageFile(filepath) {
+    if (!currentWorkspaceName) return;
+    await authFetch(`/api/workspaces/${currentWorkspaceName}/git/unstage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: filepath })
+    });
+    refreshScmPanel();
+}
+
+async function scmStageAll() {
+    if (!currentWorkspaceName) return;
+    await authFetch(`/api/workspaces/${currentWorkspaceName}/git/stage_all`, { method: 'POST' });
+    refreshScmPanel();
+}
+
+async function scmCommit() {
+    if (!currentWorkspaceName) return;
+    const msgEl = document.getElementById('scm-commit-msg');
+    const message = msgEl ? msgEl.value.trim() : '';
+    if (!message) { alert('Please enter a commit message.'); return; }
+
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/commit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            if (msgEl) msgEl.value = '';
+            addLogEntry('info', `Committed: ${data.sha ? data.sha.slice(0, 7) : 'ok'} — ${message}`);
+            refreshScmPanel();
+        } else {
+            alert(data.error || 'Commit failed');
+        }
+    } catch (e) {
+        alert('Commit failed: ' + e.message);
+    }
+}
+
+async function scmPush() {
+    if (!currentWorkspaceName) return;
+    const token = prompt('GitHub Personal Access Token (leave blank if SSH or already configured):');
+    if (token === null) return; // user cancelled
+
+    try {
+        const body = {};
+        if (token) body.token = token;
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/push`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (res.ok) {
+            addLogEntry('info', 'Pushed to remote.');
+        } else {
+            alert(data.error || 'Push failed');
+        }
+    } catch (e) {
+        alert('Push failed: ' + e.message);
+    }
+}
+
+async function scmPull() {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/pull`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (res.ok) {
+            addLogEntry('info', 'Pulled from remote.');
+            loadFileExplorer();
+            loadAiSteps();
+            refreshScmPanel();
+        } else {
+            alert(data.error || 'Pull failed');
+        }
+    } catch (e) {
+        alert('Pull failed: ' + e.message);
+    }
+}
+
+async function showScmDiff(filepath, staged) {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/diff?path=${encodeURIComponent(filepath)}&staged=${staged ? '1' : '0'}`);
+        const data = await res.json();
+        const panel = document.getElementById('scm-diff-panel');
+        const content = document.getElementById('scm-diff-content');
+        const fp = document.getElementById('scm-diff-filepath');
+        if (!panel || !content) return;
+        if (fp) fp.textContent = filepath;
+        // Colorize diff lines
+        const lines = (data.diff || '(no diff)').split('\n');
+        content.innerHTML = '';
+        lines.forEach(line => {
+            const span = document.createElement('span');
+            if (line.startsWith('+') && !line.startsWith('+++')) span.className = 'diff-add';
+            else if (line.startsWith('-') && !line.startsWith('---')) span.className = 'diff-del';
+            else if (line.startsWith('@@') || line.startsWith('diff ')) span.className = 'diff-meta';
+            span.textContent = line + '\n';
+            content.appendChild(span);
+        });
+        panel.style.display = 'flex';
+    } catch (e) {
+        console.warn('Diff failed:', e);
+    }
+}
+
+async function loadScmBranches() {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/branches`);
+        const data = await res.json();
+        if (!res.ok) return;
+        const list = document.getElementById('scm-branch-list');
+        if (!list) return;
+        list.innerHTML = '';
+        const all = [...(data.local || []), ...(data.remote || [])];
+        all.forEach(branch => {
+            const item = document.createElement('div');
+            item.className = 'scm-branch-item';
+            if (branch === data.current) item.classList.add('active');
+            const icon = document.createElement('i');
+            icon.className = 'lni lni-git-fork';
+            const label = document.createElement('span');
+            label.textContent = branch;
+            item.appendChild(icon);
+            item.appendChild(label);
+            item.addEventListener('click', () => {
+                scmCheckoutBranch(branch);
+                document.getElementById('scm-branch-picker').style.display = 'none';
+            });
+            list.appendChild(item);
+        });
+    } catch (e) {
+        console.warn('loadScmBranches failed:', e);
+    }
+}
+
+async function scmCheckoutBranch(branch) {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/checkout`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ branch })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            addLogEntry('info', `Switched to branch: ${branch}`);
+            refreshScmPanel();
+            loadFileExplorer();
+            loadAiSteps();
+        } else {
+            alert(data.error || 'Checkout failed');
+        }
+    } catch (e) {
+        alert('Checkout failed: ' + e.message);
+    }
+}
+
+function initScmPanel() {
+    // Refresh button
+    const refreshBtn = document.getElementById('scm-refresh-btn');
+    if (refreshBtn) refreshBtn.addEventListener('click', refreshScmPanel);
+
+    // Pull / Push
+    const pullBtn = document.getElementById('scm-pull-btn');
+    if (pullBtn) pullBtn.addEventListener('click', scmPull);
+    const pushBtn = document.getElementById('scm-push-btn');
+    if (pushBtn) pushBtn.addEventListener('click', scmPush);
+
+    // Branch toggle
+    const branchToggle = document.getElementById('scm-branch-toggle');
+    const branchPicker = document.getElementById('scm-branch-picker');
+    if (branchToggle && branchPicker) {
+        branchToggle.addEventListener('click', () => {
+            const isVisible = branchPicker.style.display !== 'none';
+            branchPicker.style.display = isVisible ? 'none' : 'block';
+            if (!isVisible) loadScmBranches();
+        });
+    }
+
+    // Branch filter
+    const branchFilter = document.getElementById('scm-branch-filter');
+    if (branchFilter) {
+        branchFilter.addEventListener('input', () => {
+            const q = branchFilter.value.toLowerCase();
+            document.querySelectorAll('#scm-branch-list .scm-branch-item').forEach(item => {
+                item.style.display = item.textContent.toLowerCase().includes(q) ? '' : 'none';
+            });
+        });
+    }
+
+    // Stage all + commit
+    const stageAllBtn = document.getElementById('scm-stage-all-btn');
+    if (stageAllBtn) stageAllBtn.addEventListener('click', scmStageAll);
+    const commitBtn = document.getElementById('scm-commit-btn');
+    if (commitBtn) commitBtn.addEventListener('click', scmCommit);
+
+    // Section collapse toggles
+    document.querySelectorAll('.scm-section-header[data-toggle]').forEach(header => {
+        header.addEventListener('click', () => {
+            header.closest('.scm-section').classList.toggle('collapsed');
+        });
+    });
+
+    // Diff close button
+    const diffClose = document.getElementById('scm-diff-close');
+    if (diffClose) {
+        diffClose.addEventListener('click', () => {
+            const panel = document.getElementById('scm-diff-panel');
+            if (panel) panel.style.display = 'none';
+        });
+    }
+}
+// ========== END SCM PANEL ==========
