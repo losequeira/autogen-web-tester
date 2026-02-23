@@ -1473,6 +1473,11 @@ function renderTabs() {
     });
 }
 
+function selectTreeRow(el) {
+    document.querySelectorAll('.file-item.selected, .file-tree-child.selected').forEach(r => r.classList.remove('selected'));
+    if (el) el.classList.add('selected');
+}
+
 function updateFileListActiveState() {
     document.querySelectorAll('.file-item').forEach(item => {
         const filename = item.dataset.filename;
@@ -1635,11 +1640,9 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
                 renderSavedTestsTree(node.children, childrenEl, depth + 1, node.path);
             }
             row.addEventListener('click', (e) => {
-                if (e.target.closest('.file-tree-expand')) {
-                    nodeEl.classList.toggle('expanded');
-                } else if (!e.target.closest('.file-item-actions')) {
-                    nodeEl.classList.toggle('expanded');
-                }
+                if (e.target.closest('.file-item-actions')) return;
+                selectTreeRow(row);
+                nodeEl.classList.toggle('expanded');
             });
             row.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
@@ -1738,7 +1741,7 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
             c.style.paddingLeft = artifactPadding;
             c.dataset.filename = path;
             c.innerHTML = '<i class="lni lni-camera-movie-1"></i> Recording';
-            c.addEventListener('click', (e) => { e.stopPropagation(); openRecordingTab(path, name); });
+            c.addEventListener('click', (e) => { e.stopPropagation(); selectTreeRow(c); openRecordingTab(path, name); });
             childrenEl.appendChild(c);
         }
         if (hasTrace) {
@@ -1747,7 +1750,7 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
             c.style.paddingLeft = artifactPadding;
             c.dataset.filename = path;
             c.innerHTML = '<i class="lni lni-layers-1"></i> Trace';
-            c.addEventListener('click', (e) => { e.stopPropagation(); openTraceTab(path, name); });
+            c.addEventListener('click', (e) => { e.stopPropagation(); selectTreeRow(c); openTraceTab(path, name); });
             childrenEl.appendChild(c);
         }
 
@@ -1766,9 +1769,11 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
                     if (stopTestBtn) { stopTestBtn.disabled = true; stopTestBtn.textContent = 'STOPPING...'; }
                 }
             } else if (e.target.closest('.file-tree-expand') && hasChildren) {
+                selectTreeRow(fileItem);
                 const expanded = nodeEl.classList.toggle('expanded');
                 childrenEl.style.display = expanded ? 'block' : 'none';
             } else if (!e.target.closest('.file-item-actions') && !e.target.closest('.file-tree-expand')) {
+                selectTreeRow(fileItem);
                 openFileFromExplorer(path, name);
             }
         });
@@ -2536,8 +2541,9 @@ function renderAiStepsTree(nodes, container, depth) {
             childrenEl.className = 'file-tree-children';
             if (hasChildren) renderAiStepsTree(node.children, childrenEl, depth + 1);
             row.addEventListener('click', (e) => {
-                if (e.target.closest('.file-tree-expand')) nodeEl.classList.toggle('expanded');
-                else nodeEl.classList.toggle('expanded');
+                if (e.target.closest('.file-item-actions')) return;
+                selectTreeRow(row);
+                nodeEl.classList.toggle('expanded');
             });
             row.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
@@ -2609,7 +2615,10 @@ function renderAiStepsTree(nodes, container, depth) {
         item.querySelector('[data-action="edit"]').addEventListener('click', (e) => { e.stopPropagation(); openAiStepInEditor(path, name); });
         item.querySelector('[data-action="delete"]').addEventListener('click', (e) => { e.stopPropagation(); deleteAiStep(path, name); });
         item.addEventListener('click', (e) => {
-            if (!e.target.closest('.file-item-actions')) openAiStepInEditor(path, name);
+            if (!e.target.closest('.file-item-actions')) {
+                selectTreeRow(item);
+                openAiStepInEditor(path, name);
+            }
         });
         item.addEventListener('contextmenu', (e) => {
             e.preventDefault();

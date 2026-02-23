@@ -1714,7 +1714,9 @@ VALID_THEMES = {'mocha', 'macchiato', 'frappe', 'latte'}
 def index():
     """Render main page."""
     is_cloud = bool(os.environ.get('K_SERVICE') or os.environ.get('CLOUD_RUN_JOB') or os.environ.get('GAE_ENV'))
-    theme = request.cookies.get('theme', 'mocha')
+    # File-backed prefs take priority; cookie is fallback for web deployments
+    prefs = _read_prefs()
+    theme = prefs.get('theme') or request.cookies.get('theme', 'mocha')
     if theme not in VALID_THEMES:
         theme = 'mocha'
     return render_template('index.html', is_cloud=is_cloud, theme=theme)
@@ -1726,6 +1728,44 @@ def ai_status():
     """Return whether an OpenAI API key is configured."""
     has_key = bool(os.environ.get('OPENAI_API_KEY', '').strip())
     return jsonify({'ai_enabled': has_key}), 200
+
+
+# ========== USER PREFERENCES (file-backed, ~/.autogen/preferences/) ==========
+
+_PREFS_DIR = Path.home() / '.autogen' / 'preferences'
+_PREFS_FILE = _PREFS_DIR / 'user_prefs.json'
+_ALLOWED_PREF_KEYS = {'theme', 'selectedWorkspaceName', 'editorTabsState',
+                      'fileExplorerWidth', 'aiChatWidth'}
+
+
+def _read_prefs() -> dict:
+    try:
+        return json.loads(_PREFS_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_prefs(prefs: dict) -> None:
+    _PREFS_DIR.mkdir(parents=True, exist_ok=True)
+    _PREFS_FILE.write_text(json.dumps(prefs, indent=2))
+
+
+@app.route('/api/preferences', methods=['GET'])
+@login_required
+def get_preferences():
+    return jsonify(_read_prefs()), 200
+
+
+@app.route('/api/preferences', methods=['PATCH'])
+@login_required
+def patch_preferences():
+    updates = request.get_json(force=True) or {}
+    prefs = _read_prefs()
+    for key, value in updates.items():
+        if key in _ALLOWED_PREF_KEYS:
+            prefs[key] = value
+    _write_prefs(prefs)
+    return jsonify(prefs), 200
 
 
 # ========== WORKSPACE MANAGEMENT API ENDPOINTS ==========
