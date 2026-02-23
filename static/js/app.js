@@ -236,6 +236,7 @@ let recorderViewport = { width: 1280, height: 720 };  // Actual browser viewport
 let pendingCodegenTest = null;  // Track test info from codegen
 let pendingCodegenTabId = null;  // Tab (filename) to fill with recorded code when codegen_complete
 let currentEditingAiStep = null;  // Track if we're editing an existing AI step
+let _aiStepFolderPrefix = null;   // Folder to create new AI step inside
 let currentRunningTestFilename = null;  // Track which saved test is currently running
 
 let isTestRunning = false;
@@ -1634,6 +1635,58 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
                 <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder-1"></i></span>
                 <span class="file-item-name">${escapeHtml(node.name)}</span>
             `;
+            // Folder inline actions — built via DOM to avoid innerHTML with interactive elements
+            const folderActions = document.createElement('div');
+            folderActions.className = 'file-item-actions';
+            const newSubFolderBtn = document.createElement('button');
+            newSubFolderBtn.className = 'file-item-action';
+            newSubFolderBtn.title = 'New Folder';
+            newSubFolderBtn.innerHTML = '<i class="lni lni-folder-1"></i>';
+            const newTestInFolderBtn = document.createElement('button');
+            newTestInFolderBtn.className = 'file-item-action';
+            newTestInFolderBtn.title = 'New Test';
+            newTestInFolderBtn.innerHTML = '<i class="lni lni-file-plus-circle"></i>';
+            folderActions.appendChild(newSubFolderBtn);
+            folderActions.appendChild(newTestInFolderBtn);
+            row.appendChild(folderActions);
+            newSubFolderBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const inputName = prompt('Folder name:');
+                if (!inputName || !inputName.trim()) return;
+                const folderName = inputName.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_') || 'NewFolder';
+                const path = node.path ? `${node.path}/${folderName}` : folderName;
+                try {
+                    const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path, type: 'folder' })
+                    });
+                    const data = await res.json();
+                    if (data.success) { nodeEl.classList.add('expanded'); loadFileExplorer(); }
+                    else { alert('Error: ' + (data.error || 'Unknown')); }
+                } catch (err) { alert('Failed to create folder: ' + err); }
+            });
+            newTestInFolderBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const testName = prompt('Test name:');
+                if (!testName) return;
+                const filename = sanitizeTestFilename(testName);
+                const fullPath = node.path ? `${node.path}/${filename}` : filename;
+                const code = `from playwright.async_api import async_playwright\nimport asyncio\n\nasync def run():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=False)\n        page = await browser.new_page()\n\n        # Your code here\n\n        await browser.close()\n\nasyncio.run(run())`;
+                try {
+                    const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(fullPath)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: testName.trim(), code })
+                    });
+                    const data = await res.json();
+                    if (data.path || data.filename) {
+                        openTab(data.path || data.filename, testName.trim(), code, 'test');
+                        nodeEl.classList.add('expanded');
+                        loadFileExplorer();
+                    } else { alert('Error: ' + (data.error || 'Unknown')); }
+                } catch (err) { alert('Failed to create test: ' + err); }
+            });
             const childrenEl = document.createElement('div');
             childrenEl.className = 'file-tree-children';
             if (hasChildren) {
@@ -2537,6 +2590,44 @@ function renderAiStepsTree(nodes, container, depth) {
                 <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder-1"></i></span>
                 <span class="file-item-name">${escapeHtml(node.name)}</span>
             `;
+            // Folder inline actions — built via DOM to avoid innerHTML with interactive elements
+            const aiFolderActions = document.createElement('div');
+            aiFolderActions.className = 'file-item-actions';
+            const newAiSubFolderBtn = document.createElement('button');
+            newAiSubFolderBtn.className = 'file-item-action';
+            newAiSubFolderBtn.title = 'New Folder';
+            newAiSubFolderBtn.innerHTML = '<i class="lni lni-folder-1"></i>';
+            const newAiStepInFolderBtn = document.createElement('button');
+            newAiStepInFolderBtn.className = 'file-item-action';
+            newAiStepInFolderBtn.title = 'New Step';
+            newAiStepInFolderBtn.innerHTML = '<i class="lni lni-file-plus-circle"></i>';
+            aiFolderActions.appendChild(newAiSubFolderBtn);
+            aiFolderActions.appendChild(newAiStepInFolderBtn);
+            row.appendChild(aiFolderActions);
+            newAiSubFolderBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const inputName = prompt('Folder name:');
+                if (!inputName || !inputName.trim()) return;
+                const folderName = inputName.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_') || 'NewFolder';
+                const path = node.path ? `${node.path}/${folderName}` : folderName;
+                try {
+                    const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/ai_steps`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path, type: 'folder' })
+                    });
+                    const data = await res.json();
+                    if (data.success) { nodeEl.classList.add('expanded'); loadAiSteps(); }
+                    else { alert('Error: ' + (data.error || 'Unknown')); }
+                } catch (err) { alert('Failed to create folder: ' + err); }
+            });
+            newAiStepInFolderBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                _aiStepFolderPrefix = node.path;
+                currentEditingAiStep = null;
+                nodeEl.classList.add('expanded');
+                showAiStepModal();
+            });
             const childrenEl = document.createElement('div');
             childrenEl.className = 'file-tree-children';
             if (hasChildren) renderAiStepsTree(node.children, childrenEl, depth + 1);
@@ -2918,7 +3009,9 @@ async function saveAiStep() {
     }
 
     try {
-        const path = currentEditingAiStep || sanitizeAiStepFilename(name);
+        const basename = sanitizeAiStepFilename(name);
+        const path = currentEditingAiStep || (_aiStepFolderPrefix ? `${_aiStepFolderPrefix}/${basename}` : basename);
+        _aiStepFolderPrefix = null;
         const url = `/api/workspaces/${currentWorkspaceName}/tree/ai_steps/${encodeURIComponent(path)}`;
         const response = await authFetch(url, {
             method: 'PUT',
