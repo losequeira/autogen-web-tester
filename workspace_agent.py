@@ -125,6 +125,7 @@ def _get_artifacts(workspace_id: str, filename: str) -> list[dict]:
     results.append({
         "status": status_data.get("status"),
         "timestamp": status_data.get("timestamp"),
+        "error_cause": status_data.get("error_cause"),
         "video_path": str(video) if video else None,
         "har_path": str(har) if har else None,
         "trace_path": str(trace) if trace else None,

@@ -362,6 +362,11 @@
 
                     <!-- Editor Content -->
                     <div class="editor-content">
+                        <div id="editor-sub-tabs" style="display:none;"></div>
+                        <div id="editor-running-overlay" style="display:none;">
+                            <div class="loading-spinner"></div>
+                            <span class="editor-running-label">Running…</span>
+                        </div>
                         <div id="codemirror-editor"></div>
                         <div id="media-panel" style="display:none;flex:1;overflow:hidden;position:relative;background:var(--ctp-base);width:100%;height:100%;">
                             <div id="media-panel-recording" style="display:none;width:100%;height:100%;flex-direction:column;align-items:stretch;gap:0;box-sizing:border-box;">
@@ -369,6 +374,9 @@
                                     <div class="recording-header-left">
                                         <span id="recording-header-title" class="recording-header-title"></span>
                                         <span id="recording-header-status" class="recording-header-status"></span>
+                                        <button id="recording-header-eye" class="recording-header-eye-btn" title="Show last error" style="display:none;">
+                                            <i class="lni lni-eye"></i>
+                                        </button>
                                         <span id="recording-header-time" class="recording-header-time"></span>
                                     </div>
                                     <button id="recording-header-rerun" class="recording-header-rerun-btn" title="Re-run test">

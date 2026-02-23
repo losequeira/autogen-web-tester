@@ -431,6 +431,9 @@ socket.on('test_complete', (data) => {
         const errorMsg = data.message || 'Unknown error';
         addLogEntry('error', `❌ Test failed: ${errorMsg}`, `❌ Test failed`);
         openOutputPanel();
+        if (currentRunningTestFilename) {
+            testCache[currentRunningTestFilename] = { ...(testCache[currentRunningTestFilename] || {}), last_error: errorMsg };
+        }
     }
 
     // Restore AI step tab content if an AI step just finished
@@ -458,7 +461,7 @@ socket.on('test_complete', (data) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: data.status })
         }).catch(() => {}).finally(() => {
-            if (hasFileExplorer) loadFileExplorer();
+            if (hasFileExplorer) refreshTestStatusSilent();
             currentRunningTestFilename = null;
         });
     }
@@ -466,15 +469,17 @@ socket.on('test_complete', (data) => {
 
 socket.on('artifacts_updated', (data) => {
     console.log('Artifacts updated for:', data.filename);
-    // Refresh file explorer to show video icon
-    if (hasFileExplorer) {
-        loadFileExplorer();
-    }
+    if (hasFileExplorer) refreshTestStatusSilent();
 });
 
 socket.on('batch_test_progress', (data) => {
     const { filename, name, status } = data;
     runningTestsSet.delete(filename);
+    updateEditorRunningOverlay();
+    if (status !== 'success') {
+        const errText = data.output || data.error_output || data.error || data.message || null;
+        testCache[filename] = { ...(testCache[filename] || {}), last_error: errText };
+    }
 
     // Update UI: remove spinner, set status border (no icon), remove batch-running-active so border shows passed/failed
     const fileItem = document.querySelector(`.file-item[data-filename="${filename}"]`);
@@ -485,6 +490,8 @@ socket.on('batch_test_progress', (data) => {
         fileItem.classList.remove('batch-running-active');
         fileItem.classList.remove('file-item-status-passed', 'file-item-status-failed', 'file-item-status-unknown', 'file-item-status-running');
         fileItem.classList.add(status === 'success' ? 'file-item-status-passed' : 'file-item-status-failed');
+        const existingIcon = fileItem.querySelector('.file-item-status-icon');
+        if (existingIcon) existingIcon.replaceWith(buildStatusIcon(status === 'success' ? 'success' : 'error'));
     }
 
     // Store result
@@ -502,6 +509,7 @@ socket.on('batch_run_complete', (data) => {
     isBatchRunning = false;
     isStopRequested = false;
     runningTestsSet.clear();
+    updateEditorRunningOverlay();
     updateStopButtonVisibility();
 
     // Remove batch classes
@@ -519,8 +527,8 @@ socket.on('batch_run_complete', (data) => {
     // Log summary
     addLogEntry('info', `📊 Batch complete: ${passed}/${total} passed in ${duration.toFixed(1)}s`);
 
-    // Reload file explorer
-    if (hasFileExplorer) loadFileExplorer();
+    // Silently refresh test status without re-rendering the tree
+    if (hasFileExplorer) refreshTestStatusSilent();
 
     // Show modal
     showTestResultsModal(total, passed, failed, duration);
@@ -962,6 +970,7 @@ async function runAllTests() {
         filenames: filePaths,
         workspaceName: currentWorkspaceName
     });
+    updateEditorRunningOverlay();
 }
 
 // Tab Management Functions
@@ -1096,19 +1105,19 @@ function switchToTab(filename) {
         if (iframeEl) iframeEl.src = tab.meta?.viewerUrl || '';
         if (editorContent) editorContent.classList.remove('empty');
     } else {
-        // Hide media panel when switching to code/ai-step/dashboard tabs
-        if (mediaPanel) mediaPanel.style.display = 'none';
-        // Hide dashboard content if switching away from it
         hideDashboardContent();
+        const subTabsEl = document.getElementById('editor-sub-tabs');
 
-        lastSavedCode = tab.code;  // Set lastSavedCode to prevent false dirty flag
-        setPlaywrightCode(tab.code);
-
-        // Set CodeMirror mode based on file type
-        // AI Steps use markdown, Tests use Python
-        if (codeMirrorEditor) {
-            const mode = tab.fileType === 'ai-step' ? 'markdown' : 'python';
-            codeMirrorEditor.setOption('mode', mode);
+        if (tab.fileType === 'test') {
+            renderSubTabs(tab.id);
+        } else {
+            // ai-step or other non-media file types
+            if (subTabsEl) subTabsEl.style.display = 'none';
+            if (mediaPanel) mediaPanel.style.display = 'none';
+            if (codemirrorEditor) codemirrorEditor.style.display = '';
+            lastSavedCode = tab.code;
+            setPlaywrightCode(tab.code);
+            if (codeMirrorEditor) codeMirrorEditor.setOption('mode', 'markdown');
         }
 
         if (editorContent) editorContent.classList.remove('empty');
@@ -1117,6 +1126,8 @@ function switchToTab(filename) {
     hideWelcomePage();
     renderTabs();
     updateFileListActiveState();
+    if (tab.fileType === 'test') revealInFileTree(tab.id);
+    updateEditorRunningOverlay();
     saveTabsState();  // Save state when switching tabs
 }
 
@@ -1138,7 +1149,8 @@ function saveTabsState() {
                 .map(tab => ({
                     id: tab.id,
                     name: tab.name,
-                    fileType: tab.fileType  // Save file type (including 'dashboard')
+                    fileType: tab.fileType,  // Save file type (including 'dashboard')
+                    subTab: tab.subTab || null
                     // Don't save code or isDirty, we'll reload fresh from files
                 })),
             activeTabId: activeTabId  // Keep dashboard as activeTabId if it was active
@@ -1172,7 +1184,9 @@ async function restoreTabsState() {
         const tabsToRestore = tabsState.openTabs.filter(tabInfo =>
             !tabInfo.id.startsWith('new_') &&
             !tabInfo.id.startsWith('generated_') &&
-            !tabInfo.id.startsWith('chat_')
+            !tabInfo.id.startsWith('chat_') &&
+            !tabInfo.id.startsWith('__recording__:') &&
+            !tabInfo.id.startsWith('__trace__:')
         );
 
         const fetchPromises = tabsToRestore
@@ -1241,7 +1255,8 @@ async function restoreTabsState() {
                         name: tabInfo.name,
                         code: result.data.code,
                         isDirty: false,
-                        fileType: 'test'
+                        fileType: 'test',
+                        subTab: tabInfo.subTab || null
                     });
                 }
             }
@@ -1443,6 +1458,57 @@ function selectTreeRow(el) {
     if (el) el.classList.add('selected');
 }
 
+function showTestError(filename) {
+    const cached = testCache[filename] || {};
+    openOutputPanel();
+    const errorText = cached.last_error;
+    if (errorText) {
+        const testName = cached.name || filename;
+        addLogEntry('error', `🔍 Last error for "${testName}":\n${errorText}`);
+    }
+    // Scroll both log containers to bottom so the entry is visible
+    if (humanLogContainer) humanLogContainer.scrollTop = humanLogContainer.scrollHeight;
+    if (technicalLogContainer) technicalLogContainer.scrollTop = technicalLogContainer.scrollHeight;
+}
+
+function buildStatusIcon(status) {
+    const span = document.createElement('span');
+    span.className = 'file-item-status-icon';
+    const i = document.createElement('i');
+    if (status === 'success') {
+        span.classList.add('status-passed');
+        i.className = 'lni lni-check';
+    } else if (status === 'error' || status === 'stopped') {
+        span.classList.add('status-failed');
+        i.className = 'lni lni-xmark';
+    } else {
+        span.classList.add('status-unknown');
+        i.className = 'lni lni-question-mark';
+    }
+    span.appendChild(i);
+    return span;
+}
+
+function updateEditorRunningOverlay() {
+    const overlay = document.getElementById('editor-running-overlay');
+    if (!overlay) return;
+    const isRunning = activeTabId && runningTestsSet.has(activeTabId);
+    overlay.style.display = isRunning ? 'flex' : 'none';
+}
+
+function revealInFileTree(filename) {
+    const fileItem = document.querySelector(`.file-item[data-filename="${filename}"]`);
+    if (!fileItem) return;
+    selectTreeRow(fileItem);
+    // Expand all collapsed ancestor folder nodes
+    let ancestor = fileItem.parentElement?.closest('.file-tree-node--folder');
+    while (ancestor) {
+        ancestor.classList.add('expanded');
+        ancestor = ancestor.parentElement?.closest('.file-tree-node--folder');
+    }
+    fileItem.scrollIntoView({ block: 'nearest' });
+}
+
 function updateFileListActiveState() {
     document.querySelectorAll('.file-item').forEach(item => {
         const filename = item.dataset.filename;
@@ -1546,6 +1612,66 @@ async function moveTreeItem(workspaceName, treeType, fromPath, toPath) {
 }
 
 // File Explorer Functions (tree: Saved Tests from ~/.autogen)
+function refreshTestStatusSilent() {
+    if (!currentWorkspaceName) return;
+    authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`)
+        .then(res => res.json())
+        .then(data => {
+            const nodes = data.tree || [];
+            // Walk all file nodes and patch DOM + testCache in-place
+            function walkNodes(nodes) {
+                nodes.forEach(node => {
+                    if (node.type === 'folder') {
+                        if (node.children) walkNodes(node.children);
+                        return;
+                    }
+                    const path = node.path;
+                    // Update testCache
+                    const freshError = (node.artifacts || []).map(a => a.error_cause).find(Boolean) || null;
+                    testCache[path] = {
+                        ...(testCache[path] || {}),
+                        artifacts: node.artifacts || [],
+                        last_run_status: node.last_run_status,
+                        last_run_time: node.last_run_time,
+                        last_error: freshError || testCache[path]?.last_error || null,
+                    };
+                    // Update status class and icon on existing file-item
+                    const fileItem = document.querySelector(`.file-item[data-filename="${path}"]`);
+                    if (!fileItem) return;
+                    fileItem.classList.remove('file-item-status-passed', 'file-item-status-failed', 'file-item-status-unknown', 'file-item-status-running');
+                    if (node.last_run_status === 'success') fileItem.classList.add('file-item-status-passed');
+                    else if (node.last_run_status === 'error' || node.last_run_status === 'stopped') fileItem.classList.add('file-item-status-failed');
+                    else fileItem.classList.add('file-item-status-unknown');
+                    const existingIcon = fileItem.querySelector('.file-item-status-icon');
+                    if (existingIcon) existingIcon.replaceWith(buildStatusIcon(node.last_run_status));
+                    // Update git status badge
+                    const nameEl = fileItem.querySelector('.file-item-name');
+                    if (nameEl) {
+                        const existing = nameEl.querySelector('.git-status-badge');
+                        if (node.git_status) {
+                            if (existing) {
+                                existing.className = `git-status-badge ${node.git_status}`;
+                                existing.textContent = node.git_status;
+                            } else {
+                                const badge = document.createElement('span');
+                                badge.className = `git-status-badge ${node.git_status}`;
+                                badge.textContent = node.git_status;
+                                nameEl.appendChild(badge);
+                            }
+                        } else if (existing) {
+                            existing.remove();
+                        }
+                    }
+                });
+            }
+            walkNodes(nodes);
+            // Re-render sub-tabs for active test tab (new artifacts may have appeared)
+            const activeTab = openTabs.find(t => t.id === activeTabId && t.fileType === 'test');
+            if (activeTab) renderSubTabs(activeTab.id);
+        })
+        .catch(err => console.error('Silent test status refresh failed:', err));
+}
+
 function loadFileExplorer() {
     if (!hasFileExplorer || !fileList) {
         console.warn('File explorer elements not found, skipping load');
@@ -1560,7 +1686,7 @@ function loadFileExplorer() {
 
     fileList.innerHTML = '<div class="file-list-loading"><span class="file-list-spinner"></span>Loading tests…</div>';
 
-    authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`)
+    return authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`)
         .then(res => res.json())
         .then(data => {
             const children = data.tree || [];
@@ -1699,11 +1825,11 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
         // file node
         const path = node.path;
         const name = node.display_name || node.name || path.replace(/\.py$/, '').replace(/_/g, ' ');
-        testCache[path] = { path, filename: path, name, artifacts: node.artifacts || [], last_run_status: node.last_run_status, last_run_time: node.last_run_time };
+        const persistedError = (node.artifacts || []).map(a => a.error_cause).find(Boolean) || null;
+        testCache[path] = { path, filename: path, name, artifacts: node.artifacts || [], last_run_status: node.last_run_status, last_run_time: node.last_run_time, last_error: persistedError };
 
         const hasRecording = (node.artifacts || []).some(a => a.video_path && a.video_path !== 'null');
         const hasTrace = (node.artifacts || []).some(a => a.trace_path);
-        const hasChildren = hasRecording || hasTrace;
 
         const nodeEl = document.createElement('div');
         nodeEl.className = 'file-tree-node';
@@ -1720,9 +1846,7 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
         else if (node.last_run_status === 'error' || node.last_run_status === 'stopped') fileItem.classList.add('file-item-status-failed');
         else fileItem.classList.add('file-item-status-unknown');
 
-        const expandArrow = hasChildren
-            ? '<span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>'
-            : '<span class="file-tree-expand" style="visibility:hidden;"><i class="lni lni-chevron-down"></i></span>';
+        const expandArrow = '<span class="file-tree-expand" style="visibility:hidden;"><i class="lni lni-chevron-down"></i></span>';
 
         let runOrStopBtn = currentRunningTestFilename === path
             ? `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: var(--ctp-red);"><i class="lni lni-hand-stop"></i></button>`
@@ -1748,28 +1872,11 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
             }
         }
 
-        // Artifact container: JS-toggled, each child gets explicit depth-based padding
-        const childrenEl = document.createElement('div');
-        childrenEl.className = 'file-tree-artifacts';
-        childrenEl.style.display = 'none';
-        const artifactPadding = (itemPadding + 44) + 'px';
-        if (hasRecording) {
-            const c = document.createElement('div');
-            c.className = 'file-tree-child';
-            c.style.paddingLeft = artifactPadding;
-            c.dataset.filename = path;
-            c.innerHTML = '<i class="lni lni-camera-movie-1"></i> Recording';
-            c.addEventListener('click', (e) => { e.stopPropagation(); selectTreeRow(c); openRecordingTab(path, name); });
-            childrenEl.appendChild(c);
-        }
-        if (hasTrace) {
-            const c = document.createElement('div');
-            c.className = 'file-tree-child';
-            c.style.paddingLeft = artifactPadding;
-            c.dataset.filename = path;
-            c.innerHTML = '<i class="lni lni-layers-1"></i> Trace';
-            c.addEventListener('click', (e) => { e.stopPropagation(); selectTreeRow(c); openTraceTab(path, name); });
-            childrenEl.appendChild(c);
+        // Prepend status icon into file-item-actions
+        const actionsEl = fileItem.querySelector('.file-item-actions');
+        if (actionsEl) {
+            const statusIcon = buildStatusIcon(node.last_run_status);
+            actionsEl.insertBefore(statusIcon, actionsEl.firstChild);
         }
 
         fileItem.addEventListener('click', (e) => {
@@ -1786,17 +1893,9 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
                     addLogEntry('info', '⏹ Stop request sent');
                     if (stopTestBtn) { stopTestBtn.disabled = true; stopTestBtn.textContent = 'STOPPING...'; }
                 }
-            } else if (e.target.closest('.file-tree-expand') && hasChildren) {
-                selectTreeRow(fileItem);
-                const expanded = nodeEl.classList.toggle('expanded');
-                childrenEl.style.display = expanded ? 'block' : 'none';
             } else if (!e.target.closest('.file-item-actions') && !e.target.closest('.file-tree-expand')) {
                 selectTreeRow(fileItem);
                 openFileFromExplorer(path, name);
-                if (hasChildren && !nodeEl.classList.contains('expanded')) {
-                    nodeEl.classList.add('expanded');
-                    childrenEl.style.display = 'block';
-                }
             }
         });
         fileItem.addEventListener('contextmenu', (e) => {
@@ -1810,7 +1909,6 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
         });
 
         nodeEl.appendChild(fileItem);
-        nodeEl.appendChild(childrenEl);
         container.appendChild(nodeEl);
     });
 }
@@ -1874,6 +1972,141 @@ function openTraceTab(filename, testName) {
     const traceUrl = `${window.location.origin}/api/trace/${latest.trace_path}`;
     const viewerUrl = `/trace-viewer/?trace=${encodeURIComponent(traceUrl)}`;
     openTab(tabId, `${testName} — Trace`, null, 'trace', { viewerUrl });
+}
+
+function renderSubTabs(filename) {
+    const subTabsEl = document.getElementById('editor-sub-tabs');
+    if (!subTabsEl) return;
+
+    const cached = testCache[filename] || {};
+    const artifacts = cached.artifacts || [];
+    const hasRecording = artifacts.some(a => a.video_path && a.video_path !== 'null');
+    const hasTrace = artifacts.some(a => a.trace_path);
+
+    if (!hasRecording && !hasTrace) {
+        subTabsEl.style.display = 'none';
+        const mediaPanel = document.getElementById('media-panel');
+        if (mediaPanel) mediaPanel.style.display = 'none';
+        if (codemirrorEditor) codemirrorEditor.style.display = '';
+        const tab = openTabs.find(t => t.id === filename);
+        if (tab) {
+            lastSavedCode = tab.code;
+            setPlaywrightCode(tab.code);
+            if (codeMirrorEditor) codeMirrorEditor.setOption('mode', 'python');
+        }
+        return;
+    }
+
+    const tabDefs = [];
+    if (hasRecording) tabDefs.push({ id: 'recording', icon: 'lni-camera-movie-1', label: 'Recording' });
+    if (hasTrace) tabDefs.push({ id: 'trace', icon: 'lni-layers-1', label: 'Trace' });
+    tabDefs.push({ id: 'code', icon: 'lni-python', label: 'Code' });
+
+    const tab = openTabs.find(t => t.id === filename);
+    if (tab && !tab.subTab) tab.subTab = tabDefs[0].id;
+    const activeSubTab = (tab && tab.subTab) || tabDefs[0].id;
+
+    subTabsEl.style.display = 'flex';
+    while (subTabsEl.firstChild) subTabsEl.removeChild(subTabsEl.firstChild);
+    tabDefs.forEach(({ id, icon, label }) => {
+        const btn = document.createElement('button');
+        btn.className = 'editor-sub-tab' + (id === activeSubTab ? ' active' : '');
+        btn.dataset.subTab = id;
+        const iconEl = document.createElement('i');
+        iconEl.className = 'lni ' + icon;
+        btn.appendChild(iconEl);
+        btn.appendChild(document.createTextNode(' ' + label));
+        btn.addEventListener('click', () => switchSubTab(filename, id));
+        subTabsEl.appendChild(btn);
+    });
+
+    applySubTab(filename, activeSubTab);
+}
+
+function switchSubTab(filename, subTabId) {
+    const tab = openTabs.find(t => t.id === filename);
+    if (tab) tab.subTab = subTabId;
+
+    const subTabsEl = document.getElementById('editor-sub-tabs');
+    if (subTabsEl) {
+        subTabsEl.querySelectorAll('.editor-sub-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.subTab === subTabId);
+        });
+    }
+
+    applySubTab(filename, subTabId);
+}
+
+function applySubTab(filename, subTabId) {
+    const mediaPanel = document.getElementById('media-panel');
+    const mediaPanelRecording = document.getElementById('media-panel-recording');
+    const mediaPanelTrace = document.getElementById('media-panel-trace');
+    const cached = testCache[filename] || {};
+    const artifacts = cached.artifacts || [];
+
+    if (subTabId === 'recording') {
+        if (codemirrorEditor) codemirrorEditor.style.display = 'none';
+        if (mediaPanel) mediaPanel.style.display = 'flex';
+        if (mediaPanelRecording) mediaPanelRecording.style.display = 'flex';
+        if (mediaPanelTrace) mediaPanelTrace.style.display = 'none';
+
+        const latest = artifacts.find(a => a.video_path && a.video_path !== 'null');
+        if (latest) {
+            const vid = document.getElementById('media-panel-video');
+            if (vid) {
+                vid.src = `/api/video/${latest.video_path}`;
+                vid.oncanplay = () => { vid.play().catch(() => {}); };
+            }
+            const infoEl = document.getElementById('media-panel-video-info');
+            if (infoEl) infoEl.textContent = latest.video_size_mb ? `${latest.video_size_mb} MB` : '';
+        }
+        const testName = cached.name || filename;
+        const recTitle = document.getElementById('recording-header-title');
+        if (recTitle) recTitle.textContent = testName;
+        const recTime = document.getElementById('recording-header-time');
+        if (recTime) {
+            const t = cached.last_run_time;
+            recTime.textContent = t ? new Date(t).toLocaleString() : '';
+        }
+        const recStatus = document.getElementById('recording-header-status');
+        if (recStatus) {
+            const s = (cached.last_run_status || '').toLowerCase();
+            recStatus.textContent = s || '';
+            recStatus.className = 'recording-header-status ' + (s === 'success' ? 'status-passed' : s === 'error' || s === 'stopped' ? 'status-failed' : 'status-unknown');
+        }
+        const recRerun = document.getElementById('recording-header-rerun');
+        if (recRerun) {
+            recRerun.onclick = () => { runSavedTest(filename, testName); };
+        }
+        const recEye = document.getElementById('recording-header-eye');
+        if (recEye) {
+            const isFailed = cached.last_run_status === 'error' || cached.last_run_status === 'stopped';
+            recEye.style.display = isFailed ? 'flex' : 'none';
+            recEye.onclick = () => { showTestError(filename); };
+        }
+    } else if (subTabId === 'trace') {
+        if (codemirrorEditor) codemirrorEditor.style.display = 'none';
+        if (mediaPanel) mediaPanel.style.display = 'flex';
+        if (mediaPanelRecording) mediaPanelRecording.style.display = 'none';
+        if (mediaPanelTrace) mediaPanelTrace.style.display = 'block';
+
+        const latest = artifacts.find(a => a.trace_path);
+        if (latest) {
+            const traceUrl = `${window.location.origin}/api/trace/${latest.trace_path}`;
+            const viewerUrl = `/trace-viewer/?trace=${encodeURIComponent(traceUrl)}`;
+            const iframeEl = document.getElementById('media-panel-trace-iframe');
+            if (iframeEl) iframeEl.src = viewerUrl;
+        }
+    } else {
+        if (mediaPanel) mediaPanel.style.display = 'none';
+        if (codemirrorEditor) codemirrorEditor.style.display = '';
+        const tab = openTabs.find(t => t.id === filename);
+        if (tab) {
+            lastSavedCode = tab.code;
+            setPlaywrightCode(tab.code);
+            if (codeMirrorEditor) codeMirrorEditor.setOption('mode', 'python');
+        }
+    }
 }
 
 function deleteFileFromExplorer(filename, name) {
@@ -4873,9 +5106,9 @@ async function loadWorkspaces() {
         // Select current workspace
         workspaceDropdown.value = currentWorkspaceName;
 
-        // Load file explorer and AI steps
+        // Load file explorer and AI steps (await so testCache is ready before restoreTabsState)
         if (hasFileExplorer) {
-            loadFileExplorer();
+            await loadFileExplorer();
             loadAiSteps();
         }
 

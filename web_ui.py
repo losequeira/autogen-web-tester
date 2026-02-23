@@ -130,6 +130,7 @@ def update_test_artifacts(
     test_status: str = 'unknown',
     workspace_name: str = None,
     from_tree: bool = True,
+    error_cause: str = None,
 ):
     """Save test artifacts into the workspace directory and update local meta."""
     print(f"📼 update_test_artifacts called: filename={filename}, workspace_name={workspace_name}, status={test_status}")
@@ -157,10 +158,13 @@ def update_test_artifacts(
         if art_dir.is_dir():
             import json as _json
             status_file = art_dir / 'status.json'
-            status_file.write_text(_json.dumps({
+            payload = {
                 'status': test_status,
                 'timestamp': datetime.utcnow().isoformat(),
-            }), encoding='utf-8')
+            }
+            if error_cause:
+                payload['error_cause'] = error_cause
+            status_file.write_text(_json.dumps(payload), encoding='utf-8')
         print(f"📼 Artifact saved: {storage_paths.get('video_path')}")
         if artifact_dir_abs.exists():
             shutil.rmtree(artifact_dir_abs, ignore_errors=True)
@@ -812,6 +816,7 @@ async def run_test_async(task: str, test_filename: str = None, workspace_name: s
     saved_test_filename = test_filename  # Save filename before current_ai_step gets reset
     saved_workspace_name = workspace_name
     test_status = None  # Track test status for artifact metadata
+    test_error_cause = None  # Track error message for status.json
 
     # Get filename and workspace_name from current_ai_step if not provided
     if current_ai_step:
@@ -1141,6 +1146,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
                     break
                 elif 'TEST FAILED:' in message_content:
                     test_status = 'failed'
+                    test_error_cause = message_content.split('TEST FAILED:', 1)[-1].strip()
                     socketio.emit('log', {'type': 'error', 'message': 'Test completed: FAILED'})
                     # Only send playwright_code for regular tests (not AI steps)
                     if not current_ai_step:
@@ -1151,6 +1157,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
                     break
                 elif 'TEST ERROR:' in message_content:
                     test_status = 'error'
+                    test_error_cause = message_content.split('TEST ERROR:', 1)[-1].strip()
                     socketio.emit('log', {'type': 'error', 'message': 'Test completed: ERROR'})
                     # Only send playwright_code for regular tests (not AI steps)
                     if not current_ai_step:
@@ -1162,6 +1169,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
 
             # If loop ended naturally without status (hit max messages)
             if not stop_requested and test_status is None:
+                test_error_cause = 'Test timed out or hit message limit'
                 socketio.emit('log', {'type': 'error', 'message': 'Test ended without clear status (may have hit message limit)'})
                 # Only send playwright_code for regular tests (not AI steps)
                 if not current_ai_step:
@@ -1172,6 +1180,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
 
     except Exception as e:
         error_msg = f"Error during test execution: {str(e)}"
+        test_error_cause = str(e)
         socketio.emit('log', {'type': 'error', 'message': error_msg})
         socketio.emit('test_complete', {'status': 'error', 'message': str(e)})
         test_status = 'error'  # Set for artifact tracking
@@ -1194,6 +1203,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
                 artifact_dir,
                 test_status or 'unknown',
                 workspace_name=saved_workspace_name,
+                error_cause=test_error_cause,
             )
             # Tell frontend to refresh now that artifacts are saved
             socketio.emit('artifacts_updated', {'filename': saved_test_filename})
@@ -1272,6 +1282,7 @@ def run_playwright_code_with_streaming(
     artifact_dir = None
     video_dir = None
     test_status = None  # Track test status for artifact metadata
+    test_error_cause = None  # Track error message for status.json
     if filename:
         print(f"🎬 Filename provided: {filename}, workspace_name: {workspace_name}")
         from pathlib import Path
@@ -1604,6 +1615,7 @@ def run_playwright_code_with_streaming(
             import traceback
             error_msg = f'Error executing code: {str(e)}'
             test_status = 'error'
+            test_error_cause = str(e)
             socketio.emit('log', {'type': 'error', 'message': error_msg})
             socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
             socketio.emit('test_complete', {'status': 'error', 'message': str(e)})
@@ -1623,6 +1635,7 @@ def run_playwright_code_with_streaming(
     except Exception as e:
         import traceback
         test_status = 'error'
+        test_error_cause = str(e)
         socketio.emit('log', {'type': 'error', 'message': f'Execution error: {str(e)}'})
         socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
         socketio.emit('test_complete', {'status': 'error'})
@@ -1647,6 +1660,7 @@ def run_playwright_code_with_streaming(
                 artifact_dir,
                 test_status or 'unknown',
                 workspace_name=workspace_name,
+                error_cause=test_error_cause,
             )
             # Tell frontend to refresh now that artifacts are saved
             socketio.emit('artifacts_updated', {'filename': filename})
@@ -2708,12 +2722,14 @@ def get_recent_recordings():
                 status_file = entry / 'status.json'
                 status = 'unknown'
                 timestamp = ''
+                error_cause = None
                 if status_file.exists():
                     import json as _json
                     try:
                         sd = _json.loads(status_file.read_text(encoding='utf-8'))
                         status = sd.get('status', 'unknown')
                         timestamp = sd.get('timestamp', '')
+                        error_cause = sd.get('error_cause')
                     except Exception:
                         pass
                 if not timestamp:
@@ -2725,6 +2741,7 @@ def get_recent_recordings():
                     'test_name': test_name,
                     'status': status,
                     'timestamp': timestamp,
+                    'error_cause': error_cause,
                 })
         return jsonify(recordings)
     ws_id = _get_workspace_id()
@@ -3062,6 +3079,7 @@ def _get_artifacts_for_test(workspace_name: str, test_name: str) -> list:
     has_trace = (art_dir / 'trace.zip').exists()
     status = 'unknown'
     timestamp = ''
+    error_cause = None
     status_file = art_dir / 'status.json'
     if status_file.exists():
         import json as _json
@@ -3069,6 +3087,7 @@ def _get_artifacts_for_test(workspace_name: str, test_name: str) -> list:
             sd = _json.loads(status_file.read_text(encoding='utf-8'))
             status = sd.get('status', 'unknown')
             timestamp = sd.get('timestamp', '')
+            error_cause = sd.get('error_cause')
         except Exception:
             pass
     if not timestamp:
@@ -3082,6 +3101,7 @@ def _get_artifacts_for_test(workspace_name: str, test_name: str) -> list:
         'timestamp': timestamp,
         'video_size_mb': size_mb,
         'status': status,
+        'error_cause': error_cause,
     }]
 
 
