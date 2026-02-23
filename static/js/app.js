@@ -5327,6 +5327,36 @@ function applyTheme(themeName) {
     }
 }
 
+async function checkAiStatus() {
+    try {
+        const res = await authFetch('/api/config/ai-status');
+        if (!res.ok) return;
+        const { ai_enabled } = await res.json();
+        const banner = document.getElementById('ai-no-key-banner');
+        const chatBody = document.querySelector('.chat-sidebar-body');
+        const chatInput = document.querySelector('.chat-input-container');
+        if (!ai_enabled) {
+            if (banner) banner.style.display = '';
+            if (chatBody) chatBody.style.display = 'none';
+            if (toggleChatBtn) {
+                toggleChatBtn.title = 'AI token not configured';
+                toggleChatBtn.style.opacity = '0.45';
+                toggleChatBtn.style.cursor = 'not-allowed';
+                toggleChatBtn.style.pointerEvents = 'none';
+            }
+        } else {
+            if (banner) banner.style.display = 'none';
+            if (chatBody) chatBody.style.display = '';
+            if (toggleChatBtn) {
+                toggleChatBtn.title = '';
+                toggleChatBtn.style.opacity = '';
+                toggleChatBtn.style.cursor = '';
+                toggleChatBtn.style.pointerEvents = '';
+            }
+        }
+    } catch (_) { /* silent */ }
+}
+
 function initThemePicker() {
     // Read from both keys for backwards compatibility
     const savedTheme = localStorage.getItem('pref_theme')
@@ -5389,6 +5419,9 @@ window.addEventListener('load', async () => {
 
     // Restore theme from DB (may override localStorage if DB has a different value)
     restoreThemeFromDb();
+
+    // Check whether OpenAI key is configured; hide chat if not
+    checkAiStatus();
 
     addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
     addLogEntry('info', '🤖 Create AI Steps in the file explorer to run natural language tests');

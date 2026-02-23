@@ -1720,6 +1720,14 @@ def index():
     return render_template('index.html', is_cloud=is_cloud, theme=theme)
 
 
+@app.route('/api/config/ai-status', methods=['GET'])
+@login_required
+def ai_status():
+    """Return whether an OpenAI API key is configured."""
+    has_key = bool(os.environ.get('OPENAI_API_KEY', '').strip())
+    return jsonify({'ai_enabled': has_key}), 200
+
+
 # ========== WORKSPACE MANAGEMENT API ENDPOINTS ==========
 
 _WORKSPACE_NAME_RE = re.compile(r'^[a-zA-Z0-9_\- ]+$')

@@ -443,6 +443,12 @@
                         <h3><i class="lni lni-chat-bubble-2"></i> AI Assistant</h3>
                         <button id="close-chat-sidebar" class="btn-icon">✕</button>
                     </div>
+                    <!-- Shown when no OpenAI key is configured -->
+                    <div id="ai-no-key-banner" class="ai-no-key-banner" style="display:none;">
+                        <i class="lni lni-warning"></i>
+                        <strong>No AI token configured</strong>
+                        <p>Set the <code>OPENAI_API_KEY</code> environment variable and restart the app to enable AI Chat.</p>
+                    </div>
                     <div class="chat-sidebar-body">
                         <div id="chat-messages" class="chat-messages"></div>
                         <div id="chat-thinking-indicator" class="chat-thinking-indicator" style="display:none;">
