@@ -5267,14 +5267,16 @@ function applyTheme(themeName) {
 }
 
 function initThemePicker() {
-    const savedTheme = localStorage.getItem('theme') || 'mocha';
+    // Read from both keys for backwards compatibility
+    const savedTheme = localStorage.getItem('pref_theme')
+        ? JSON.parse(localStorage.getItem('pref_theme'))
+        : (localStorage.getItem('theme') || 'mocha');
     applyTheme(savedTheme);
 
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.addEventListener('click', () => {
             const theme = btn.dataset.theme;
             applyTheme(theme);
-            localStorage.setItem('theme', theme);
             savePreferenceToDb('theme', theme);
         });
     });
