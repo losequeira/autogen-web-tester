@@ -4672,6 +4672,14 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// Cmd+R (Mac) / Ctrl+R (Windows/Linux) to reload the app
+document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'r') {
+        e.preventDefault();
+        location.reload();
+    }
+});
+
 clearChatBtn.addEventListener('click', () => {
     if (confirm('Clear all chat messages?')) {
         chatMessages.innerHTML = '';
