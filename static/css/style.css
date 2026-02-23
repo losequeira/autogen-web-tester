@@ -1087,7 +1087,7 @@ body {
     padding-left: 16px;
     position: relative;
 }
-.file-tree-node.expanded .file-tree-children { display: block; }
+.file-tree-node.expanded > .file-tree-children { display: block; }
 
 /* Vertical indent guide — hidden by default, shown on hover */
 .file-tree-children::before {
