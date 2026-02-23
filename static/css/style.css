@@ -2863,6 +2863,43 @@ body {
     color: var(--ctp-text);
 }
 
+/* Explorer header action buttons — themed colours */
+#new-folder-tests-btn {
+    color: var(--ctp-peach);
+    background: color-mix(in srgb, var(--ctp-peach) 15%, transparent);
+}
+#new-folder-tests-btn:hover {
+    background: color-mix(in srgb, var(--ctp-peach) 28%, transparent);
+    color: var(--ctp-peach);
+}
+
+#run-all-tests-btn {
+    color: var(--ctp-green);
+    background: color-mix(in srgb, var(--ctp-green) 15%, transparent);
+}
+#run-all-tests-btn:hover {
+    background: color-mix(in srgb, var(--ctp-green) 28%, transparent);
+    color: var(--ctp-green);
+}
+
+#record-test-btn {
+    color: var(--ctp-red);
+    background: color-mix(in srgb, var(--ctp-red) 15%, transparent);
+}
+#record-test-btn:hover {
+    background: color-mix(in srgb, var(--ctp-red) 28%, transparent);
+    color: var(--ctp-red);
+}
+
+#new-test-btn {
+    color: var(--ctp-blue);
+    background: color-mix(in srgb, var(--ctp-blue) 15%, transparent);
+}
+#new-test-btn:hover {
+    background: color-mix(in srgb, var(--ctp-blue) 28%, transparent);
+    color: var(--ctp-blue);
+}
+
 .image-preview {
     max-width: 100%;
     max-height: 200px;
