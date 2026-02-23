@@ -83,27 +83,36 @@ let currentWorkspaceName = null;
 let testCache = {};
 
 // ========== USER PREFERENCES SYNC ==========
-function savePreferenceToDb(key, value) {
-    try {
-        localStorage.setItem('pref_' + key, JSON.stringify(value));
-    } catch (err) {
-        console.error('Failed to save preference:', err);
-    }
-}
+// Backed by ~/.autogen/preferences/user_prefs.json via /api/preferences
+
+let _prefsCache = null; // in-memory cache populated on first load
 
 async function loadPreferencesFromDb() {
-    const prefs = {};
-    for (const key of ['theme', 'editorTabsState', 'selectedWorkspaceName']) {
-        const raw = localStorage.getItem('pref_' + key);
-        if (raw !== null) {
-            try { prefs[key] = JSON.parse(raw); } catch { prefs[key] = raw; }
-        }
-    }
-    return prefs;
+    if (_prefsCache) return _prefsCache;
+    try {
+        const res = await fetch('/api/preferences', {
+            headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
+        });
+        if (res.ok) _prefsCache = await res.json();
+    } catch (_) {}
+    return _prefsCache || {};
+}
+
+function savePreferenceToDb(key, value) {
+    // Fire-and-forget PATCH to persist to disk; update cache immediately
+    if (_prefsCache) _prefsCache[key] = value;
+    fetch('/api/preferences', {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {})
+        },
+        body: JSON.stringify({ [key]: value })
+    }).catch(err => console.error('Failed to save preference:', err));
 }
 
 async function ensurePreferencesCached() {
-    // no-op: localStorage reads are synchronous, no caching needed
+    if (!_prefsCache) await loadPreferencesFromDb();
 }
 // ========== END USER PREFERENCES SYNC ==========
 
@@ -4843,6 +4852,9 @@ async function loadUserWorkspaces() {
 
         console.log('User authenticated:', currentUser.username);
 
+        // Load prefs first so workspace selection can read selectedWorkspaceName
+        await loadPreferencesFromDb();
+
         // Load workspaces from local filesystem
         await loadWorkspaces();
     } catch (error) {
@@ -5054,7 +5066,7 @@ async function loadWorkspaces() {
 
         // Set current workspace - try localStorage, then default
         if (userWorkspaces.length > 0) {
-            let savedWorkspaceName = localStorage.getItem('pref_selectedWorkspaceName');
+            let savedWorkspaceName = (_prefsCache && _prefsCache.selectedWorkspaceName) || null;
 
             if (savedWorkspaceName) {
                 const hasAccess = userWorkspaces.some(w => w.name === savedWorkspaceName);
@@ -5067,7 +5079,7 @@ async function loadWorkspaces() {
                 currentWorkspaceName = userWorkspaces[0].name;
             }
             // Persist the selection so it survives page reloads and re-login
-            localStorage.setItem('pref_selectedWorkspaceName', currentWorkspaceName);
+            savePreferenceToDb('selectedWorkspaceName', currentWorkspaceName);
         }
 
         // Select current workspace
@@ -5115,7 +5127,7 @@ async function switchWorkspace(name) {
         saveTabsState();
 
         // Save selected workspace to localStorage
-        localStorage.setItem('pref_selectedWorkspaceName', currentWorkspaceName);
+        savePreferenceToDb('selectedWorkspaceName', currentWorkspaceName);
 
         // Reload file lists for new workspace
         if (hasFileExplorer) {
@@ -5264,7 +5276,7 @@ async function confirmRename() {
             return;
         }
         // Update local state and reload workspaces
-        localStorage.setItem('pref_selectedWorkspaceName', newName);
+        savePreferenceToDb('selectedWorkspaceName', newName);
         currentWorkspaceName = newName;
         hideRenameRow();
         await loadWorkspaces();
@@ -5315,7 +5327,9 @@ function applyTheme(themeName) {
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.theme === themeName);
     });
-    // Persist in cookie so the server can inject it on next page load (login page etc.)
+    // Persist to ~/.autogen/preferences/user_prefs.json (desktop app source of truth)
+    savePreferenceToDb('theme', themeName);
+    // Also keep cookie in sync for web deployments
     document.cookie = `theme=${themeName}; path=/; max-age=31536000; SameSite=Lax`;
     try {
         if (liveViewerIframe && liveViewerIframe.contentWindow) liveViewerIframe.contentWindow.postMessage({ type: 'theme', theme: themeName }, '*');
@@ -5358,27 +5372,16 @@ async function checkAiStatus() {
 }
 
 function initThemePicker() {
-    // Read from both keys for backwards compatibility
-    const savedTheme = localStorage.getItem('pref_theme')
-        ? JSON.parse(localStorage.getItem('pref_theme'))
-        : (localStorage.getItem('theme') || 'mocha');
-    applyTheme(savedTheme);
-
+    // Server already injected data-theme from prefs file — just mark the active button.
+    const currentTheme = document.documentElement.getAttribute('data-theme') || 'mocha';
     document.querySelectorAll('.theme-option').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const theme = btn.dataset.theme;
-            applyTheme(theme);
-            savePreferenceToDb('theme', theme);
-        });
+        btn.classList.toggle('active', btn.dataset.theme === currentTheme);
+        btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
     });
 }
 
 async function restoreThemeFromDb() {
-    const dbPrefs = await loadPreferencesFromDb();
-    if (dbPrefs && dbPrefs.theme && VALID_THEMES.includes(dbPrefs.theme)) {
-        applyTheme(dbPrefs.theme);
-        localStorage.setItem('theme', dbPrefs.theme);
-    }
+    // No-op: server injects data-theme from ~/.autogen/preferences/user_prefs.json on load.
 }
 // ========== END THEME MANAGEMENT ==========
 
