@@ -470,6 +470,7 @@ socket.on('test_complete', (data) => {
     if (data.status === 'success') {
         updateBrowserStatus('passed', 'PASSED');
         addLogEntry('success', '✅ Test completed successfully!', '🎉 Test completed!');
+        launchConfetti();
     } else if (data.status === 'stopped') {
         updateBrowserStatus('stopped', 'STOPPED');
         addLogEntry('error', '⏹ Test stopped by user', '⏹ Test stopped');
@@ -477,6 +478,7 @@ socket.on('test_complete', (data) => {
         updateBrowserStatus('failed', 'FAILED');
         const errorMsg = data.message || 'Unknown error';
         addLogEntry('error', `❌ Test failed: ${errorMsg}`, `❌ Test failed`);
+        openOutputPanel();
     }
 
     // Restore AI step tab content if an AI step just finished
@@ -1615,7 +1617,7 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
             row.style.paddingLeft = (10 + depth * 10) + 'px';
             row.innerHTML = `
                 ${expandArrow}
-                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder"></i></span>
+                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder-1"></i></span>
                 <span class="file-item-name">${escapeHtml(node.name)}</span>
             `;
             const childrenEl = document.createElement('div');
@@ -2518,7 +2520,7 @@ function renderAiStepsTree(nodes, container, depth) {
             row.style.paddingLeft = (10 + depth * 10) + 'px';
             row.innerHTML = `
                 <span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>
-                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder"></i></span>
+                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder-1"></i></span>
                 <span class="file-item-name">${escapeHtml(node.name)}</span>
             `;
             const childrenEl = document.createElement('div');
@@ -3447,6 +3449,57 @@ function closeOutputPanel() {
 
 function _updateOutputPreview(text) {
     if (outputPreviewText) outputPreviewText.textContent = text;
+}
+
+function launchConfetti() {
+    const COLORS = ['#a6e3a1','#89b4fa','#cba6f7','#f38ba8','#fab387','#f9e2af'];
+    const COUNT = 80;
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:9999;';
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+
+    const pieces = Array.from({ length: COUNT }, () => ({
+        x: Math.random() * canvas.width,
+        y: Math.random() * -canvas.height * 0.3,
+        r: Math.random() * 7 + 4,
+        color: COLORS[Math.floor(Math.random() * COLORS.length)],
+        vx: (Math.random() - 0.5) * 6,
+        vy: Math.random() * 4 + 3,
+        angle: Math.random() * Math.PI * 2,
+        spin: (Math.random() - 0.5) * 0.3,
+        opacity: 1,
+    }));
+
+    const START = performance.now();
+    const DURATION = 1400;
+
+    function draw(now) {
+        const elapsed = now - START;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const fade = Math.max(0, 1 - (elapsed - DURATION * 0.5) / (DURATION * 0.5));
+        pieces.forEach(p => {
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy += 0.15;
+            p.angle += p.spin;
+            ctx.save();
+            ctx.globalAlpha = fade;
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.angle);
+            ctx.fillStyle = p.color;
+            ctx.fillRect(-p.r / 2, -p.r / 2, p.r, p.r * 0.5);
+            ctx.restore();
+        });
+        if (elapsed < DURATION) {
+            requestAnimationFrame(draw);
+        } else {
+            canvas.remove();
+        }
+    }
+    requestAnimationFrame(draw);
 }
 
 // Tab switching (log tabs)
