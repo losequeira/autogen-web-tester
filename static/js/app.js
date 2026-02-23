@@ -5,52 +5,9 @@ if (typeof marked !== 'undefined') {
     marked.setOptions({ breaks: true, gfm: true });
 }
 
-// ========== JWT TOKEN MANAGEMENT ==========
-let authToken = localStorage.getItem('access_token') || null;
-let refreshToken = localStorage.getItem('refresh_token') || null;
-
-function storeTokens(access, refresh) {
-    authToken = access;
-    refreshToken = refresh;
-    if (access) localStorage.setItem('access_token', access);
-    else localStorage.removeItem('access_token');
-    if (refresh) localStorage.setItem('refresh_token', refresh);
-    else localStorage.removeItem('refresh_token');
-}
-
-function clearTokens() {
-    authToken = null;
-    refreshToken = null;
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-}
-
 async function authFetch(url, options = {}) {
-    if (!options.headers) options.headers = {};
-    if (authToken) {
-        options.headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    let response = await fetch(url, options);
-    if (response.status === 401 && refreshToken) {
-        // Attempt token refresh
-        const refreshResp = await fetch('/api/refresh-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refresh_token: refreshToken })
-        });
-        if (refreshResp.ok) {
-            const data = await refreshResp.json();
-            storeTokens(data.access_token, data.refresh_token);
-            options.headers['Authorization'] = `Bearer ${data.access_token}`;
-            response = await fetch(url, options);
-        } else {
-            clearTokens();
-            showLoginModal();
-        }
-    }
-    return response;
+    return fetch(url, options);
 }
-// ========== END JWT TOKEN MANAGEMENT ==========
 
 function dismissLoadingOverlay() {
     const overlay = document.getElementById('loading-overlay');
@@ -72,8 +29,7 @@ function hideAppOverlay() {
     if (overlay) overlay.style.display = 'none';
 }
 
-// Initialize Socket.IO with auth token (passed as query param for Flask-SocketIO compat)
-const socket = io({ query: { token: authToken || '' } });
+const socket = io();
 
 // Authentication state
 let currentUser = null;
@@ -90,9 +46,7 @@ let _prefsCache = null; // in-memory cache populated on first load
 async function loadPreferencesFromDb() {
     if (_prefsCache) return _prefsCache;
     try {
-        const res = await fetch('/api/preferences', {
-            headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
-        });
+        const res = await fetch('/api/preferences');
         if (res.ok) _prefsCache = await res.json();
     } catch (_) {}
     return _prefsCache || {};
@@ -103,10 +57,7 @@ function savePreferenceToDb(key, value) {
     if (_prefsCache) _prefsCache[key] = value;
     fetch('/api/preferences', {
         method: 'PATCH',
-        headers: {
-            'Content-Type': 'application/json',
-            ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {})
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [key]: value })
     }).catch(err => console.error('Failed to save preference:', err));
 }
@@ -115,15 +66,6 @@ async function ensurePreferencesCached() {
     if (!_prefsCache) await loadPreferencesFromDb();
 }
 // ========== END USER PREFERENCES SYNC ==========
-
-// Authentication page elements
-const authPage = document.getElementById('auth-page');
-const loginForm = document.getElementById('login-form');
-const registerForm = document.getElementById('register-form');
-const loginError = document.getElementById('login-error');
-const registerError = document.getElementById('register-error');
-const authTabs = document.querySelectorAll('.auth-tab');
-const authTabsContainer = document.querySelector('.auth-tabs');
 
 // Workspace elements
 const currentUsernameEl = document.getElementById('current-username');
@@ -1121,6 +1063,28 @@ function switchToTab(filename) {
         }
         const infoEl = document.getElementById('media-panel-video-info');
         if (infoEl) infoEl.textContent = tab.meta?.info || '';
+        // Populate recording header
+        const recTitle = document.getElementById('recording-header-title');
+        if (recTitle) recTitle.textContent = tab.meta?.testName || '';
+        const recTime = document.getElementById('recording-header-time');
+        if (recTime) {
+            const t = tab.meta?.lastRunTime;
+            recTime.textContent = t ? new Date(t).toLocaleString() : '';
+        }
+        const recStatus = document.getElementById('recording-header-status');
+        if (recStatus) {
+            const s = (tab.meta?.status || '').toLowerCase();
+            recStatus.textContent = s || '';
+            recStatus.className = 'recording-header-status ' + (s === 'passed' ? 'status-passed' : s === 'failed' ? 'status-failed' : 'status-unknown');
+        }
+        const recRerun = document.getElementById('recording-header-rerun');
+        if (recRerun) {
+            recRerun.onclick = () => {
+                const fn = tab.meta?.filename;
+                const tn = tab.meta?.testName;
+                if (fn && tn) runSavedTest(fn, tn);
+            };
+        }
         if (editorContent) editorContent.classList.remove('empty');
     } else if (tab.fileType === 'trace') {
         hideDashboardContent();
@@ -1694,6 +1658,7 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
             }
             row.addEventListener('click', (e) => {
                 if (e.target.closest('.file-item-actions')) return;
+                document.querySelectorAll('.file-item.active, .file-tree-child.active').forEach(el => el.classList.remove('active'));
                 selectTreeRow(row);
                 nodeEl.classList.toggle('expanded');
             });
@@ -1734,7 +1699,7 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
         // file node
         const path = node.path;
         const name = node.display_name || node.name || path.replace(/\.py$/, '').replace(/_/g, ' ');
-        testCache[path] = { path, filename: path, name, artifacts: node.artifacts || [], last_run_status: node.last_run_status };
+        testCache[path] = { path, filename: path, name, artifacts: node.artifacts || [], last_run_status: node.last_run_status, last_run_time: node.last_run_time };
 
         const hasRecording = (node.artifacts || []).some(a => a.video_path && a.video_path !== 'null');
         const hasTrace = (node.artifacts || []).some(a => a.trace_path);
@@ -1787,7 +1752,7 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
         const childrenEl = document.createElement('div');
         childrenEl.className = 'file-tree-artifacts';
         childrenEl.style.display = 'none';
-        const artifactPadding = (itemPadding + 22) + 'px';
+        const artifactPadding = (itemPadding + 44) + 'px';
         if (hasRecording) {
             const c = document.createElement('div');
             c.className = 'file-tree-child';
@@ -1828,6 +1793,10 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
             } else if (!e.target.closest('.file-item-actions') && !e.target.closest('.file-tree-expand')) {
                 selectTreeRow(fileItem);
                 openFileFromExplorer(path, name);
+                if (hasChildren && !nodeEl.classList.contains('expanded')) {
+                    nodeEl.classList.add('expanded');
+                    childrenEl.style.display = 'block';
+                }
             }
         });
         fileItem.addEventListener('contextmenu', (e) => {
@@ -1885,7 +1854,15 @@ function openRecordingTab(filename, testName) {
     if (!latest) return;
     const videoUrl = `/api/video/${latest.video_path}`;
     const info = [latest.video_size_mb ? `${latest.video_size_mb} MB` : '', latest.status || ''].filter(Boolean).join(' · ');
-    openTab(tabId, `${testName} — Recording`, null, 'recording', { videoUrl, info });
+    const cached = testCache[filename] || {};
+    openTab(tabId, `${testName} — Recording`, null, 'recording', {
+        videoUrl,
+        info,
+        testName,
+        filename,
+        status: cached.last_run_status || latest.status || null,
+        lastRunTime: cached.last_run_time || latest.timestamp || null,
+    });
 }
 
 function openTraceTab(filename, testName) {
@@ -2633,6 +2610,7 @@ function renderAiStepsTree(nodes, container, depth) {
             if (hasChildren) renderAiStepsTree(node.children, childrenEl, depth + 1);
             row.addEventListener('click', (e) => {
                 if (e.target.closest('.file-item-actions')) return;
+                document.querySelectorAll('.file-item.active, .file-tree-child.active').forEach(el => el.classList.remove('active'));
                 selectTreeRow(row);
                 nodeEl.classList.toggle('expanded');
             });
@@ -4845,306 +4823,6 @@ function handleImageFile(file) {
     reader.readAsDataURL(file);
 }
 
-// ========== AUTHENTICATION FUNCTIONS ==========
-
-function showLoginModal() {
-    authPage.classList.remove('hidden');
-    document.querySelector('.vscode-layout').classList.add('auth-hidden');
-    switchAuthTab('login');
-}
-
-function showRegisterModal() {
-    authPage.classList.remove('hidden');
-    document.querySelector('.vscode-layout').classList.add('auth-hidden');
-    switchAuthTab('register');
-}
-
-function hideAuthModals() {
-    authPage.classList.add('hidden');
-    document.querySelector('.vscode-layout').classList.remove('auth-hidden');
-}
-
-function switchAuthTab(tab) {
-    authTabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    authTabsContainer.dataset.active = tab;
-    loginForm.classList.toggle('active', tab === 'login');
-    registerForm.classList.toggle('active', tab === 'register');
-    loginError.style.display = 'none';
-    registerError.style.display = 'none';
-}
-
-async function checkAuthentication() {
-    try {
-        const response = await authFetch('/api/check-auth');
-        const data = await response.json();
-
-        if (data.authenticated) {
-            currentUser = data.user;
-            hideAuthModals();
-            await loadUserWorkspaces();
-            return true;
-        }
-
-        // Access token may be expired. Try refreshing silently before prompting login.
-        if (refreshToken) {
-            try {
-                const refreshResp = await fetch('/api/refresh-token', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ refresh_token: refreshToken })
-                });
-                if (refreshResp.ok) {
-                    const refreshData = await refreshResp.json();
-                    storeTokens(refreshData.access_token, refreshData.refresh_token);
-                    // Reconnect socket with the refreshed token
-                    socket.io.opts.query = { token: refreshData.access_token };
-                    socket.disconnect().connect();
-
-                    // Retry with the new access token
-                    const retryResp = await authFetch('/api/check-auth');
-                    const retryData = await retryResp.json();
-                    if (retryData.authenticated) {
-                        currentUser = retryData.user;
-                        hideAuthModals();
-                        await loadUserWorkspaces();
-                        return true;
-                    }
-                }
-            } catch (refreshErr) {
-                console.warn('Silent token refresh failed:', refreshErr);
-            }
-            // Refresh token is also expired or invalid — clear everything
-            clearTokens();
-        }
-
-        // Try auto-login from server-side .env credentials before showing modal
-        try {
-            const autoResp = await fetch('/api/auto-login', { method: 'POST' });
-            if (autoResp.ok) {
-                const autoData = await autoResp.json();
-                storeTokens(autoData.access_token, autoData.refresh_token);
-                // The socket was initialized with the old/expired token.
-                // Update its auth query and reconnect so handle_connect accepts it.
-                socket.io.opts.query = { token: autoData.access_token };
-                socket.disconnect().connect();
-                currentUser = autoData.user;
-                hideAuthModals();
-                await loadUserWorkspaces();
-                return true;
-            }
-        } catch (autoErr) {
-            console.warn('Auto-login not available:', autoErr);
-        }
-
-        showLoginModal();
-        return false;
-    } catch (error) {
-        console.error('Auth check failed:', error);
-        showLoginModal();
-        return false;
-    }
-}
-
-async function loadUserWorkspaces() {
-    try {
-        await ensurePreferencesCached();
-        const response = await authFetch('/api/current-user');
-        if (!response.ok) {
-            if (response.status === 401) {
-                showLoginModal();
-                return;
-            }
-            throw new Error('Failed to get user info');
-        }
-
-        const data = await response.json();
-        currentUser = data.user;
-
-        console.log('User authenticated:', currentUser.username);
-
-        // Load prefs first so workspace selection can read selectedWorkspaceName
-        await loadPreferencesFromDb();
-
-        // Load workspaces from local filesystem
-        await loadWorkspaces();
-    } catch (error) {
-        console.error('Failed to load user workspaces:', error);
-    }
-}
-
-async function handleLogin(event) {
-    event.preventDefault();
-
-    const username = document.getElementById('login-username').value;
-    const password = document.getElementById('login-password').value;
-    const remember = document.getElementById('login-remember').checked;
-
-    const btn = document.getElementById('login-submit-btn');
-    const btnText = btn.querySelector('.auth-submit-text');
-    const btnSpinner = btn.querySelector('.auth-submit-spinner');
-    btn.disabled = true;
-    btnText.style.display = 'none';
-    btnSpinner.style.display = '';
-
-    try {
-        const response = await fetch('/api/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password, remember })
-        });
-
-        const data = await response.json();
-
-        if (response.ok) {
-            // Store JWT tokens
-            storeTokens(data.access_token, data.refresh_token);
-
-            currentUser = data.user;
-            hideAuthModals();
-            showAppOverlay('Loading workspace…');
-            addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
-
-            // Reconnect socket with the new authenticated token
-            socket.io.opts.query = { token: authToken };
-            socket.disconnect();
-            socket.connect();
-
-            // Update username display
-            if (currentUsernameEl) {
-                currentUsernameEl.textContent = currentUser.username;
-            }
-
-            // Initialize CodeMirror editor (skipped on page load when not authenticated)
-            initializeCodeMirror();
-
-            // Load workspaces (will restore saved workspace from localStorage)
-            await loadWorkspaces();
-
-            // Restore theme from DB (overrides localStorage if user changed it elsewhere)
-            await restoreThemeFromDb();
-
-            // Reload file lists for the current workspace
-            if (hasFileExplorer && currentWorkspaceName) {
-                loadFileExplorer();
-                loadAiSteps();
-            }
-
-            // Open dashboard tab if no tabs
-            if (openTabs.length === 0) {
-                openDashboardTab();
-            }
-
-            hideAppOverlay();
-        } else {
-            loginError.textContent = data.error || 'Login failed';
-            loginError.style.display = 'block';
-        }
-    } catch (error) {
-        console.error('Login error:', error);
-        loginError.textContent = 'Login failed. Please try again.';
-        loginError.style.display = 'block';
-        hideAppOverlay();
-    } finally {
-        btn.disabled = false;
-        btnText.style.display = '';
-        btnSpinner.style.display = 'none';
-    }
-}
-
-async function handleRegister(event) {
-    event.preventDefault();
-
-    const username = document.getElementById('register-username').value;
-    const email = document.getElementById('register-email').value;
-    const password = document.getElementById('register-password').value;
-    const passwordConfirm = document.getElementById('register-password-confirm').value;
-
-    // Client-side validation (before showing loading state)
-    if (password !== passwordConfirm) {
-        registerError.textContent = 'Passwords do not match';
-        registerError.style.display = 'block';
-        return;
-    }
-
-    const btn = document.getElementById('register-submit-btn');
-    const btnText = btn.querySelector('.auth-submit-text');
-    const btnSpinner = btn.querySelector('.auth-submit-spinner');
-    btn.disabled = true;
-    btnText.style.display = 'none';
-    btnSpinner.style.display = '';
-
-    try {
-        const response = await fetch('/api/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, email, password })
-        });
-
-        const data = await response.json();
-
-        if (response.ok) {
-            // Store JWT tokens
-            storeTokens(data.access_token, data.refresh_token);
-
-            currentUser = data.user;
-            hideAuthModals();
-            showAppOverlay('Setting up workspace…');
-            addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
-
-            // Connect socket with the new authenticated token
-            socket.io.opts.query = { token: authToken };
-            socket.disconnect();
-            socket.connect();
-
-            // Update username display
-            if (currentUsernameEl) {
-                currentUsernameEl.textContent = currentUser.username;
-            }
-
-            // Initialize CodeMirror editor (skipped on page load when not authenticated)
-            initializeCodeMirror();
-
-            // Load workspaces (user's default workspace will be loaded)
-            await loadWorkspaces();
-
-            // Restore theme from DB
-            await restoreThemeFromDb();
-
-            // Reload file lists for the current workspace
-            if (hasFileExplorer && currentWorkspaceName) {
-                loadFileExplorer();
-                loadAiSteps();
-            }
-
-            // Open dashboard tab
-            if (openTabs.length === 0) {
-                openDashboardTab();
-            }
-
-            hideAppOverlay();
-        } else {
-            registerError.textContent = data.error || 'Registration failed';
-            registerError.style.display = 'block';
-        }
-    } catch (error) {
-        console.error('Registration error:', error);
-        registerError.textContent = 'Registration failed. Please try again.';
-        registerError.style.display = 'block';
-        hideAppOverlay();
-    } finally {
-        btn.disabled = false;
-        btnText.style.display = '';
-        btnSpinner.style.display = 'none';
-    }
-}
-
-// Event listeners for auth page
-if (loginForm) loginForm.addEventListener('submit', handleLogin);
-if (registerForm) registerForm.addEventListener('submit', handleRegister);
-authTabs.forEach(tab => {
-    tab.addEventListener('click', () => switchAuthTab(tab.dataset.tab));
-});
-
 // ========== END AUTHENTICATION FUNCTIONS ==========
 
 // ========== WORKSPACE MANAGEMENT FUNCTIONS ==========
@@ -5333,17 +5011,9 @@ function removeMember() {
 }
 
 async function handleLogout() {
-    try {
-        await authFetch('/api/logout', { method: 'POST' });
-    } catch (error) {
-        console.error('Logout error:', error);
-    }
-    // Always clear tokens and state regardless of server response
-    clearTokens();
     currentUser = null;
     currentWorkspaceName = null;
     userWorkspaces = [];
-    showLoginModal();
     addLogEntry('info', '👋 Logged out successfully');
 }
 
@@ -5511,55 +5181,50 @@ function showToast(message, type = 'error') {
 
 // Load default example on page load
 window.addEventListener('load', async () => {
-    // Initialize theme picker (apply saved theme from localStorage immediately)
     initThemePicker();
-
-    // Check authentication first
-    const isAuthenticated = await checkAuthentication();
-
-    if (!isAuthenticated) {
-        // Show app anyway so recording works without login (record since app loads)
-        hideAuthModals();
-        if (currentUsernameEl) currentUsernameEl.textContent = 'Not logged in';
-        initializeCodeMirror();
-        if (openTabs.length === 0) {
-            openDashboardTab();
-        }
-        addLogEntry('info', '👋 Record a test anytime with the Record button. Log in to save tests to a workspace.');
+    const resp = await fetch('/api/init-status');
+    const { initialized } = await resp.json();
+    if (!initialized) {
+        document.getElementById('onboarding-page').style.display = 'flex';
+        document.querySelector('.vscode-layout').style.display = 'none';
         dismissLoadingOverlay();
         return;
     }
-
-    // Restore theme from DB (may override localStorage if DB has a different value)
-    restoreThemeFromDb();
-
-    // Check whether OpenAI key is configured; hide chat if not
-    checkAiStatus();
-
-    addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
-    addLogEntry('info', '🤖 Create AI Steps in the file explorer to run natural language tests');
-    addLogEntry('info', '💬 Use AI Chat to generate and modify Playwright code');
-
-    // Update username display
-    if (currentUsernameEl && currentUser) {
-        currentUsernameEl.textContent = currentUser.username;
-    }
-
-    // Workspace dropdown and details already set by loadUserWorkspaces() from checkAuthentication
-
-    // Initialize CodeMirror editor
-    initializeCodeMirror();
-
-    // Restore previously open tabs
-    await restoreTabsState();
-
-    // Open dashboard tab if no tabs were restored
-    if (openTabs.length === 0) {
-        openDashboardTab();
-    }
-
-    dismissLoadingOverlay();
+    await startApp();
 });
+
+document.getElementById('onboarding-start-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('onboarding-start-btn');
+    btn.disabled = true;
+    btn.textContent = 'Setting up...';
+    try {
+        const resp = await fetch('/api/onboarding/setup', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+            document.getElementById('onboarding-page').style.display = 'none';
+            document.querySelector('.vscode-layout').style.display = 'flex';
+            await startApp();
+        } else {
+            btn.disabled = false;
+            btn.textContent = 'Get Started';
+        }
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Get Started';
+    }
+});
+
+async function startApp() {
+    restoreThemeFromDb();
+    checkAiStatus();
+    addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
+    initializeCodeMirror();
+    await loadPreferencesFromDb();
+    await loadWorkspaces();
+    await restoreTabsState();
+    if (openTabs.length === 0) openDashboardTab();
+    dismissLoadingOverlay();
+}
 
 // ========================================
 // ACTIVITY BAR SWITCHING

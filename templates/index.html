@@ -49,8 +49,18 @@
         <span class="workspace-switch-label">Switching workspace…</span>
     </div>
 
-    <!-- Main VS Code-style layout (hidden until authenticated) -->
-    <div class="vscode-layout auth-hidden">
+    <!-- Onboarding screen (shown on first launch) -->
+    <div id="onboarding-page" style="display:none;">
+        <div class="onboarding-card">
+            <div class="onboarding-logo"><i class="lni lni-robot"></i></div>
+            <h1 class="onboarding-title">AutoGen Web Tester</h1>
+            <p class="onboarding-subtitle">Automate browser tests with AI.<br>Let's set up your first workspace.</p>
+            <button id="onboarding-start-btn" class="onboarding-btn">Get Started</button>
+        </div>
+    </div>
+
+    <!-- Main VS Code-style layout -->
+    <div class="vscode-layout">
         <div class="code-editor-container">
                 <!-- Live Browser Sidebar (Left) -->
                 <div id="browser-sidebar" class="browser-sidebar">
@@ -354,9 +364,21 @@
                     <div class="editor-content">
                         <div id="codemirror-editor"></div>
                         <div id="media-panel" style="display:none;flex:1;overflow:hidden;position:relative;background:var(--ctp-base);width:100%;height:100%;">
-                            <div id="media-panel-recording" style="display:none;width:100%;height:100%;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;box-sizing:border-box;">
-                                <video id="media-panel-video" controls style="max-width:100%;max-height:calc(100% - 80px);border-radius:8px;background:#000;"></video>
-                                <p id="media-panel-video-info" style="color:var(--ctp-subtext1);font-size:12px;margin:0;"></p>
+                            <div id="media-panel-recording" style="display:none;width:100%;height:100%;flex-direction:column;align-items:stretch;gap:0;box-sizing:border-box;">
+                                <div class="recording-header">
+                                    <div class="recording-header-left">
+                                        <span id="recording-header-title" class="recording-header-title"></span>
+                                        <span id="recording-header-status" class="recording-header-status"></span>
+                                        <span id="recording-header-time" class="recording-header-time"></span>
+                                    </div>
+                                    <button id="recording-header-rerun" class="recording-header-rerun-btn" title="Re-run test">
+                                        <i class="lni lni-play"></i> Re-run
+                                    </button>
+                                </div>
+                                <div class="recording-video-wrap">
+                                    <video id="media-panel-video" controls></video>
+                                    <p id="media-panel-video-info"></p>
+                                </div>
                             </div>
                             <div id="media-panel-trace" style="display:none;width:100%;height:100%;">
                                 <iframe id="media-panel-trace-iframe" style="width:100%;height:100%;border:none;background:#1e1e1e;" allowfullscreen></iframe>
@@ -693,89 +715,7 @@
         </div>
     </div>
 
-    <!-- Full-page Auth Screen -->
-    <div id="auth-page">
-        <div class="auth-bg-grid"></div>
-        <div class="auth-container">
-            <div class="auth-card">
-                <div class="auth-brand">
-                    <div class="auth-logo">
-                        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                            <rect x="2" y="2" width="28" height="28" rx="6" stroke="currentColor" stroke-width="2"/>
-                            <path d="M10 16L14 20L22 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                    </div>
-                    <h1 class="auth-title">AutoGen Web Tester</h1>
-                    <p class="auth-subtitle">AI-powered browser testing platform</p>
-                </div>
 
-                <!-- Tab toggle -->
-                <div class="auth-tabs">
-                    <button class="auth-tab active" data-tab="login">Sign In</button>
-                    <button class="auth-tab" data-tab="register">Create Account</button>
-                    <div class="auth-tab-indicator"></div>
-                </div>
-
-                <!-- Login form -->
-                <form id="login-form" class="auth-form active">
-                    <div class="auth-field">
-                        <label for="login-username">Username</label>
-                        <input type="text" id="login-username" name="username" required
-                               autocomplete="username" placeholder="Enter your username" spellcheck="false">
-                    </div>
-                    <div class="auth-field">
-                        <label for="login-password">Password</label>
-                        <input type="password" id="login-password" name="password" required
-                               autocomplete="current-password" placeholder="Enter your password">
-                    </div>
-                    <div class="auth-field-row">
-                        <label class="auth-checkbox">
-                            <input type="checkbox" id="login-remember" name="remember">
-                            <span class="auth-checkmark"></span>
-                            Remember me
-                        </label>
-                    </div>
-                    <div id="login-error" class="auth-error" style="display: none;"></div>
-                    <button type="submit" class="auth-submit" id="login-submit-btn">
-                        <span class="auth-submit-text">Sign In</span>
-                        <span class="auth-submit-spinner" style="display:none;"></span>
-                    </button>
-                </form>
-
-                <!-- Register form -->
-                <form id="register-form" class="auth-form">
-                    <div class="auth-field">
-                        <label for="register-username">Username</label>
-                        <input type="text" id="register-username" name="username" required
-                               autocomplete="username" placeholder="Choose a username" spellcheck="false">
-                        <span class="auth-hint">3-20 chars: letters, numbers, _ , -</span>
-                    </div>
-                    <div class="auth-field">
-                        <label for="register-email">Email</label>
-                        <input type="email" id="register-email" name="email" required
-                               autocomplete="email" placeholder="you@example.com">
-                    </div>
-                    <div class="auth-field">
-                        <label for="register-password">Password</label>
-                        <input type="password" id="register-password" name="password" required
-                               autocomplete="new-password" placeholder="Create a password">
-                        <span class="auth-hint">Min 8 chars with uppercase, lowercase, and number</span>
-                    </div>
-                    <div class="auth-field">
-                        <label for="register-password-confirm">Confirm Password</label>
-                        <input type="password" id="register-password-confirm" name="password_confirm" required
-                               autocomplete="new-password" placeholder="Re-enter your password">
-                    </div>
-                    <div id="register-error" class="auth-error" style="display: none;"></div>
-                    <button type="submit" class="auth-submit" id="register-submit-btn">
-                        <span class="auth-submit-text">Create Account</span>
-                        <span class="auth-submit-spinner" style="display:none;"></span>
-                    </button>
-                </form>
-            </div>
-            <p class="auth-footer">Powered by AutoGen &amp; Playwright</p>
-        </div>
-    </div>
 
     <!-- New Workspace Modal -->
     <div id="new-workspace-modal" class="modal" style="display: none;">

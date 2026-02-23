@@ -21,11 +21,6 @@ pywebview~=5.0
 gunicorn~=21.2.0
 eventlet~=0.33.0
 
-# Multi-user support - Auth (Supabase)
-Flask-WTF~=1.2.1  # CSRF protection
-Flask-Limiter~=3.5.0  # Rate limiting
-supabase~=2.0
-
 # Encrypted local session persistence
 cryptography>=41.0.0
 

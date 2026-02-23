@@ -43,9 +43,7 @@ _TRACE_VIEWER_DIR = (
     Path(_playwright_pkg.__file__).parent / 'driver' / 'package' / 'lib' / 'vite' / 'traceViewer'
 )
 
-# Import multi-user modules
-import db
-from auth import init_auth, login_required, get_current_user
+from auth import login_required, get_current_user
 from decorators import workspace_access_required
 
 app = Flask(
@@ -54,14 +52,10 @@ app = Flask(
     static_folder=str(_BASE_DIR / 'static'),
 )
 
-# Apply multi-user configuration
+# Apply configuration
 app.config.from_object(Config)
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
-
-# Initialize authentication
-print("Initializing authentication...")
-init_auth(app)
 
 
 # ========== WORKSPACE HELPER FUNCTIONS ==========
@@ -1768,6 +1762,28 @@ def patch_preferences():
     return jsonify(prefs), 200
 
 
+@app.route('/api/init-status')
+def init_status():
+    ws_dir = Config.AUTOGEN_WORKSPACES_DIR
+    initialized = ws_dir.exists() and any(d.is_dir() for d in ws_dir.iterdir())
+    return jsonify({'initialized': initialized})
+
+
+@app.route('/api/onboarding/setup', methods=['POST'])
+def onboarding_setup():
+    try:
+        workspace_name = 'personal'
+        ws_dir = Config.AUTOGEN_WORKSPACES_DIR / workspace_name
+        ws_dir.mkdir(parents=True, exist_ok=True)
+        (ws_dir / 'saved_tests').mkdir(exist_ok=True)
+        (ws_dir / 'ai_steps').mkdir(exist_ok=True)
+        (ws_dir / '.gitignore').write_text('.github-config.json\n')
+        git_ops.init_repo(ws_dir)
+        return jsonify({'success': True, 'workspace': workspace_name}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # ========== WORKSPACE MANAGEMENT API ENDPOINTS ==========
 
 _WORKSPACE_NAME_RE = re.compile(r'^[a-zA-Z0-9_\- ]+$')
@@ -3449,45 +3465,7 @@ def handle_clear_chat(data=None):
 
 @socketio.on('connect')
 def handle_connect():
-    """Handle client connection."""
-    from auth import _LOCAL_MODE, _LOCAL_TOKEN, _LOCAL_USER
-
-    # In local mode, accept any connection
-    if _LOCAL_MODE:
-        emit('log', {'type': 'info', 'message': 'Connected to AutoGen Web Tester'})
-        return
-
-    # Validate JWT from socket auth params
-    token = request.args.get('token')
-    if not token:
-        auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer '):
-            token = auth_header[7:]
-
-    if not token:
-        emit('log', {'type': 'error', 'message': 'Authentication required'})
-        return False  # Reject connection
-
-    # Validate token and get user
-    try:
-        from supabase_client import get_supabase_client
-        sb = get_supabase_client()
-        auth_response = sb.auth.get_user(token)
-        supabase_user = auth_response.user
-        if not supabase_user:
-            emit('log', {'type': 'error', 'message': 'Authentication required'})
-            return False
-
-        user = db.get_user_by_id(supabase_user.id)
-        if not user:
-            emit('log', {'type': 'error', 'message': 'Authentication required'})
-            return False
-
-        emit('log', {'type': 'info', 'message': f'Connected to AutoGen Web Tester (User: {user["username"]})'})
-    except Exception as e:
-        print(f"Socket auth error: {e}")
-        emit('log', {'type': 'error', 'message': 'Authentication required'})
-        return False
+    emit('connected', {'message': 'Connected to AutoGen Web Tester'})
 
 
 

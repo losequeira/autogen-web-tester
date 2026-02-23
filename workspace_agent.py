@@ -17,7 +17,119 @@ from typing import Any, Callable
 from openai import OpenAI
 
 import config
-import db
+import local_tree
+from config import Config
+
+
+# ─── Local-filesystem replacements for the deleted db module ──────────────────
+
+def _ws_root(workspace_id: str, tree_type: str) -> Path:
+    return Config.AUTOGEN_WORKSPACES_DIR / workspace_id / tree_type
+
+
+def _find_file(workspace_id: str, tree_type: str, filename: str) -> Path | None:
+    """Return the Path for *filename* (basename) anywhere under the tree, or None."""
+    root = _ws_root(workspace_id, tree_type)
+    ext = ".py" if tree_type == "saved_tests" else ".md"
+    for p in root.rglob(f"*{ext}"):
+        if p.name == filename:
+            return p
+    return None
+
+
+def _flat_files(workspace_id: str, tree_type: str) -> list[dict]:
+    """Return [{name, filename, path, last_run_status, last_run_time}] for every file."""
+    root = _ws_root(workspace_id, tree_type)
+    ext = ".py" if tree_type == "saved_tests" else ".md"
+    results = []
+    if not root.is_dir():
+        return results
+    for p in sorted(root.rglob(f"*{ext}"), key=lambda x: x.name.lower()):
+        rel = str(p.relative_to(root))
+        meta = local_tree.get_last_run_meta(root, rel) or {}
+        results.append({
+            "name": p.stem.replace("_", " "),
+            "filename": p.name,
+            "path": rel,
+            "last_run_status": meta.get("last_run_status"),
+            "last_run_time": meta.get("last_run_time"),
+        })
+    return results
+
+
+def _read_file(workspace_id: str, tree_type: str, filename: str) -> dict | None:
+    fp = _find_file(workspace_id, tree_type, filename)
+    if fp is None:
+        return None
+    root = _ws_root(workspace_id, tree_type)
+    rel = str(fp.relative_to(root))
+    meta = local_tree.get_last_run_meta(root, rel) or {}
+    text = fp.read_text(encoding="utf-8")
+    key = "code" if tree_type == "saved_tests" else "steps"
+    return {
+        "name": fp.stem.replace("_", " "),
+        "filename": fp.name,
+        "path": rel,
+        key: text,
+        "last_run_status": meta.get("last_run_status"),
+        "last_run_time": meta.get("last_run_time"),
+    }
+
+
+def _create_file(workspace_id: str, tree_type: str, name: str, content: str) -> dict:
+    root = _ws_root(workspace_id, tree_type)
+    ext = ".py" if tree_type == "saved_tests" else ".md"
+    slug = name.strip().lower().replace(" ", "_").replace("-", "_")
+    filename = f"{slug}{ext}"
+    fp = root / filename
+    # Avoid collisions
+    counter = 1
+    while fp.exists():
+        filename = f"{slug}_{counter}{ext}"
+        fp = root / filename
+        counter += 1
+    root.mkdir(parents=True, exist_ok=True)
+    fp.write_text(content, encoding="utf-8")
+    return {"name": name, "filename": fp.name, "path": fp.name}
+
+
+def _update_meta(workspace_id: str, filename: str, updates: dict) -> None:
+    root = _ws_root(workspace_id, "saved_tests")
+    fp = _find_file(workspace_id, "saved_tests", filename)
+    if fp is None:
+        return
+    rel = str(fp.relative_to(root))
+    local_tree.write_last_run_meta(
+        root, rel,
+        status=updates.get("last_run_status"),
+        last_run_time=updates.get("last_run_time"),
+    )
+
+
+def _get_artifacts(workspace_id: str, filename: str) -> list[dict]:
+    stem = filename[:-3] if filename.endswith(".py") else filename
+    art_dir = Config.AUTOGEN_WORKSPACES_DIR / workspace_id / "saved_tests" / "artifacts" / stem
+    if not art_dir.is_dir():
+        return []
+    results = []
+    status_file = art_dir / "status.json"
+    status_data: dict = {}
+    if status_file.is_file():
+        try:
+            status_data = json.loads(status_file.read_text())
+        except Exception:
+            pass
+    video = next(art_dir.glob("*.webm"), None)
+    har = next(art_dir.glob("*.har"), None)
+    trace = next(art_dir.glob("trace.zip"), None)
+    results.append({
+        "status": status_data.get("status"),
+        "timestamp": status_data.get("timestamp"),
+        "video_path": str(video) if video else None,
+        "har_path": str(har) if har else None,
+        "trace_path": str(trace) if trace else None,
+    })
+    return results
 
 
 class WorkspaceAgent:
@@ -365,8 +477,8 @@ asyncio.run(run())
 
     def _build_system_prompt(self, workspace_id: int) -> str:
         """Build the system prompt with a live workspace snapshot injected."""
-        tests = db.get_tests(workspace_id)
-        ai_steps_list = db.get_ai_steps(workspace_id)
+        tests = _flat_files(workspace_id, "saved_tests")
+        ai_steps_list = _flat_files(workspace_id, "ai_steps")
 
         snapshot_lines = ["\n\n━━ CURRENT WORKSPACE SNAPSHOT ━━"]
         if tests:
@@ -414,8 +526,8 @@ asyncio.run(run())
         """Execute a single tool call and return the result as a string."""
         try:
             if tool_name == "get_workspace_context":
-                tests = db.get_tests(workspace_id)
-                ai_steps_list = db.get_ai_steps(workspace_id)
+                tests = _flat_files(workspace_id, "saved_tests")
+                ai_steps_list = _flat_files(workspace_id, "ai_steps")
                 lines = []
 
                 lines.append(f"=== WORKSPACE CONTEXT ({len(tests)} test(s), {len(ai_steps_list)} AI step file(s)) ===\n")
@@ -425,7 +537,7 @@ asyncio.run(run())
                     for t in tests:
                         status = t.get("last_run_status") or "never run"
                         lines.append(f"\n[TEST] {t['name']} | file: {t['filename']} | status: {status}")
-                        full = db.get_test(workspace_id, t["filename"])
+                        full = _read_file(workspace_id, "saved_tests", t["filename"])
                         code = full.get("code", "") if full else ""
                         lines.append(f"```python\n{code}\n```")
                 else:
@@ -435,7 +547,7 @@ asyncio.run(run())
                     lines.append("\n── AI STEPS (natural language) ──")
                     for s in ai_steps_list:
                         lines.append(f"\n[AI STEPS] {s['name']} | file: {s['filename']}")
-                        full = db.get_ai_step(workspace_id, s["filename"])
+                        full = _read_file(workspace_id, "ai_steps", s["filename"])
                         steps = full.get("steps", "") if full else ""
                         lines.append(steps)
                 else:
@@ -444,7 +556,7 @@ asyncio.run(run())
                 return "\n".join(lines)
 
             elif tool_name == "list_tests":
-                tests = db.get_tests(workspace_id)
+                tests = _flat_files(workspace_id, "saved_tests")
                 if not tests:
                     return "No tests found in this workspace."
                 lines = [f"Found {len(tests)} test(s):"]
@@ -454,7 +566,7 @@ asyncio.run(run())
                 return "\n".join(lines)
 
             elif tool_name == "list_ai_steps":
-                steps = db.get_ai_steps(workspace_id)
+                steps = _flat_files(workspace_id, "ai_steps")
                 if not steps:
                     return "No AI step files found in this workspace."
                 lines = [f"Found {len(steps)} AI step file(s):"]
@@ -465,7 +577,7 @@ asyncio.run(run())
 
             elif tool_name == "read_test":
                 filename = tool_args["filename"]
-                test = db.get_test(workspace_id, filename)
+                test = _read_file(workspace_id, "saved_tests", filename)
                 if not test:
                     return f"Test '{filename}' not found."
                 return (
@@ -477,7 +589,7 @@ asyncio.run(run())
 
             elif tool_name == "read_ai_step":
                 filename = tool_args["filename"]
-                step = db.get_ai_step(workspace_id, filename)
+                step = _read_file(workspace_id, "ai_steps", filename)
                 if not step:
                     return f"AI step file '{filename}' not found."
                 return (
@@ -488,8 +600,8 @@ asyncio.run(run())
 
             elif tool_name == "search_files":
                 query = tool_args["query"].lower()
-                tests = db.get_tests(workspace_id)
-                ai_steps_list = db.get_ai_steps(workspace_id)
+                tests = _flat_files(workspace_id, "saved_tests")
+                ai_steps_list = _flat_files(workspace_id, "ai_steps")
 
                 results = []
 
@@ -515,7 +627,7 @@ asyncio.run(run())
                         results.append(f"[AI STEPS] {s['name']} ({s['filename']})")
                     else:
                         # Load full steps only when name didn't match
-                        full = db.get_ai_step(workspace_id, s["filename"])
+                        full = _read_file(workspace_id, "ai_steps", s["filename"])
                         if full:
                             content = (full.get("steps") or "").lower()
                             if query in content:
@@ -536,7 +648,7 @@ asyncio.run(run())
             elif tool_name == "create_test":
                 name = tool_args["name"]
                 code = tool_args["code"]
-                result = db.create_test(workspace_id, name, code, source="ai", user_id=user_id)
+                result = _create_file(workspace_id, "saved_tests", name, code)
                 filename = result.get("filename", "")
                 emit_fn("file_created", {"type": "test", "filename": filename, "name": name})
                 return f"Test '{name}' created as '{filename}'."
@@ -544,7 +656,7 @@ asyncio.run(run())
             elif tool_name == "create_ai_step":
                 name = tool_args["name"]
                 steps = tool_args["steps"]
-                result = db.create_ai_step(workspace_id, name, steps, user_id=user_id)
+                result = _create_file(workspace_id, "ai_steps", name, steps)
                 filename = result.get("filename", "")
                 emit_fn("file_created", {"type": "ai_step", "filename": filename, "name": name})
                 return f"AI step file '{name}' created as '{filename}'."
@@ -552,7 +664,7 @@ asyncio.run(run())
             elif tool_name == "update_test":
                 filename = tool_args["filename"]
                 code = tool_args["code"]
-                current = db.get_test(workspace_id, filename)
+                current = _read_file(workspace_id, "saved_tests", filename)
                 if not current:
                     return f"Test '{filename}' not found."
                 emit_fn("propose_change", {
@@ -567,7 +679,7 @@ asyncio.run(run())
             elif tool_name == "update_ai_step":
                 filename = tool_args["filename"]
                 steps = tool_args["steps"]
-                current = db.get_ai_step(workspace_id, filename)
+                current = _read_file(workspace_id, "ai_steps", filename)
                 if not current:
                     return f"AI step file '{filename}' not found."
                 emit_fn("propose_change", {
@@ -581,7 +693,7 @@ asyncio.run(run())
 
             elif tool_name == "run_test":
                 filename = tool_args["filename"]
-                test = db.get_test(workspace_id, filename)
+                test = _read_file(workspace_id, "saved_tests", filename)
                 if not test:
                     return f"Test '{filename}' not found."
 
@@ -596,7 +708,7 @@ asyncio.run(run())
 
                 # Persist the result so get_test_results stays in sync
                 timestamp = datetime.utcnow().isoformat()
-                db.update_test(workspace_id, filename, {
+                _update_meta(workspace_id, filename, {
                     "last_run_status": status,
                     "last_run_time": timestamp,
                 })
@@ -612,7 +724,7 @@ asyncio.run(run())
 
             elif tool_name == "get_test_results":
                 filename = tool_args["filename"]
-                test = db.get_test(workspace_id, filename)
+                test = _read_file(workspace_id, "saved_tests", filename)
                 if not test:
                     return f"Test '{filename}' not found."
 
@@ -625,7 +737,7 @@ asyncio.run(run())
                     f"Last run:    {run_time}",
                 ]
 
-                artifacts = db.get_test_artifacts(workspace_id, filename) or []
+                artifacts = _get_artifacts(workspace_id, filename) or []
                 if artifacts:
                     a = artifacts[0]  # most recent
                     lines.append(f"Artifact status: {a.get('status', '—')}")
@@ -641,11 +753,11 @@ asyncio.run(run())
 
             elif tool_name == "get_test_trace":
                 filename = tool_args["filename"]
-                test = db.get_test(workspace_id, filename)
+                test = _read_file(workspace_id, "saved_tests", filename)
                 if not test:
                     return f"Test '{filename}' not found."
 
-                artifacts = db.get_test_artifacts(workspace_id, filename) or []
+                artifacts = _get_artifacts(workspace_id, filename) or []
                 trace_artifacts = [a for a in artifacts if a.get("trace_path")]
 
                 lines = [
