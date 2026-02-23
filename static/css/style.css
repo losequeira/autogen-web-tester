@@ -666,19 +666,19 @@ body {
 }
 
 .file-item {
-    padding: 2px 6px 2px 4px;
+    padding: 3px 6px 3px 4px;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     transition: background 0.1s;
     font-size: 13px;
-    line-height: 22px;
+    line-height: 30px;
     color: var(--ctp-text);
     user-select: none;
     border-left: 2px solid transparent;
     border-radius: 3px;
-    min-height: 22px;
+    min-height: 30px;
 }
 
 .file-item.file-item-status-passed {
@@ -709,9 +709,9 @@ body {
 }
 
 .file-item-icon {
-    font-size: 13px;
+    font-size: 20px;
     flex-shrink: 0;
-    width: 16px;
+    width: 22px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -752,7 +752,7 @@ body {
     cursor: pointer;
     padding: 3px 5px;
     border-radius: 3px;
-    font-size: 14px;
+    font-size: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1059,14 +1059,14 @@ body {
     color: var(--ctp-peach);
 }
 .file-item-icon--folder i {
-    font-size: 1em;
+    font-size: 20px;
 }
 
 .file-tree-expand {
-    min-width: 16px;
-    width: 16px;
+    min-width: 18px;
+    width: 18px;
     flex-shrink: 0;
-    font-size: 10px;
+    font-size: 14px;
     color: var(--ctp-overlay1);
     transition: transform 0.12s;
     display: inline-flex;
@@ -1108,11 +1108,11 @@ body {
     position: relative;
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px 6px 2px 4px;
+    gap: 6px;
+    padding: 3px 6px 3px 4px;
     font-size: 13px;
-    line-height: 22px;
-    min-height: 22px;
+    line-height: 30px;
+    min-height: 30px;
     color: var(--ctp-subtext1);
     cursor: pointer;
     border-radius: 3px;
@@ -1120,7 +1120,7 @@ body {
 }
 /* No horizontal connector lines (VS Code style) */
 .file-tree-child::before { display: none; }
-.file-tree-child i { font-size: 1em; }
+.file-tree-child i { font-size: 20px; }
 
 .file-tree-artifacts .file-tree-child::before { display: none; }
 
@@ -2083,7 +2083,7 @@ body {
     background: transparent;
     border: none;
     color: var(--ctp-overlay1);
-    font-size: 16px;
+    font-size: 20px;
     cursor: pointer;
     padding: 4px 8px;
     transition: all 0.2s;
@@ -2851,7 +2851,7 @@ body {
     background: transparent;
     border: none;
     color: var(--ctp-overlay1);
-    font-size: 14px;
+    font-size: 20px;
     cursor: pointer;
     padding: 2px 6px;
     transition: all 0.2s;
@@ -4249,17 +4249,17 @@ body {
 }
 
 .file-tree-node--root > .file-item--root {
-    padding: 2px 6px 2px 4px;
+    padding: 3px 6px 3px 4px;
     font-size: 11px;
     font-weight: 700;
-    line-height: 22px;
-    min-height: 22px;
+    line-height: 30px;
+    min-height: 30px;
     color: var(--ctp-overlay1);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     cursor: pointer;
     user-select: none;
     margin-top: 4px;
