@@ -4202,9 +4202,10 @@ body {
     color: var(--ctp-text);
     border: 1px solid var(--ctp-surface1);
     border-radius: 4px;
-    font-size: 11px;
-    padding: 3px 6px;
+    font-size: 13px;
+    padding: 6px 8px;
     cursor: pointer;
+    height: 32px;
 }
 
 .workspace-dropdown-compact:focus {
