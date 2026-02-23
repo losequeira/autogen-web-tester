@@ -2141,7 +2141,7 @@ body {
 #codemirror-editor .CodeMirror {
     height: 100%;
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.6;
     background: var(--ctp-base);
     color: var(--ctp-text);
