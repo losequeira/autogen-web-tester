@@ -4109,7 +4109,7 @@ body {
 
 .activity-bar-btn.active {
     color: var(--ctp-text);
-    box-shadow: -3px 0 0 0 var(--ctp-accent) inset;
+    background: var(--ctp-surface0);
 }
 
 .activity-bar-badge {

@@ -5079,6 +5079,10 @@ async function loadWorkspaces() {
             loadAiSteps();
         }
 
+        // Always load SCM state so the badge is visible from the start
+        refreshScmPanel();
+        loadGithubConfig();
+
     } catch (error) {
         console.error('Failed to load workspaces:', error);
     }
@@ -5118,6 +5122,10 @@ async function switchWorkspace(name) {
             loadFileExplorer();
             loadAiSteps();
         }
+
+        // Refresh SCM state for the new workspace
+        refreshScmPanel();
+        loadGithubConfig();
 
         // Re-open dashboard tab so the main area shows workspace stats (not "No file open")
         openDashboardTab();
@@ -5791,6 +5799,9 @@ function initScmPanel() {
             if (panel) panel.style.display = 'none';
         });
     }
+
+    // Poll git status every 30s to keep the badge current even on the Explorer panel
+    setInterval(() => { if (currentWorkspaceName) refreshScmPanel(); }, 30000);
 }
 // ========== END SCM PANEL ==========
 
