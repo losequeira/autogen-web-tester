@@ -5,52 +5,9 @@ if (typeof marked !== 'undefined') {
     marked.setOptions({ breaks: true, gfm: true });
 }
 
-// ========== JWT TOKEN MANAGEMENT ==========
-let authToken = localStorage.getItem('access_token') || null;
-let refreshToken = localStorage.getItem('refresh_token') || null;
-
-function storeTokens(access, refresh) {
-    authToken = access;
-    refreshToken = refresh;
-    if (access) localStorage.setItem('access_token', access);
-    else localStorage.removeItem('access_token');
-    if (refresh) localStorage.setItem('refresh_token', refresh);
-    else localStorage.removeItem('refresh_token');
-}
-
-function clearTokens() {
-    authToken = null;
-    refreshToken = null;
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-}
-
 async function authFetch(url, options = {}) {
-    if (!options.headers) options.headers = {};
-    if (authToken) {
-        options.headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    let response = await fetch(url, options);
-    if (response.status === 401 && refreshToken) {
-        // Attempt token refresh
-        const refreshResp = await fetch('/api/refresh-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refresh_token: refreshToken })
-        });
-        if (refreshResp.ok) {
-            const data = await refreshResp.json();
-            storeTokens(data.access_token, data.refresh_token);
-            options.headers['Authorization'] = `Bearer ${data.access_token}`;
-            response = await fetch(url, options);
-        } else {
-            clearTokens();
-            showLoginModal();
-        }
-    }
-    return response;
+    return fetch(url, options);
 }
-// ========== END JWT TOKEN MANAGEMENT ==========
 
 function dismissLoadingOverlay() {
     const overlay = document.getElementById('loading-overlay');
@@ -72,8 +29,7 @@ function hideAppOverlay() {
     if (overlay) overlay.style.display = 'none';
 }
 
-// Initialize Socket.IO with auth token (passed as query param for Flask-SocketIO compat)
-const socket = io({ query: { token: authToken || '' } });
+const socket = io();
 
 // Authentication state
 let currentUser = null;
@@ -83,38 +39,33 @@ let currentWorkspaceName = null;
 let testCache = {};
 
 // ========== USER PREFERENCES SYNC ==========
-function savePreferenceToDb(key, value) {
-    try {
-        localStorage.setItem('pref_' + key, JSON.stringify(value));
-    } catch (err) {
-        console.error('Failed to save preference:', err);
-    }
-}
+// Backed by ~/.autogen/preferences/user_prefs.json via /api/preferences
+
+let _prefsCache = null; // in-memory cache populated on first load
 
 async function loadPreferencesFromDb() {
-    const prefs = {};
-    for (const key of ['theme', 'editorTabsState', 'selectedWorkspaceName']) {
-        const raw = localStorage.getItem('pref_' + key);
-        if (raw !== null) {
-            try { prefs[key] = JSON.parse(raw); } catch { prefs[key] = raw; }
-        }
-    }
-    return prefs;
+    if (_prefsCache) return _prefsCache;
+    try {
+        const res = await fetch('/api/preferences');
+        if (res.ok) _prefsCache = await res.json();
+    } catch (_) {}
+    return _prefsCache || {};
+}
+
+function savePreferenceToDb(key, value) {
+    // Fire-and-forget PATCH to persist to disk; update cache immediately
+    if (_prefsCache) _prefsCache[key] = value;
+    fetch('/api/preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value })
+    }).catch(err => console.error('Failed to save preference:', err));
 }
 
 async function ensurePreferencesCached() {
-    // no-op: localStorage reads are synchronous, no caching needed
+    if (!_prefsCache) await loadPreferencesFromDb();
 }
 // ========== END USER PREFERENCES SYNC ==========
-
-// Authentication page elements
-const authPage = document.getElementById('auth-page');
-const loginForm = document.getElementById('login-form');
-const registerForm = document.getElementById('register-form');
-const loginError = document.getElementById('login-error');
-const registerError = document.getElementById('register-error');
-const authTabs = document.querySelectorAll('.auth-tab');
-const authTabsContainer = document.querySelector('.auth-tabs');
 
 // Workspace elements
 const currentUsernameEl = document.getElementById('current-username');
@@ -227,6 +178,7 @@ let recorderViewport = { width: 1280, height: 720 };  // Actual browser viewport
 let pendingCodegenTest = null;  // Track test info from codegen
 let pendingCodegenTabId = null;  // Tab (filename) to fill with recorded code when codegen_complete
 let currentEditingAiStep = null;  // Track if we're editing an existing AI step
+let _aiStepFolderPrefix = null;   // Folder to create new AI step inside
 let currentRunningTestFilename = null;  // Track which saved test is currently running
 
 let isTestRunning = false;
@@ -470,6 +422,7 @@ socket.on('test_complete', (data) => {
     if (data.status === 'success') {
         updateBrowserStatus('passed', 'PASSED');
         addLogEntry('success', '✅ Test completed successfully!', '🎉 Test completed!');
+        launchConfetti();
     } else if (data.status === 'stopped') {
         updateBrowserStatus('stopped', 'STOPPED');
         addLogEntry('error', '⏹ Test stopped by user', '⏹ Test stopped');
@@ -477,6 +430,10 @@ socket.on('test_complete', (data) => {
         updateBrowserStatus('failed', 'FAILED');
         const errorMsg = data.message || 'Unknown error';
         addLogEntry('error', `❌ Test failed: ${errorMsg}`, `❌ Test failed`);
+        openOutputPanel();
+        if (currentRunningTestFilename) {
+            testCache[currentRunningTestFilename] = { ...(testCache[currentRunningTestFilename] || {}), last_error: errorMsg };
+        }
     }
 
     // Restore AI step tab content if an AI step just finished
@@ -504,7 +461,7 @@ socket.on('test_complete', (data) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: data.status })
         }).catch(() => {}).finally(() => {
-            if (hasFileExplorer) loadFileExplorer();
+            if (hasFileExplorer) refreshTestStatusSilent();
             currentRunningTestFilename = null;
         });
     }
@@ -512,15 +469,17 @@ socket.on('test_complete', (data) => {
 
 socket.on('artifacts_updated', (data) => {
     console.log('Artifacts updated for:', data.filename);
-    // Refresh file explorer to show video icon
-    if (hasFileExplorer) {
-        loadFileExplorer();
-    }
+    if (hasFileExplorer) refreshTestStatusSilent();
 });
 
 socket.on('batch_test_progress', (data) => {
     const { filename, name, status } = data;
     runningTestsSet.delete(filename);
+    updateEditorRunningOverlay();
+    if (status !== 'success') {
+        const errText = data.output || data.error_output || data.error || data.message || null;
+        testCache[filename] = { ...(testCache[filename] || {}), last_error: errText };
+    }
 
     // Update UI: remove spinner, set status border (no icon), remove batch-running-active so border shows passed/failed
     const fileItem = document.querySelector(`.file-item[data-filename="${filename}"]`);
@@ -531,6 +490,8 @@ socket.on('batch_test_progress', (data) => {
         fileItem.classList.remove('batch-running-active');
         fileItem.classList.remove('file-item-status-passed', 'file-item-status-failed', 'file-item-status-unknown', 'file-item-status-running');
         fileItem.classList.add(status === 'success' ? 'file-item-status-passed' : 'file-item-status-failed');
+        const existingIcon = fileItem.querySelector('.file-item-status-icon');
+        if (existingIcon) existingIcon.replaceWith(buildStatusIcon(status === 'success' ? 'success' : 'error'));
     }
 
     // Store result
@@ -548,6 +509,7 @@ socket.on('batch_run_complete', (data) => {
     isBatchRunning = false;
     isStopRequested = false;
     runningTestsSet.clear();
+    updateEditorRunningOverlay();
     updateStopButtonVisibility();
 
     // Remove batch classes
@@ -565,8 +527,8 @@ socket.on('batch_run_complete', (data) => {
     // Log summary
     addLogEntry('info', `📊 Batch complete: ${passed}/${total} passed in ${duration.toFixed(1)}s`);
 
-    // Reload file explorer
-    if (hasFileExplorer) loadFileExplorer();
+    // Silently refresh test status without re-rendering the tree
+    if (hasFileExplorer) refreshTestStatusSilent();
 
     // Show modal
     showTestResultsModal(total, passed, failed, duration);
@@ -1008,6 +970,7 @@ async function runAllTests() {
         filenames: filePaths,
         workspaceName: currentWorkspaceName
     });
+    updateEditorRunningOverlay();
 }
 
 // Tab Management Functions
@@ -1109,6 +1072,28 @@ function switchToTab(filename) {
         }
         const infoEl = document.getElementById('media-panel-video-info');
         if (infoEl) infoEl.textContent = tab.meta?.info || '';
+        // Populate recording header
+        const recTitle = document.getElementById('recording-header-title');
+        if (recTitle) recTitle.textContent = tab.meta?.testName || '';
+        const recTime = document.getElementById('recording-header-time');
+        if (recTime) {
+            const t = tab.meta?.lastRunTime;
+            recTime.textContent = t ? new Date(t).toLocaleString() : '';
+        }
+        const recStatus = document.getElementById('recording-header-status');
+        if (recStatus) {
+            const s = (tab.meta?.status || '').toLowerCase();
+            recStatus.textContent = s || '';
+            recStatus.className = 'recording-header-status ' + (s === 'passed' ? 'status-passed' : s === 'failed' ? 'status-failed' : 'status-unknown');
+        }
+        const recRerun = document.getElementById('recording-header-rerun');
+        if (recRerun) {
+            recRerun.onclick = () => {
+                const fn = tab.meta?.filename;
+                const tn = tab.meta?.testName;
+                if (fn && tn) runSavedTest(fn, tn);
+            };
+        }
         if (editorContent) editorContent.classList.remove('empty');
     } else if (tab.fileType === 'trace') {
         hideDashboardContent();
@@ -1120,19 +1105,19 @@ function switchToTab(filename) {
         if (iframeEl) iframeEl.src = tab.meta?.viewerUrl || '';
         if (editorContent) editorContent.classList.remove('empty');
     } else {
-        // Hide media panel when switching to code/ai-step/dashboard tabs
-        if (mediaPanel) mediaPanel.style.display = 'none';
-        // Hide dashboard content if switching away from it
         hideDashboardContent();
+        const subTabsEl = document.getElementById('editor-sub-tabs');
 
-        lastSavedCode = tab.code;  // Set lastSavedCode to prevent false dirty flag
-        setPlaywrightCode(tab.code);
-
-        // Set CodeMirror mode based on file type
-        // AI Steps use markdown, Tests use Python
-        if (codeMirrorEditor) {
-            const mode = tab.fileType === 'ai-step' ? 'markdown' : 'python';
-            codeMirrorEditor.setOption('mode', mode);
+        if (tab.fileType === 'test') {
+            renderSubTabs(tab.id);
+        } else {
+            // ai-step or other non-media file types
+            if (subTabsEl) subTabsEl.style.display = 'none';
+            if (mediaPanel) mediaPanel.style.display = 'none';
+            if (codemirrorEditor) codemirrorEditor.style.display = '';
+            lastSavedCode = tab.code;
+            setPlaywrightCode(tab.code);
+            if (codeMirrorEditor) codeMirrorEditor.setOption('mode', 'markdown');
         }
 
         if (editorContent) editorContent.classList.remove('empty');
@@ -1141,6 +1126,8 @@ function switchToTab(filename) {
     hideWelcomePage();
     renderTabs();
     updateFileListActiveState();
+    if (tab.fileType === 'test') revealInFileTree(tab.id);
+    updateEditorRunningOverlay();
     saveTabsState();  // Save state when switching tabs
 }
 
@@ -1162,7 +1149,8 @@ function saveTabsState() {
                 .map(tab => ({
                     id: tab.id,
                     name: tab.name,
-                    fileType: tab.fileType  // Save file type (including 'dashboard')
+                    fileType: tab.fileType,  // Save file type (including 'dashboard')
+                    subTab: tab.subTab || null
                     // Don't save code or isDirty, we'll reload fresh from files
                 })),
             activeTabId: activeTabId  // Keep dashboard as activeTabId if it was active
@@ -1196,7 +1184,9 @@ async function restoreTabsState() {
         const tabsToRestore = tabsState.openTabs.filter(tabInfo =>
             !tabInfo.id.startsWith('new_') &&
             !tabInfo.id.startsWith('generated_') &&
-            !tabInfo.id.startsWith('chat_')
+            !tabInfo.id.startsWith('chat_') &&
+            !tabInfo.id.startsWith('__recording__:') &&
+            !tabInfo.id.startsWith('__trace__:')
         );
 
         const fetchPromises = tabsToRestore
@@ -1265,7 +1255,8 @@ async function restoreTabsState() {
                         name: tabInfo.name,
                         code: result.data.code,
                         isDirty: false,
-                        fileType: 'test'
+                        fileType: 'test',
+                        subTab: tabInfo.subTab || null
                     });
                 }
             }
@@ -1462,6 +1453,62 @@ function renderTabs() {
     });
 }
 
+function selectTreeRow(el) {
+    document.querySelectorAll('.file-item.selected, .file-tree-child.selected').forEach(r => r.classList.remove('selected'));
+    if (el) el.classList.add('selected');
+}
+
+function showTestError(filename) {
+    const cached = testCache[filename] || {};
+    openOutputPanel();
+    const errorText = cached.last_error;
+    if (errorText) {
+        const testName = cached.name || filename;
+        addLogEntry('error', `🔍 Last error for "${testName}":\n${errorText}`);
+    }
+    // Scroll both log containers to bottom so the entry is visible
+    if (humanLogContainer) humanLogContainer.scrollTop = humanLogContainer.scrollHeight;
+    if (technicalLogContainer) technicalLogContainer.scrollTop = technicalLogContainer.scrollHeight;
+}
+
+function buildStatusIcon(status) {
+    const span = document.createElement('span');
+    span.className = 'file-item-status-icon';
+    const i = document.createElement('i');
+    if (status === 'success') {
+        span.classList.add('status-passed');
+        i.className = 'lni lni-check';
+    } else if (status === 'error' || status === 'stopped') {
+        span.classList.add('status-failed');
+        i.className = 'lni lni-xmark';
+    } else {
+        span.classList.add('status-unknown');
+        i.className = 'lni lni-question-mark';
+    }
+    span.appendChild(i);
+    return span;
+}
+
+function updateEditorRunningOverlay() {
+    const overlay = document.getElementById('editor-running-overlay');
+    if (!overlay) return;
+    const isRunning = activeTabId && runningTestsSet.has(activeTabId);
+    overlay.style.display = isRunning ? 'flex' : 'none';
+}
+
+function revealInFileTree(filename) {
+    const fileItem = document.querySelector(`.file-item[data-filename="${filename}"]`);
+    if (!fileItem) return;
+    selectTreeRow(fileItem);
+    // Expand all collapsed ancestor folder nodes
+    let ancestor = fileItem.parentElement?.closest('.file-tree-node--folder');
+    while (ancestor) {
+        ancestor.classList.add('expanded');
+        ancestor = ancestor.parentElement?.closest('.file-tree-node--folder');
+    }
+    fileItem.scrollIntoView({ block: 'nearest' });
+}
+
 function updateFileListActiveState() {
     document.querySelectorAll('.file-item').forEach(item => {
         const filename = item.dataset.filename;
@@ -1565,6 +1612,66 @@ async function moveTreeItem(workspaceName, treeType, fromPath, toPath) {
 }
 
 // File Explorer Functions (tree: Saved Tests from ~/.autogen)
+function refreshTestStatusSilent() {
+    if (!currentWorkspaceName) return;
+    authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`)
+        .then(res => res.json())
+        .then(data => {
+            const nodes = data.tree || [];
+            // Walk all file nodes and patch DOM + testCache in-place
+            function walkNodes(nodes) {
+                nodes.forEach(node => {
+                    if (node.type === 'folder') {
+                        if (node.children) walkNodes(node.children);
+                        return;
+                    }
+                    const path = node.path;
+                    // Update testCache
+                    const freshError = (node.artifacts || []).map(a => a.error_cause).find(Boolean) || null;
+                    testCache[path] = {
+                        ...(testCache[path] || {}),
+                        artifacts: node.artifacts || [],
+                        last_run_status: node.last_run_status,
+                        last_run_time: node.last_run_time,
+                        last_error: freshError || testCache[path]?.last_error || null,
+                    };
+                    // Update status class and icon on existing file-item
+                    const fileItem = document.querySelector(`.file-item[data-filename="${path}"]`);
+                    if (!fileItem) return;
+                    fileItem.classList.remove('file-item-status-passed', 'file-item-status-failed', 'file-item-status-unknown', 'file-item-status-running');
+                    if (node.last_run_status === 'success') fileItem.classList.add('file-item-status-passed');
+                    else if (node.last_run_status === 'error' || node.last_run_status === 'stopped') fileItem.classList.add('file-item-status-failed');
+                    else fileItem.classList.add('file-item-status-unknown');
+                    const existingIcon = fileItem.querySelector('.file-item-status-icon');
+                    if (existingIcon) existingIcon.replaceWith(buildStatusIcon(node.last_run_status));
+                    // Update git status badge
+                    const nameEl = fileItem.querySelector('.file-item-name');
+                    if (nameEl) {
+                        const existing = nameEl.querySelector('.git-status-badge');
+                        if (node.git_status) {
+                            if (existing) {
+                                existing.className = `git-status-badge ${node.git_status}`;
+                                existing.textContent = node.git_status;
+                            } else {
+                                const badge = document.createElement('span');
+                                badge.className = `git-status-badge ${node.git_status}`;
+                                badge.textContent = node.git_status;
+                                nameEl.appendChild(badge);
+                            }
+                        } else if (existing) {
+                            existing.remove();
+                        }
+                    }
+                });
+            }
+            walkNodes(nodes);
+            // Re-render sub-tabs for active test tab (new artifacts may have appeared)
+            const activeTab = openTabs.find(t => t.id === activeTabId && t.fileType === 'test');
+            if (activeTab) renderSubTabs(activeTab.id);
+        })
+        .catch(err => console.error('Silent test status refresh failed:', err));
+}
+
 function loadFileExplorer() {
     if (!hasFileExplorer || !fileList) {
         console.warn('File explorer elements not found, skipping load');
@@ -1579,7 +1686,7 @@ function loadFileExplorer() {
 
     fileList.innerHTML = '<div class="file-list-loading"><span class="file-list-spinner"></span>Loading tests…</div>';
 
-    authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`)
+    return authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`)
         .then(res => res.json())
         .then(data => {
             const children = data.tree || [];
@@ -1615,20 +1722,71 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
             row.style.paddingLeft = (10 + depth * 10) + 'px';
             row.innerHTML = `
                 ${expandArrow}
-                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder"></i></span>
+                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder-1"></i></span>
                 <span class="file-item-name">${escapeHtml(node.name)}</span>
             `;
+            // Folder inline actions — built via DOM to avoid innerHTML with interactive elements
+            const folderActions = document.createElement('div');
+            folderActions.className = 'file-item-actions';
+            const newSubFolderBtn = document.createElement('button');
+            newSubFolderBtn.className = 'file-item-action';
+            newSubFolderBtn.title = 'New Folder';
+            newSubFolderBtn.innerHTML = '<i class="lni lni-folder-1"></i>';
+            const newTestInFolderBtn = document.createElement('button');
+            newTestInFolderBtn.className = 'file-item-action';
+            newTestInFolderBtn.title = 'New Test';
+            newTestInFolderBtn.innerHTML = '<i class="lni lni-file-plus-circle"></i>';
+            folderActions.appendChild(newSubFolderBtn);
+            folderActions.appendChild(newTestInFolderBtn);
+            row.appendChild(folderActions);
+            newSubFolderBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const inputName = prompt('Folder name:');
+                if (!inputName || !inputName.trim()) return;
+                const folderName = inputName.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_') || 'NewFolder';
+                const path = node.path ? `${node.path}/${folderName}` : folderName;
+                try {
+                    const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path, type: 'folder' })
+                    });
+                    const data = await res.json();
+                    if (data.success) { nodeEl.classList.add('expanded'); loadFileExplorer(); }
+                    else { alert('Error: ' + (data.error || 'Unknown')); }
+                } catch (err) { alert('Failed to create folder: ' + err); }
+            });
+            newTestInFolderBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const testName = prompt('Test name:');
+                if (!testName) return;
+                const filename = sanitizeTestFilename(testName);
+                const fullPath = node.path ? `${node.path}/${filename}` : filename;
+                const code = `from playwright.async_api import async_playwright\nimport asyncio\n\nasync def run():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=False)\n        page = await browser.new_page()\n\n        # Your code here\n\n        await browser.close()\n\nasyncio.run(run())`;
+                try {
+                    const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/saved_tests/${encodeURIComponent(fullPath)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: testName.trim(), code })
+                    });
+                    const data = await res.json();
+                    if (data.path || data.filename) {
+                        openTab(data.path || data.filename, testName.trim(), code, 'test');
+                        nodeEl.classList.add('expanded');
+                        loadFileExplorer();
+                    } else { alert('Error: ' + (data.error || 'Unknown')); }
+                } catch (err) { alert('Failed to create test: ' + err); }
+            });
             const childrenEl = document.createElement('div');
             childrenEl.className = 'file-tree-children';
             if (hasChildren) {
                 renderSavedTestsTree(node.children, childrenEl, depth + 1, node.path);
             }
             row.addEventListener('click', (e) => {
-                if (e.target.closest('.file-tree-expand')) {
-                    nodeEl.classList.toggle('expanded');
-                } else if (!e.target.closest('.file-item-actions')) {
-                    nodeEl.classList.toggle('expanded');
-                }
+                if (e.target.closest('.file-item-actions')) return;
+                document.querySelectorAll('.file-item.active, .file-tree-child.active').forEach(el => el.classList.remove('active'));
+                selectTreeRow(row);
+                nodeEl.classList.toggle('expanded');
             });
             row.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
@@ -1667,11 +1825,11 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
         // file node
         const path = node.path;
         const name = node.display_name || node.name || path.replace(/\.py$/, '').replace(/_/g, ' ');
-        testCache[path] = { path, filename: path, name, artifacts: node.artifacts || [], last_run_status: node.last_run_status };
+        const persistedError = (node.artifacts || []).map(a => a.error_cause).find(Boolean) || null;
+        testCache[path] = { path, filename: path, name, artifacts: node.artifacts || [], last_run_status: node.last_run_status, last_run_time: node.last_run_time, last_error: persistedError };
 
         const hasRecording = (node.artifacts || []).some(a => a.video_path && a.video_path !== 'null');
         const hasTrace = (node.artifacts || []).some(a => a.trace_path);
-        const hasChildren = hasRecording || hasTrace;
 
         const nodeEl = document.createElement('div');
         nodeEl.className = 'file-tree-node';
@@ -1688,9 +1846,7 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
         else if (node.last_run_status === 'error' || node.last_run_status === 'stopped') fileItem.classList.add('file-item-status-failed');
         else fileItem.classList.add('file-item-status-unknown');
 
-        const expandArrow = hasChildren
-            ? '<span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>'
-            : '<span class="file-tree-expand" style="visibility:hidden;"><i class="lni lni-chevron-down"></i></span>';
+        const expandArrow = '<span class="file-tree-expand" style="visibility:hidden;"><i class="lni lni-chevron-down"></i></span>';
 
         let runOrStopBtn = currentRunningTestFilename === path
             ? `<button class="file-item-action" data-action="stop" title="Stop Test" style="color: var(--ctp-red);"><i class="lni lni-hand-stop"></i></button>`
@@ -1705,28 +1861,22 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
             <div class="file-item-actions">${runOrStopBtn}</div>
         `;
 
-        // Artifact container: JS-toggled, each child gets explicit depth-based padding
-        const childrenEl = document.createElement('div');
-        childrenEl.className = 'file-tree-artifacts';
-        childrenEl.style.display = 'none';
-        const artifactPadding = (itemPadding + 22) + 'px';
-        if (hasRecording) {
-            const c = document.createElement('div');
-            c.className = 'file-tree-child';
-            c.style.paddingLeft = artifactPadding;
-            c.dataset.filename = path;
-            c.innerHTML = '<i class="lni lni-camera-movie-1"></i> Recording';
-            c.addEventListener('click', (e) => { e.stopPropagation(); openRecordingTab(path, name); });
-            childrenEl.appendChild(c);
+        // Append git status badge via DOM (avoids XSS concerns with innerHTML)
+        if (node.git_status) {
+            const nameEl = fileItem.querySelector('.file-item-name');
+            if (nameEl) {
+                const badge = document.createElement('span');
+                badge.className = `git-status-badge ${node.git_status}`;
+                badge.textContent = node.git_status;
+                nameEl.appendChild(badge);
+            }
         }
-        if (hasTrace) {
-            const c = document.createElement('div');
-            c.className = 'file-tree-child';
-            c.style.paddingLeft = artifactPadding;
-            c.dataset.filename = path;
-            c.innerHTML = '<i class="lni lni-layers-1"></i> Trace';
-            c.addEventListener('click', (e) => { e.stopPropagation(); openTraceTab(path, name); });
-            childrenEl.appendChild(c);
+
+        // Prepend status icon into file-item-actions
+        const actionsEl = fileItem.querySelector('.file-item-actions');
+        if (actionsEl) {
+            const statusIcon = buildStatusIcon(node.last_run_status);
+            actionsEl.insertBefore(statusIcon, actionsEl.firstChild);
         }
 
         fileItem.addEventListener('click', (e) => {
@@ -1743,10 +1893,8 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
                     addLogEntry('info', '⏹ Stop request sent');
                     if (stopTestBtn) { stopTestBtn.disabled = true; stopTestBtn.textContent = 'STOPPING...'; }
                 }
-            } else if (e.target.closest('.file-tree-expand') && hasChildren) {
-                const expanded = nodeEl.classList.toggle('expanded');
-                childrenEl.style.display = expanded ? 'block' : 'none';
             } else if (!e.target.closest('.file-item-actions') && !e.target.closest('.file-tree-expand')) {
+                selectTreeRow(fileItem);
                 openFileFromExplorer(path, name);
             }
         });
@@ -1761,7 +1909,6 @@ function renderSavedTestsTree(nodes, container, depth, parentPath) {
         });
 
         nodeEl.appendChild(fileItem);
-        nodeEl.appendChild(childrenEl);
         container.appendChild(nodeEl);
     });
 }
@@ -1805,7 +1952,15 @@ function openRecordingTab(filename, testName) {
     if (!latest) return;
     const videoUrl = `/api/video/${latest.video_path}`;
     const info = [latest.video_size_mb ? `${latest.video_size_mb} MB` : '', latest.status || ''].filter(Boolean).join(' · ');
-    openTab(tabId, `${testName} — Recording`, null, 'recording', { videoUrl, info });
+    const cached = testCache[filename] || {};
+    openTab(tabId, `${testName} — Recording`, null, 'recording', {
+        videoUrl,
+        info,
+        testName,
+        filename,
+        status: cached.last_run_status || latest.status || null,
+        lastRunTime: cached.last_run_time || latest.timestamp || null,
+    });
 }
 
 function openTraceTab(filename, testName) {
@@ -1817,6 +1972,141 @@ function openTraceTab(filename, testName) {
     const traceUrl = `${window.location.origin}/api/trace/${latest.trace_path}`;
     const viewerUrl = `/trace-viewer/?trace=${encodeURIComponent(traceUrl)}`;
     openTab(tabId, `${testName} — Trace`, null, 'trace', { viewerUrl });
+}
+
+function renderSubTabs(filename) {
+    const subTabsEl = document.getElementById('editor-sub-tabs');
+    if (!subTabsEl) return;
+
+    const cached = testCache[filename] || {};
+    const artifacts = cached.artifacts || [];
+    const hasRecording = artifacts.some(a => a.video_path && a.video_path !== 'null');
+    const hasTrace = artifacts.some(a => a.trace_path);
+
+    if (!hasRecording && !hasTrace) {
+        subTabsEl.style.display = 'none';
+        const mediaPanel = document.getElementById('media-panel');
+        if (mediaPanel) mediaPanel.style.display = 'none';
+        if (codemirrorEditor) codemirrorEditor.style.display = '';
+        const tab = openTabs.find(t => t.id === filename);
+        if (tab) {
+            lastSavedCode = tab.code;
+            setPlaywrightCode(tab.code);
+            if (codeMirrorEditor) codeMirrorEditor.setOption('mode', 'python');
+        }
+        return;
+    }
+
+    const tabDefs = [];
+    if (hasRecording) tabDefs.push({ id: 'recording', icon: 'lni-camera-movie-1', label: 'Recording' });
+    if (hasTrace) tabDefs.push({ id: 'trace', icon: 'lni-layers-1', label: 'Trace' });
+    tabDefs.push({ id: 'code', icon: 'lni-python', label: 'Code' });
+
+    const tab = openTabs.find(t => t.id === filename);
+    if (tab && !tab.subTab) tab.subTab = tabDefs[0].id;
+    const activeSubTab = (tab && tab.subTab) || tabDefs[0].id;
+
+    subTabsEl.style.display = 'flex';
+    while (subTabsEl.firstChild) subTabsEl.removeChild(subTabsEl.firstChild);
+    tabDefs.forEach(({ id, icon, label }) => {
+        const btn = document.createElement('button');
+        btn.className = 'editor-sub-tab' + (id === activeSubTab ? ' active' : '');
+        btn.dataset.subTab = id;
+        const iconEl = document.createElement('i');
+        iconEl.className = 'lni ' + icon;
+        btn.appendChild(iconEl);
+        btn.appendChild(document.createTextNode(' ' + label));
+        btn.addEventListener('click', () => switchSubTab(filename, id));
+        subTabsEl.appendChild(btn);
+    });
+
+    applySubTab(filename, activeSubTab);
+}
+
+function switchSubTab(filename, subTabId) {
+    const tab = openTabs.find(t => t.id === filename);
+    if (tab) tab.subTab = subTabId;
+
+    const subTabsEl = document.getElementById('editor-sub-tabs');
+    if (subTabsEl) {
+        subTabsEl.querySelectorAll('.editor-sub-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.subTab === subTabId);
+        });
+    }
+
+    applySubTab(filename, subTabId);
+}
+
+function applySubTab(filename, subTabId) {
+    const mediaPanel = document.getElementById('media-panel');
+    const mediaPanelRecording = document.getElementById('media-panel-recording');
+    const mediaPanelTrace = document.getElementById('media-panel-trace');
+    const cached = testCache[filename] || {};
+    const artifacts = cached.artifacts || [];
+
+    if (subTabId === 'recording') {
+        if (codemirrorEditor) codemirrorEditor.style.display = 'none';
+        if (mediaPanel) mediaPanel.style.display = 'flex';
+        if (mediaPanelRecording) mediaPanelRecording.style.display = 'flex';
+        if (mediaPanelTrace) mediaPanelTrace.style.display = 'none';
+
+        const latest = artifacts.find(a => a.video_path && a.video_path !== 'null');
+        if (latest) {
+            const vid = document.getElementById('media-panel-video');
+            if (vid) {
+                vid.src = `/api/video/${latest.video_path}`;
+                vid.oncanplay = () => { vid.play().catch(() => {}); };
+            }
+            const infoEl = document.getElementById('media-panel-video-info');
+            if (infoEl) infoEl.textContent = latest.video_size_mb ? `${latest.video_size_mb} MB` : '';
+        }
+        const testName = cached.name || filename;
+        const recTitle = document.getElementById('recording-header-title');
+        if (recTitle) recTitle.textContent = testName;
+        const recTime = document.getElementById('recording-header-time');
+        if (recTime) {
+            const t = cached.last_run_time;
+            recTime.textContent = t ? new Date(t).toLocaleString() : '';
+        }
+        const recStatus = document.getElementById('recording-header-status');
+        if (recStatus) {
+            const s = (cached.last_run_status || '').toLowerCase();
+            recStatus.textContent = s || '';
+            recStatus.className = 'recording-header-status ' + (s === 'success' ? 'status-passed' : s === 'error' || s === 'stopped' ? 'status-failed' : 'status-unknown');
+        }
+        const recRerun = document.getElementById('recording-header-rerun');
+        if (recRerun) {
+            recRerun.onclick = () => { runSavedTest(filename, testName); };
+        }
+        const recEye = document.getElementById('recording-header-eye');
+        if (recEye) {
+            const isFailed = cached.last_run_status === 'error' || cached.last_run_status === 'stopped';
+            recEye.style.display = isFailed ? 'flex' : 'none';
+            recEye.onclick = () => { showTestError(filename); };
+        }
+    } else if (subTabId === 'trace') {
+        if (codemirrorEditor) codemirrorEditor.style.display = 'none';
+        if (mediaPanel) mediaPanel.style.display = 'flex';
+        if (mediaPanelRecording) mediaPanelRecording.style.display = 'none';
+        if (mediaPanelTrace) mediaPanelTrace.style.display = 'block';
+
+        const latest = artifacts.find(a => a.trace_path);
+        if (latest) {
+            const traceUrl = `${window.location.origin}/api/trace/${latest.trace_path}`;
+            const viewerUrl = `/trace-viewer/?trace=${encodeURIComponent(traceUrl)}`;
+            const iframeEl = document.getElementById('media-panel-trace-iframe');
+            if (iframeEl) iframeEl.src = viewerUrl;
+        }
+    } else {
+        if (mediaPanel) mediaPanel.style.display = 'none';
+        if (codemirrorEditor) codemirrorEditor.style.display = '';
+        const tab = openTabs.find(t => t.id === filename);
+        if (tab) {
+            lastSavedCode = tab.code;
+            setPlaywrightCode(tab.code);
+            if (codeMirrorEditor) codeMirrorEditor.setOption('mode', 'python');
+        }
+    }
 }
 
 function deleteFileFromExplorer(filename, name) {
@@ -2458,6 +2748,9 @@ window.addEventListener('load', () => {
 
         // Dashboard opening is now handled by the main load handler after tab restoration
     }
+    initUnifiedTree();
+    initScmPanel();
+    initGithubPanel();
 });
 
 // ========================================
@@ -2504,15 +2797,55 @@ function renderAiStepsTree(nodes, container, depth) {
             row.style.paddingLeft = (10 + depth * 10) + 'px';
             row.innerHTML = `
                 <span class="file-tree-expand"><i class="lni lni-chevron-down"></i></span>
-                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder"></i></span>
+                <span class="file-item-icon file-item-icon--folder"><i class="lni lni-folder-1"></i></span>
                 <span class="file-item-name">${escapeHtml(node.name)}</span>
             `;
+            // Folder inline actions — built via DOM to avoid innerHTML with interactive elements
+            const aiFolderActions = document.createElement('div');
+            aiFolderActions.className = 'file-item-actions';
+            const newAiSubFolderBtn = document.createElement('button');
+            newAiSubFolderBtn.className = 'file-item-action';
+            newAiSubFolderBtn.title = 'New Folder';
+            newAiSubFolderBtn.innerHTML = '<i class="lni lni-folder-1"></i>';
+            const newAiStepInFolderBtn = document.createElement('button');
+            newAiStepInFolderBtn.className = 'file-item-action';
+            newAiStepInFolderBtn.title = 'New Step';
+            newAiStepInFolderBtn.innerHTML = '<i class="lni lni-file-plus-circle"></i>';
+            aiFolderActions.appendChild(newAiSubFolderBtn);
+            aiFolderActions.appendChild(newAiStepInFolderBtn);
+            row.appendChild(aiFolderActions);
+            newAiSubFolderBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const inputName = prompt('Folder name:');
+                if (!inputName || !inputName.trim()) return;
+                const folderName = inputName.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_') || 'NewFolder';
+                const path = node.path ? `${node.path}/${folderName}` : folderName;
+                try {
+                    const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/tree/ai_steps`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path, type: 'folder' })
+                    });
+                    const data = await res.json();
+                    if (data.success) { nodeEl.classList.add('expanded'); loadAiSteps(); }
+                    else { alert('Error: ' + (data.error || 'Unknown')); }
+                } catch (err) { alert('Failed to create folder: ' + err); }
+            });
+            newAiStepInFolderBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                _aiStepFolderPrefix = node.path;
+                currentEditingAiStep = null;
+                nodeEl.classList.add('expanded');
+                showAiStepModal();
+            });
             const childrenEl = document.createElement('div');
             childrenEl.className = 'file-tree-children';
             if (hasChildren) renderAiStepsTree(node.children, childrenEl, depth + 1);
             row.addEventListener('click', (e) => {
-                if (e.target.closest('.file-tree-expand')) nodeEl.classList.toggle('expanded');
-                else nodeEl.classList.toggle('expanded');
+                if (e.target.closest('.file-item-actions')) return;
+                document.querySelectorAll('.file-item.active, .file-tree-child.active').forEach(el => el.classList.remove('active'));
+                selectTreeRow(row);
+                nodeEl.classList.toggle('expanded');
             });
             row.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
@@ -2569,11 +2902,25 @@ function renderAiStepsTree(nodes, container, depth) {
             </div>
         `;
 
+        // Append git status badge via DOM
+        if (node.git_status) {
+            const nameEl = item.querySelector('.file-item-name');
+            if (nameEl) {
+                const badge = document.createElement('span');
+                badge.className = `git-status-badge ${node.git_status}`;
+                badge.textContent = node.git_status;
+                nameEl.appendChild(badge);
+            }
+        }
+
         item.querySelector('[data-action="run"]').addEventListener('click', (e) => { e.stopPropagation(); runAiStep(null, path, name); });
         item.querySelector('[data-action="edit"]').addEventListener('click', (e) => { e.stopPropagation(); openAiStepInEditor(path, name); });
         item.querySelector('[data-action="delete"]').addEventListener('click', (e) => { e.stopPropagation(); deleteAiStep(path, name); });
         item.addEventListener('click', (e) => {
-            if (!e.target.closest('.file-item-actions')) openAiStepInEditor(path, name);
+            if (!e.target.closest('.file-item-actions')) {
+                selectTreeRow(item);
+                openAiStepInEditor(path, name);
+            }
         });
         item.addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -2873,7 +3220,9 @@ async function saveAiStep() {
     }
 
     try {
-        const path = currentEditingAiStep || sanitizeAiStepFilename(name);
+        const basename = sanitizeAiStepFilename(name);
+        const path = currentEditingAiStep || (_aiStepFolderPrefix ? `${_aiStepFolderPrefix}/${basename}` : basename);
+        _aiStepFolderPrefix = null;
         const url = `/api/workspaces/${currentWorkspaceName}/tree/ai_steps/${encodeURIComponent(path)}`;
         const response = await authFetch(url, {
             method: 'PUT',
@@ -3422,6 +3771,57 @@ function closeOutputPanel() {
 
 function _updateOutputPreview(text) {
     if (outputPreviewText) outputPreviewText.textContent = text;
+}
+
+function launchConfetti() {
+    const COLORS = ['#a6e3a1','#89b4fa','#cba6f7','#f38ba8','#fab387','#f9e2af'];
+    const COUNT = 80;
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:9999;';
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+
+    const pieces = Array.from({ length: COUNT }, () => ({
+        x: Math.random() * canvas.width,
+        y: Math.random() * -canvas.height * 0.3,
+        r: Math.random() * 7 + 4,
+        color: COLORS[Math.floor(Math.random() * COLORS.length)],
+        vx: (Math.random() - 0.5) * 6,
+        vy: Math.random() * 4 + 3,
+        angle: Math.random() * Math.PI * 2,
+        spin: (Math.random() - 0.5) * 0.3,
+        opacity: 1,
+    }));
+
+    const START = performance.now();
+    const DURATION = 1400;
+
+    function draw(now) {
+        const elapsed = now - START;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const fade = Math.max(0, 1 - (elapsed - DURATION * 0.5) / (DURATION * 0.5));
+        pieces.forEach(p => {
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy += 0.15;
+            p.angle += p.spin;
+            ctx.save();
+            ctx.globalAlpha = fade;
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.angle);
+            ctx.fillStyle = p.color;
+            ctx.fillRect(-p.r / 2, -p.r / 2, p.r, p.r * 0.5);
+            ctx.restore();
+        });
+        if (elapsed < DURATION) {
+            requestAnimationFrame(draw);
+        } else {
+            canvas.remove();
+        }
+    }
+    requestAnimationFrame(draw);
 }
 
 // Tab switching (log tabs)
@@ -4576,6 +4976,14 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// Cmd+R (Mac) / Ctrl+R (Windows/Linux) to reload the app
+document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'r') {
+        e.preventDefault();
+        location.reload();
+    }
+});
+
 clearChatBtn.addEventListener('click', () => {
     if (confirm('Clear all chat messages?')) {
         chatMessages.innerHTML = '';
@@ -4648,303 +5056,6 @@ function handleImageFile(file) {
     reader.readAsDataURL(file);
 }
 
-// ========== AUTHENTICATION FUNCTIONS ==========
-
-function showLoginModal() {
-    authPage.classList.remove('hidden');
-    document.querySelector('.vscode-layout').classList.add('auth-hidden');
-    switchAuthTab('login');
-}
-
-function showRegisterModal() {
-    authPage.classList.remove('hidden');
-    document.querySelector('.vscode-layout').classList.add('auth-hidden');
-    switchAuthTab('register');
-}
-
-function hideAuthModals() {
-    authPage.classList.add('hidden');
-    document.querySelector('.vscode-layout').classList.remove('auth-hidden');
-}
-
-function switchAuthTab(tab) {
-    authTabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    authTabsContainer.dataset.active = tab;
-    loginForm.classList.toggle('active', tab === 'login');
-    registerForm.classList.toggle('active', tab === 'register');
-    loginError.style.display = 'none';
-    registerError.style.display = 'none';
-}
-
-async function checkAuthentication() {
-    try {
-        const response = await authFetch('/api/check-auth');
-        const data = await response.json();
-
-        if (data.authenticated) {
-            currentUser = data.user;
-            hideAuthModals();
-            await loadUserWorkspaces();
-            return true;
-        }
-
-        // Access token may be expired. Try refreshing silently before prompting login.
-        if (refreshToken) {
-            try {
-                const refreshResp = await fetch('/api/refresh-token', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ refresh_token: refreshToken })
-                });
-                if (refreshResp.ok) {
-                    const refreshData = await refreshResp.json();
-                    storeTokens(refreshData.access_token, refreshData.refresh_token);
-                    // Reconnect socket with the refreshed token
-                    socket.io.opts.query = { token: refreshData.access_token };
-                    socket.disconnect().connect();
-
-                    // Retry with the new access token
-                    const retryResp = await authFetch('/api/check-auth');
-                    const retryData = await retryResp.json();
-                    if (retryData.authenticated) {
-                        currentUser = retryData.user;
-                        hideAuthModals();
-                        await loadUserWorkspaces();
-                        return true;
-                    }
-                }
-            } catch (refreshErr) {
-                console.warn('Silent token refresh failed:', refreshErr);
-            }
-            // Refresh token is also expired or invalid — clear everything
-            clearTokens();
-        }
-
-        // Try auto-login from server-side .env credentials before showing modal
-        try {
-            const autoResp = await fetch('/api/auto-login', { method: 'POST' });
-            if (autoResp.ok) {
-                const autoData = await autoResp.json();
-                storeTokens(autoData.access_token, autoData.refresh_token);
-                // The socket was initialized with the old/expired token.
-                // Update its auth query and reconnect so handle_connect accepts it.
-                socket.io.opts.query = { token: autoData.access_token };
-                socket.disconnect().connect();
-                currentUser = autoData.user;
-                hideAuthModals();
-                await loadUserWorkspaces();
-                return true;
-            }
-        } catch (autoErr) {
-            console.warn('Auto-login not available:', autoErr);
-        }
-
-        showLoginModal();
-        return false;
-    } catch (error) {
-        console.error('Auth check failed:', error);
-        showLoginModal();
-        return false;
-    }
-}
-
-async function loadUserWorkspaces() {
-    try {
-        await ensurePreferencesCached();
-        const response = await authFetch('/api/current-user');
-        if (!response.ok) {
-            if (response.status === 401) {
-                showLoginModal();
-                return;
-            }
-            throw new Error('Failed to get user info');
-        }
-
-        const data = await response.json();
-        currentUser = data.user;
-
-        console.log('User authenticated:', currentUser.username);
-
-        // Load workspaces from local filesystem
-        await loadWorkspaces();
-    } catch (error) {
-        console.error('Failed to load user workspaces:', error);
-    }
-}
-
-async function handleLogin(event) {
-    event.preventDefault();
-
-    const username = document.getElementById('login-username').value;
-    const password = document.getElementById('login-password').value;
-    const remember = document.getElementById('login-remember').checked;
-
-    const btn = document.getElementById('login-submit-btn');
-    const btnText = btn.querySelector('.auth-submit-text');
-    const btnSpinner = btn.querySelector('.auth-submit-spinner');
-    btn.disabled = true;
-    btnText.style.display = 'none';
-    btnSpinner.style.display = '';
-
-    try {
-        const response = await fetch('/api/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password, remember })
-        });
-
-        const data = await response.json();
-
-        if (response.ok) {
-            // Store JWT tokens
-            storeTokens(data.access_token, data.refresh_token);
-
-            currentUser = data.user;
-            hideAuthModals();
-            showAppOverlay('Loading workspace…');
-            addLogEntry('info', `👋 Welcome back, ${currentUser.username}!`);
-
-            // Reconnect socket with the new authenticated token
-            socket.io.opts.query = { token: authToken };
-            socket.disconnect();
-            socket.connect();
-
-            // Update username display
-            if (currentUsernameEl) {
-                currentUsernameEl.textContent = currentUser.username;
-            }
-
-            // Initialize CodeMirror editor (skipped on page load when not authenticated)
-            initializeCodeMirror();
-
-            // Load workspaces (will restore saved workspace from localStorage)
-            await loadWorkspaces();
-
-            // Restore theme from DB (overrides localStorage if user changed it elsewhere)
-            await restoreThemeFromDb();
-
-            // Reload file lists for the current workspace
-            if (hasFileExplorer && currentWorkspaceName) {
-                loadFileExplorer();
-                loadAiSteps();
-            }
-
-            // Open dashboard tab if no tabs
-            if (openTabs.length === 0) {
-                openDashboardTab();
-            }
-
-            hideAppOverlay();
-        } else {
-            loginError.textContent = data.error || 'Login failed';
-            loginError.style.display = 'block';
-        }
-    } catch (error) {
-        console.error('Login error:', error);
-        loginError.textContent = 'Login failed. Please try again.';
-        loginError.style.display = 'block';
-        hideAppOverlay();
-    } finally {
-        btn.disabled = false;
-        btnText.style.display = '';
-        btnSpinner.style.display = 'none';
-    }
-}
-
-async function handleRegister(event) {
-    event.preventDefault();
-
-    const username = document.getElementById('register-username').value;
-    const email = document.getElementById('register-email').value;
-    const password = document.getElementById('register-password').value;
-    const passwordConfirm = document.getElementById('register-password-confirm').value;
-
-    // Client-side validation (before showing loading state)
-    if (password !== passwordConfirm) {
-        registerError.textContent = 'Passwords do not match';
-        registerError.style.display = 'block';
-        return;
-    }
-
-    const btn = document.getElementById('register-submit-btn');
-    const btnText = btn.querySelector('.auth-submit-text');
-    const btnSpinner = btn.querySelector('.auth-submit-spinner');
-    btn.disabled = true;
-    btnText.style.display = 'none';
-    btnSpinner.style.display = '';
-
-    try {
-        const response = await fetch('/api/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, email, password })
-        });
-
-        const data = await response.json();
-
-        if (response.ok) {
-            // Store JWT tokens
-            storeTokens(data.access_token, data.refresh_token);
-
-            currentUser = data.user;
-            hideAuthModals();
-            showAppOverlay('Setting up workspace…');
-            addLogEntry('info', `🎉 Welcome to AutoGen Web Tester, ${currentUser.username}!`);
-
-            // Connect socket with the new authenticated token
-            socket.io.opts.query = { token: authToken };
-            socket.disconnect();
-            socket.connect();
-
-            // Update username display
-            if (currentUsernameEl) {
-                currentUsernameEl.textContent = currentUser.username;
-            }
-
-            // Initialize CodeMirror editor (skipped on page load when not authenticated)
-            initializeCodeMirror();
-
-            // Load workspaces (user's default workspace will be loaded)
-            await loadWorkspaces();
-
-            // Restore theme from DB
-            await restoreThemeFromDb();
-
-            // Reload file lists for the current workspace
-            if (hasFileExplorer && currentWorkspaceName) {
-                loadFileExplorer();
-                loadAiSteps();
-            }
-
-            // Open dashboard tab
-            if (openTabs.length === 0) {
-                openDashboardTab();
-            }
-
-            hideAppOverlay();
-        } else {
-            registerError.textContent = data.error || 'Registration failed';
-            registerError.style.display = 'block';
-        }
-    } catch (error) {
-        console.error('Registration error:', error);
-        registerError.textContent = 'Registration failed. Please try again.';
-        registerError.style.display = 'block';
-        hideAppOverlay();
-    } finally {
-        btn.disabled = false;
-        btnText.style.display = '';
-        btnSpinner.style.display = 'none';
-    }
-}
-
-// Event listeners for auth page
-if (loginForm) loginForm.addEventListener('submit', handleLogin);
-if (registerForm) registerForm.addEventListener('submit', handleRegister);
-authTabs.forEach(tab => {
-    tab.addEventListener('click', () => switchAuthTab(tab.dataset.tab));
-});
-
 // ========== END AUTHENTICATION FUNCTIONS ==========
 
 // ========== WORKSPACE MANAGEMENT FUNCTIONS ==========
@@ -4976,7 +5087,7 @@ async function loadWorkspaces() {
 
         // Set current workspace - try localStorage, then default
         if (userWorkspaces.length > 0) {
-            let savedWorkspaceName = localStorage.getItem('pref_selectedWorkspaceName');
+            let savedWorkspaceName = (_prefsCache && _prefsCache.selectedWorkspaceName) || null;
 
             if (savedWorkspaceName) {
                 const hasAccess = userWorkspaces.some(w => w.name === savedWorkspaceName);
@@ -4989,17 +5100,21 @@ async function loadWorkspaces() {
                 currentWorkspaceName = userWorkspaces[0].name;
             }
             // Persist the selection so it survives page reloads and re-login
-            localStorage.setItem('pref_selectedWorkspaceName', currentWorkspaceName);
+            savePreferenceToDb('selectedWorkspaceName', currentWorkspaceName);
         }
 
         // Select current workspace
         workspaceDropdown.value = currentWorkspaceName;
 
-        // Load file explorer and AI steps
+        // Load file explorer and AI steps (await so testCache is ready before restoreTabsState)
         if (hasFileExplorer) {
-            loadFileExplorer();
+            await loadFileExplorer();
             loadAiSteps();
         }
+
+        // Always load SCM state so the badge is visible from the start
+        refreshScmPanel();
+        loadGithubConfig();
 
     } catch (error) {
         console.error('Failed to load workspaces:', error);
@@ -5033,13 +5148,17 @@ async function switchWorkspace(name) {
         saveTabsState();
 
         // Save selected workspace to localStorage
-        localStorage.setItem('pref_selectedWorkspaceName', currentWorkspaceName);
+        savePreferenceToDb('selectedWorkspaceName', currentWorkspaceName);
 
         // Reload file lists for new workspace
         if (hasFileExplorer) {
             loadFileExplorer();
             loadAiSteps();
         }
+
+        // Refresh SCM state for the new workspace
+        refreshScmPanel();
+        loadGithubConfig();
 
         // Re-open dashboard tab so the main area shows workspace stats (not "No file open")
         openDashboardTab();
@@ -5069,16 +5188,18 @@ async function createWorkspace(event) {
     event.preventDefault();
 
     const name = document.getElementById('workspace-name').value.trim();
+    const cloneUrlInput = document.getElementById('clone-url-input');
+    const clone_url = cloneUrlInput ? cloneUrlInput.value.trim() : '';
 
     const submitBtn = document.getElementById('create-workspace-btn');
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Creating…';
+    submitBtn.textContent = clone_url ? 'Cloning…' : 'Creating…';
 
     try {
         const response = await authFetch('/api/workspaces', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name })
+            body: JSON.stringify({ name, ...(clone_url && { clone_url }) })
         });
 
         const data = await response.json();
@@ -5123,17 +5244,9 @@ function removeMember() {
 }
 
 async function handleLogout() {
-    try {
-        await authFetch('/api/logout', { method: 'POST' });
-    } catch (error) {
-        console.error('Logout error:', error);
-    }
-    // Always clear tokens and state regardless of server response
-    clearTokens();
     currentUser = null;
     currentWorkspaceName = null;
     userWorkspaces = [];
-    showLoginModal();
     addLogEntry('info', '👋 Logged out successfully');
 }
 
@@ -5176,7 +5289,7 @@ async function confirmRename() {
             return;
         }
         // Update local state and reload workspaces
-        localStorage.setItem('pref_selectedWorkspaceName', newName);
+        savePreferenceToDb('selectedWorkspaceName', newName);
         currentWorkspaceName = newName;
         hideRenameRow();
         await loadWorkspaces();
@@ -5227,7 +5340,9 @@ function applyTheme(themeName) {
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.theme === themeName);
     });
-    // Persist in cookie so the server can inject it on next page load (login page etc.)
+    // Persist to ~/.autogen/preferences/user_prefs.json (desktop app source of truth)
+    savePreferenceToDb('theme', themeName);
+    // Also keep cookie in sync for web deployments
     document.cookie = `theme=${themeName}; path=/; max-age=31536000; SameSite=Lax`;
     try {
         if (liveViewerIframe && liveViewerIframe.contentWindow) liveViewerIframe.contentWindow.postMessage({ type: 'theme', theme: themeName }, '*');
@@ -5239,26 +5354,47 @@ function applyTheme(themeName) {
     }
 }
 
-function initThemePicker() {
-    const savedTheme = localStorage.getItem('theme') || 'mocha';
-    applyTheme(savedTheme);
+async function checkAiStatus() {
+    try {
+        const res = await authFetch('/api/config/ai-status');
+        if (!res.ok) return;
+        const { ai_enabled } = await res.json();
+        const banner = document.getElementById('ai-no-key-banner');
+        const chatBody = document.querySelector('.chat-sidebar-body');
+        const chatInput = document.querySelector('.chat-input-container');
+        if (!ai_enabled) {
+            if (banner) banner.style.display = '';
+            if (chatBody) chatBody.style.display = 'none';
+            if (toggleChatBtn) {
+                toggleChatBtn.title = 'AI token not configured';
+                toggleChatBtn.style.opacity = '0.45';
+                toggleChatBtn.style.cursor = 'not-allowed';
+                toggleChatBtn.style.pointerEvents = 'none';
+            }
+        } else {
+            if (banner) banner.style.display = 'none';
+            if (chatBody) chatBody.style.display = '';
+            if (toggleChatBtn) {
+                toggleChatBtn.title = '';
+                toggleChatBtn.style.opacity = '';
+                toggleChatBtn.style.cursor = '';
+                toggleChatBtn.style.pointerEvents = '';
+            }
+        }
+    } catch (_) { /* silent */ }
+}
 
+function initThemePicker() {
+    // Server already injected data-theme from prefs file — just mark the active button.
+    const currentTheme = document.documentElement.getAttribute('data-theme') || 'mocha';
     document.querySelectorAll('.theme-option').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const theme = btn.dataset.theme;
-            applyTheme(theme);
-            localStorage.setItem('theme', theme);
-            savePreferenceToDb('theme', theme);
-        });
+        btn.classList.toggle('active', btn.dataset.theme === currentTheme);
+        btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
     });
 }
 
 async function restoreThemeFromDb() {
-    const dbPrefs = await loadPreferencesFromDb();
-    if (dbPrefs && dbPrefs.theme && VALID_THEMES.includes(dbPrefs.theme)) {
-        applyTheme(dbPrefs.theme);
-        localStorage.setItem('theme', dbPrefs.theme);
-    }
+    // No-op: server injects data-theme from ~/.autogen/preferences/user_prefs.json on load.
 }
 // ========== END THEME MANAGEMENT ==========
 
@@ -5278,49 +5414,712 @@ function showToast(message, type = 'error') {
 
 // Load default example on page load
 window.addEventListener('load', async () => {
-    // Initialize theme picker (apply saved theme from localStorage immediately)
     initThemePicker();
-
-    // Check authentication first
-    const isAuthenticated = await checkAuthentication();
-
-    if (!isAuthenticated) {
-        // Show app anyway so recording works without login (record since app loads)
-        hideAuthModals();
-        if (currentUsernameEl) currentUsernameEl.textContent = 'Not logged in';
-        initializeCodeMirror();
-        if (openTabs.length === 0) {
-            openDashboardTab();
-        }
-        addLogEntry('info', '👋 Record a test anytime with the Record button. Log in to save tests to a workspace.');
+    const resp = await fetch('/api/init-status');
+    const { initialized } = await resp.json();
+    if (!initialized) {
+        document.getElementById('onboarding-page').style.display = 'flex';
+        document.querySelector('.vscode-layout').style.display = 'none';
         dismissLoadingOverlay();
         return;
     }
-
-    // Restore theme from DB (may override localStorage if DB has a different value)
-    restoreThemeFromDb();
-
-    addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
-    addLogEntry('info', '🤖 Create AI Steps in the file explorer to run natural language tests');
-    addLogEntry('info', '💬 Use AI Chat to generate and modify Playwright code');
-
-    // Update username display
-    if (currentUsernameEl && currentUser) {
-        currentUsernameEl.textContent = currentUser.username;
-    }
-
-    // Workspace dropdown and details already set by loadUserWorkspaces() from checkAuthentication
-
-    // Initialize CodeMirror editor
-    initializeCodeMirror();
-
-    // Restore previously open tabs
-    await restoreTabsState();
-
-    // Open dashboard tab if no tabs were restored
-    if (openTabs.length === 0) {
-        openDashboardTab();
-    }
-
-    dismissLoadingOverlay();
+    await startApp();
 });
+
+document.getElementById('onboarding-start-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('onboarding-start-btn');
+    btn.disabled = true;
+    btn.textContent = 'Setting up...';
+    try {
+        const resp = await fetch('/api/onboarding/setup', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+            document.getElementById('onboarding-page').style.display = 'none';
+            document.querySelector('.vscode-layout').style.display = 'flex';
+            await startApp();
+        } else {
+            btn.disabled = false;
+            btn.textContent = 'Get Started';
+        }
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Get Started';
+    }
+});
+
+async function startApp() {
+    restoreThemeFromDb();
+    checkAiStatus();
+    addLogEntry('info', '👋 Welcome to AutoGen Web Tester!');
+    initializeCodeMirror();
+    await loadPreferencesFromDb();
+    await loadWorkspaces();
+    await restoreTabsState();
+    if (openTabs.length === 0) openDashboardTab();
+    dismissLoadingOverlay();
+}
+
+// ========================================
+// ACTIVITY BAR SWITCHING
+// ========================================
+
+function switchPanel(panelId) {
+    document.querySelectorAll('.activity-bar-btn[data-panel]').forEach(btn =>
+        btn.classList.toggle('active', btn.dataset.panel === panelId));
+    document.querySelectorAll('.sidebar-panel').forEach(p =>
+        p.classList.toggle('sidebar-panel--hidden', p.id !== `panel-${panelId}`));
+    if (panelId === 'scm') {
+        refreshScmPanel();
+        loadGithubConfig();
+    }
+}
+
+document.querySelectorAll('.activity-bar-btn[data-panel]').forEach(btn =>
+    btn.addEventListener('click', () => switchPanel(btn.dataset.panel)));
+
+
+// ========================================
+// UNIFIED TREE ROOT COLLAPSE
+// ========================================
+
+function initUnifiedTree() {
+    const testsRootRow = document.getElementById('tests-root-row');
+    const testsRootNode = document.getElementById('tests-root-node');
+    if (testsRootRow && testsRootNode) {
+        testsRootRow.addEventListener('click', (e) => {
+            if (!e.target.closest('.file-explorer-header-actions')) {
+                testsRootNode.classList.toggle('expanded');
+            }
+        });
+    }
+
+    const aiStepsRootRow = document.getElementById('ai-steps-root-row');
+    const aiStepsRootNode = document.getElementById('ai-steps-root-node');
+    if (aiStepsRootRow && aiStepsRootNode) {
+        aiStepsRootRow.addEventListener('click', (e) => {
+            if (!e.target.closest('.file-explorer-header-actions')) {
+                aiStepsRootNode.classList.toggle('expanded');
+            }
+        });
+    }
+
+    // Wire duplicate header buttons to the primary ones
+    const newFolderBtn2 = document.getElementById('new-folder-tests-btn-2');
+    const newFolderBtn1 = document.getElementById('new-folder-tests-btn');
+    if (newFolderBtn2 && newFolderBtn1) {
+        newFolderBtn2.addEventListener('click', () => newFolderBtn1.click());
+    }
+    const newTestBtn2 = document.getElementById('new-test-btn-2');
+    const newTestBtn1 = document.getElementById('new-test-btn');
+    if (newTestBtn2 && newTestBtn1) {
+        newTestBtn2.addEventListener('click', () => newTestBtn1.click());
+    }
+}
+
+
+// ========================================
+// SCM PANEL
+// ========================================
+
+async function refreshScmPanel() {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/status`);
+        const state = await res.json();
+        if (res.ok) renderScmState(state);
+    } catch (e) {
+        console.warn('SCM refresh failed:', e);
+    }
+}
+
+function renderScmState(state) {
+    // Branch name
+    const branchEl = document.getElementById('scm-branch-name');
+    if (branchEl) branchEl.textContent = state.branch || '—';
+
+    // Change count badge
+    const totalChanges = (state.staged || []).length + (state.unstaged || []).length + (state.untracked || []).length;
+    const badge = document.getElementById('scm-change-count');
+    if (badge) {
+        if (totalChanges > 0) {
+            badge.textContent = totalChanges;
+            badge.style.display = '';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+
+    // Staged
+    renderScmChangeList('scm-staged-list', 'scm-staged-count', state.staged || [], 'staged');
+    // Unstaged
+    renderScmChangeList('scm-unstaged-list', 'scm-unstaged-count', state.unstaged || [], 'unstaged');
+    // Untracked
+    const untracked = (state.untracked || []).map(p => ({ path: p, status: 'U' }));
+    renderScmChangeList('scm-untracked-list', 'scm-untracked-count', untracked, 'untracked');
+}
+
+function renderScmChangeList(listId, countId, items, listType) {
+    const list = document.getElementById(listId);
+    const countEl = document.getElementById(countId);
+    if (countEl) countEl.textContent = items.length;
+    if (!list) return;
+    list.innerHTML = '';
+
+    items.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'scm-change-item';
+
+        const badge = document.createElement('span');
+        badge.className = `git-status-badge ${item.status || 'M'}`;
+        badge.textContent = item.status || 'M';
+
+        const pathSpan = document.createElement('span');
+        pathSpan.className = 'scm-change-path';
+        pathSpan.title = item.path;
+        pathSpan.textContent = item.path;
+
+        // Stage/unstage action button
+        const actionBtn = document.createElement('button');
+        actionBtn.className = 'btn-icon-small scm-change-action';
+        const actionIcon = document.createElement('i');
+
+        if (listType === 'staged') {
+            actionIcon.className = 'lni lni-minus-circle';
+            actionBtn.title = 'Unstage';
+            actionBtn.appendChild(actionIcon);
+            actionBtn.addEventListener('click', (e) => { e.stopPropagation(); scmUnstageFile(item.path); });
+        } else {
+            actionIcon.className = 'lni lni-plus-circle';
+            actionBtn.title = 'Stage';
+            actionBtn.appendChild(actionIcon);
+            actionBtn.addEventListener('click', (e) => { e.stopPropagation(); scmStageFile(item.path); });
+        }
+
+        // Click row to view diff
+        const isStaged = listType === 'staged';
+        row.addEventListener('click', () => showScmDiff(item.path, isStaged));
+
+        row.appendChild(badge);
+        row.appendChild(pathSpan);
+        row.appendChild(actionBtn);
+        list.appendChild(row);
+    });
+}
+
+async function scmStageFile(filepath) {
+    if (!currentWorkspaceName) return;
+    await authFetch(`/api/workspaces/${currentWorkspaceName}/git/stage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: filepath })
+    });
+    refreshScmPanel();
+}
+
+async function scmUnstageFile(filepath) {
+    if (!currentWorkspaceName) return;
+    await authFetch(`/api/workspaces/${currentWorkspaceName}/git/unstage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: filepath })
+    });
+    refreshScmPanel();
+}
+
+async function scmStageAll() {
+    if (!currentWorkspaceName) return;
+    await authFetch(`/api/workspaces/${currentWorkspaceName}/git/stage_all`, { method: 'POST' });
+    refreshScmPanel();
+}
+
+async function scmCommit() {
+    if (!currentWorkspaceName) return;
+    const msgEl = document.getElementById('scm-commit-msg');
+    const message = msgEl ? msgEl.value.trim() : '';
+    if (!message) { alert('Please enter a commit message.'); return; }
+
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/commit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            if (msgEl) msgEl.value = '';
+            addLogEntry('info', `Committed: ${data.sha ? data.sha.slice(0, 7) : 'ok'} — ${message}`);
+            refreshScmPanel();
+        } else {
+            alert(data.error || 'Commit failed');
+        }
+    } catch (e) {
+        alert('Commit failed: ' + e.message);
+    }
+}
+
+async function scmPush() {
+    if (!currentWorkspaceName) return;
+    // If GitHub is connected the stored token is used server-side; no prompt needed.
+    const ghCfg = window._githubConfig || {};
+    let tokenOverride = null;
+    if (!ghCfg.connected) {
+        const t = prompt('GitHub Personal Access Token (leave blank if SSH or already configured):');
+        if (t === null) return; // user cancelled
+        if (t) tokenOverride = t;
+    }
+
+    try {
+        const body = {};
+        if (tokenOverride) body.token = tokenOverride;
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/push`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (res.ok) {
+            addLogEntry('info', 'Pushed to remote.');
+        } else {
+            alert(data.error || 'Push failed');
+        }
+    } catch (e) {
+        alert('Push failed: ' + e.message);
+    }
+}
+
+async function scmPull() {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/pull`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (res.ok) {
+            addLogEntry('info', 'Pulled from remote.');
+            loadFileExplorer();
+            loadAiSteps();
+            refreshScmPanel();
+        } else {
+            alert(data.error || 'Pull failed');
+        }
+    } catch (e) {
+        alert('Pull failed: ' + e.message);
+    }
+}
+
+async function showScmDiff(filepath, staged) {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/diff?path=${encodeURIComponent(filepath)}&staged=${staged ? '1' : '0'}`);
+        const data = await res.json();
+        const panel = document.getElementById('scm-diff-panel');
+        const content = document.getElementById('scm-diff-content');
+        const fp = document.getElementById('scm-diff-filepath');
+        if (!panel || !content) return;
+        if (fp) fp.textContent = filepath;
+        // Colorize diff lines
+        const lines = (data.diff || '(no diff)').split('\n');
+        content.innerHTML = '';
+        lines.forEach(line => {
+            const span = document.createElement('span');
+            if (line.startsWith('+') && !line.startsWith('+++')) span.className = 'diff-add';
+            else if (line.startsWith('-') && !line.startsWith('---')) span.className = 'diff-del';
+            else if (line.startsWith('@@') || line.startsWith('diff ')) span.className = 'diff-meta';
+            span.textContent = line + '\n';
+            content.appendChild(span);
+        });
+        panel.style.display = 'flex';
+    } catch (e) {
+        console.warn('Diff failed:', e);
+    }
+}
+
+async function loadScmBranches() {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/branches`);
+        const data = await res.json();
+        if (!res.ok) return;
+        const list = document.getElementById('scm-branch-list');
+        if (!list) return;
+        list.innerHTML = '';
+        const all = [...(data.local || []), ...(data.remote || [])];
+        all.forEach(branch => {
+            const item = document.createElement('div');
+            item.className = 'scm-branch-item';
+            if (branch === data.current) item.classList.add('active');
+            const icon = document.createElement('i');
+            icon.className = 'lni lni-git';
+            const label = document.createElement('span');
+            label.textContent = branch;
+            item.appendChild(icon);
+            item.appendChild(label);
+            item.addEventListener('click', () => {
+                scmCheckoutBranch(branch);
+                document.getElementById('scm-branch-picker').style.display = 'none';
+            });
+            list.appendChild(item);
+        });
+    } catch (e) {
+        console.warn('loadScmBranches failed:', e);
+    }
+}
+
+async function scmCheckoutBranch(branch) {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/checkout`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ branch })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            addLogEntry('info', `Switched to branch: ${branch}`);
+            refreshScmPanel();
+            loadFileExplorer();
+            loadAiSteps();
+        } else {
+            alert(data.error || 'Checkout failed');
+        }
+    } catch (e) {
+        alert('Checkout failed: ' + e.message);
+    }
+}
+
+function initScmPanel() {
+    // Refresh button
+    const refreshBtn = document.getElementById('scm-refresh-btn');
+    if (refreshBtn) refreshBtn.addEventListener('click', refreshScmPanel);
+
+    // Pull / Push
+    const pullBtn = document.getElementById('scm-pull-btn');
+    if (pullBtn) pullBtn.addEventListener('click', scmPull);
+    const pushBtn = document.getElementById('scm-push-btn');
+    if (pushBtn) pushBtn.addEventListener('click', scmPush);
+
+    // Branch toggle
+    const branchToggle = document.getElementById('scm-branch-toggle');
+    const branchPicker = document.getElementById('scm-branch-picker');
+    if (branchToggle && branchPicker) {
+        branchToggle.addEventListener('click', () => {
+            const isVisible = branchPicker.style.display !== 'none';
+            branchPicker.style.display = isVisible ? 'none' : 'block';
+            if (!isVisible) loadScmBranches();
+        });
+    }
+
+    // Branch filter
+    const branchFilter = document.getElementById('scm-branch-filter');
+    if (branchFilter) {
+        branchFilter.addEventListener('input', () => {
+            const q = branchFilter.value.toLowerCase();
+            document.querySelectorAll('#scm-branch-list .scm-branch-item').forEach(item => {
+                item.style.display = item.textContent.toLowerCase().includes(q) ? '' : 'none';
+            });
+        });
+    }
+
+    // Stage all + commit
+    const stageAllBtn = document.getElementById('scm-stage-all-btn');
+    if (stageAllBtn) stageAllBtn.addEventListener('click', scmStageAll);
+    const commitBtn = document.getElementById('scm-commit-btn');
+    if (commitBtn) commitBtn.addEventListener('click', scmCommit);
+
+    // Section collapse toggles
+    document.querySelectorAll('.scm-section-header[data-toggle]').forEach(header => {
+        header.addEventListener('click', () => {
+            header.closest('.scm-section').classList.toggle('collapsed');
+        });
+    });
+
+    // Diff close button
+    const diffClose = document.getElementById('scm-diff-close');
+    if (diffClose) {
+        diffClose.addEventListener('click', () => {
+            const panel = document.getElementById('scm-diff-panel');
+            if (panel) panel.style.display = 'none';
+        });
+    }
+
+    // Poll git status every 30s to keep the badge current even on the Explorer panel
+    setInterval(() => { if (currentWorkspaceName) refreshScmPanel(); }, 30000);
+}
+// ========== END SCM PANEL ==========
+
+// ========== GITHUB PANEL ==========
+
+window._githubConfig = null; // cached: {connected, remote_url, owner, repo}
+
+async function loadGithubConfig() {
+    if (!currentWorkspaceName) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/github/config`);
+        if (!res.ok) return;
+        const cfg = await res.json();
+        window._githubConfig = cfg;
+        renderGithubStatusRow(cfg);
+    } catch (_) { /* silent */ }
+}
+
+function renderGithubStatusRow(cfg) {
+    const row = document.getElementById('github-status-row');
+    const label = document.getElementById('github-status-label');
+    const actions = document.getElementById('github-status-actions');
+    const repoLink = document.getElementById('github-repo-link');
+    const overflowWrapper = document.getElementById('github-overflow-wrapper');
+    if (!row) return;
+
+    if (cfg && cfg.connected) {
+        row.className = 'github-status-row github-status-connected';
+        label.style.display = 'none';
+        actions.style.display = 'none';
+        if (repoLink) {
+            const repoUrl = cfg.remote_url.replace(/\.git$/, '');
+            repoLink.href = repoUrl.startsWith('https://') ? repoUrl : `https://github.com/${cfg.owner}/${cfg.repo}`;
+            repoLink.textContent = `${cfg.owner}/${cfg.repo}`;
+            repoLink.style.display = '';
+        }
+        if (overflowWrapper) overflowWrapper.style.display = '';
+    } else {
+        row.className = 'github-status-row github-status-disconnected';
+        label.style.display = '';
+        label.textContent = 'Not connected to GitHub';
+        actions.style.display = '';
+        if (repoLink) repoLink.style.display = 'none';
+        if (overflowWrapper) overflowWrapper.style.display = 'none';
+    }
+}
+
+function openGithubWizard() {
+    const modal = document.getElementById('github-wizard-modal');
+    if (!modal) return;
+    // Reset to step 0
+    document.getElementById('github-wizard-step-0').style.display = '';
+    document.getElementById('github-wizard-step-connect').style.display = 'none';
+    document.getElementById('github-wizard-step-create').style.display = 'none';
+    document.getElementById('github-wizard-step-progress').style.display = 'none';
+    document.getElementById('github-wizard-title').textContent = 'Connect to GitHub';
+    // Clear inputs
+    ['github-remote-url','github-pat-connect','github-new-repo-name','github-new-repo-desc','github-pat-create'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    const privCb = document.getElementById('github-new-repo-private');
+    if (privCb) privCb.checked = true;
+    ['github-connect-error','github-create-error'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+    });
+    modal.style.display = 'flex';
+}
+
+function closeGithubWizard() {
+    const modal = document.getElementById('github-wizard-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+function showGithubWizardProgress(msg) {
+    ['github-wizard-step-0','github-wizard-step-connect','github-wizard-step-create'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+    });
+    const step = document.getElementById('github-wizard-step-progress');
+    const msgEl = document.getElementById('github-wizard-progress-msg');
+    if (step) step.style.display = '';
+    if (msgEl) msgEl.textContent = msg || 'Working…';
+}
+
+function showGithubWizardError(stepId, msg) {
+    const errEl = document.getElementById(stepId);
+    if (!errEl) return;
+    errEl.textContent = msg;
+    errEl.style.display = '';
+    // Return to the form step
+    document.getElementById('github-wizard-step-progress').style.display = 'none';
+    if (stepId === 'github-connect-error') document.getElementById('github-wizard-step-connect').style.display = '';
+    if (stepId === 'github-create-error') document.getElementById('github-wizard-step-create').style.display = '';
+}
+
+async function githubConnectSubmit() {
+    const remoteUrl = (document.getElementById('github-remote-url') || {}).value?.trim();
+    const pat = (document.getElementById('github-pat-connect') || {}).value?.trim();
+    if (!remoteUrl || !pat) {
+        showGithubWizardError('github-connect-error', 'Please fill in both fields.');
+        return;
+    }
+    showGithubWizardProgress('Connecting to GitHub…');
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/github/connect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ remote_url: remoteUrl, pat })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showGithubWizardError('github-connect-error', data.error || 'Connection failed.');
+            return;
+        }
+        window._githubConfig = data;
+        renderGithubStatusRow(data);
+        closeGithubWizard();
+        addLogEntry('info', `Connected to GitHub: ${data.owner}/${data.repo}`);
+    } catch (e) {
+        showGithubWizardError('github-connect-error', 'Network error: ' + e.message);
+    }
+}
+
+async function githubCreateRepoSubmit() {
+    const repoName = (document.getElementById('github-new-repo-name') || {}).value?.trim();
+    const pat = (document.getElementById('github-pat-create') || {}).value?.trim();
+    const description = (document.getElementById('github-new-repo-desc') || {}).value?.trim();
+    const isPrivate = document.getElementById('github-new-repo-private')?.checked ?? true;
+    if (!repoName || !pat) {
+        showGithubWizardError('github-create-error', 'Repository name and token are required.');
+        return;
+    }
+    showGithubWizardProgress('Creating repository on GitHub…');
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/github/create-repo`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo_name: repoName, pat, description, private: isPrivate })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showGithubWizardError('github-create-error', data.error || 'Repo creation failed.');
+            return;
+        }
+        window._githubConfig = data;
+        renderGithubStatusRow(data);
+        closeGithubWizard();
+        addLogEntry('info', `Created GitHub repo: ${data.owner}/${data.repo}`);
+    } catch (e) {
+        showGithubWizardError('github-create-error', 'Network error: ' + e.message);
+    }
+}
+
+async function githubDisconnect() {
+    if (!currentWorkspaceName) return;
+    if (!confirm('Disconnect this workspace from GitHub? The local repo and files are not affected.')) return;
+    try {
+        const res = await authFetch(`/api/workspaces/${currentWorkspaceName}/github/disconnect`, {
+            method: 'DELETE'
+        });
+        if (res.ok) {
+            window._githubConfig = { connected: false };
+            renderGithubStatusRow({ connected: false });
+            addLogEntry('info', 'Disconnected from GitHub.');
+        } else {
+            const d = await res.json();
+            alert(d.error || 'Disconnect failed.');
+        }
+    } catch (e) {
+        alert('Network error: ' + e.message);
+    }
+}
+
+async function githubSync() {
+    // Pull then push using stored token
+    if (!currentWorkspaceName) return;
+    try {
+        const pullRes = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/pull`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+        });
+        if (!pullRes.ok) {
+            const d = await pullRes.json();
+            alert('Pull failed: ' + (d.error || 'unknown error'));
+            return;
+        }
+        const pushRes = await authFetch(`/api/workspaces/${currentWorkspaceName}/git/push`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+        });
+        const pd = await pushRes.json();
+        if (!pushRes.ok) {
+            alert('Push failed: ' + (pd.error || 'unknown error'));
+        } else {
+            addLogEntry('info', 'Synced with GitHub.');
+        }
+    } catch (e) {
+        alert('Sync error: ' + e.message);
+    }
+}
+
+function initGithubPanel() {
+    // Connect button in status row
+    const connectBtn = document.getElementById('github-connect-btn');
+    if (connectBtn) connectBtn.addEventListener('click', openGithubWizard);
+
+    // Wizard close
+    const closeBtn = document.getElementById('github-wizard-close');
+    if (closeBtn) closeBtn.addEventListener('click', closeGithubWizard);
+    const modal = document.getElementById('github-wizard-modal');
+    if (modal) modal.addEventListener('click', e => { if (e.target === modal) closeGithubWizard(); });
+
+    // Step 0 choices
+    const choiceConnect = document.getElementById('github-choice-connect');
+    if (choiceConnect) choiceConnect.addEventListener('click', () => {
+        document.getElementById('github-wizard-step-0').style.display = 'none';
+        document.getElementById('github-wizard-step-connect').style.display = '';
+        document.getElementById('github-wizard-title').textContent = 'Connect existing repo';
+    });
+    const choiceCreate = document.getElementById('github-choice-create');
+    if (choiceCreate) choiceCreate.addEventListener('click', () => {
+        document.getElementById('github-wizard-step-0').style.display = 'none';
+        document.getElementById('github-wizard-step-create').style.display = '';
+        document.getElementById('github-wizard-title').textContent = 'Create new repo';
+    });
+
+    // Back buttons
+    const backConnect = document.getElementById('github-back-from-connect');
+    if (backConnect) backConnect.addEventListener('click', () => {
+        document.getElementById('github-wizard-step-connect').style.display = 'none';
+        document.getElementById('github-wizard-step-0').style.display = '';
+        document.getElementById('github-wizard-title').textContent = 'Connect to GitHub';
+    });
+    const backCreate = document.getElementById('github-back-from-create');
+    if (backCreate) backCreate.addEventListener('click', () => {
+        document.getElementById('github-wizard-step-create').style.display = 'none';
+        document.getElementById('github-wizard-step-0').style.display = '';
+        document.getElementById('github-wizard-title').textContent = 'Connect to GitHub';
+    });
+
+    // Submit buttons
+    const connectSubmit = document.getElementById('github-connect-submit');
+    if (connectSubmit) connectSubmit.addEventListener('click', githubConnectSubmit);
+    const createSubmit = document.getElementById('github-create-submit');
+    if (createSubmit) createSubmit.addEventListener('click', githubCreateRepoSubmit);
+
+    // Overflow menu
+    const overflowBtn = document.getElementById('github-overflow-btn');
+    const overflowMenu = document.getElementById('github-overflow-menu');
+    if (overflowBtn && overflowMenu) {
+        overflowBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            overflowMenu.style.display = overflowMenu.style.display === 'none' ? '' : 'none';
+        });
+        document.addEventListener('click', () => { overflowMenu.style.display = 'none'; });
+    }
+
+    const syncBtn = document.getElementById('github-sync-btn');
+    if (syncBtn) syncBtn.addEventListener('click', () => { overflowMenu && (overflowMenu.style.display = 'none'); githubSync(); });
+
+    const copyUrlBtn = document.getElementById('github-copy-url-btn');
+    if (copyUrlBtn) copyUrlBtn.addEventListener('click', () => {
+        overflowMenu && (overflowMenu.style.display = 'none');
+        const cfg = window._githubConfig;
+        if (cfg && cfg.remote_url) {
+            navigator.clipboard.writeText(cfg.remote_url).then(() => addLogEntry('info', 'Repo URL copied.'));
+        }
+    });
+
+    const disconnectBtn = document.getElementById('github-disconnect-btn');
+    if (disconnectBtn) disconnectBtn.addEventListener('click', () => {
+        overflowMenu && (overflowMenu.style.display = 'none');
+        githubDisconnect();
+    });
+}
+
+// ========== END GITHUB PANEL ==========

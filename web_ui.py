@@ -32,6 +32,10 @@ from code_agent import CodeGenerationAgent
 import config
 from config import Config
 import local_tree
+import git_ops
+import git.exc
+import github_config
+import requests as _requests
 
 # Playwright trace viewer static assets (bundled with the playwright package)
 import playwright as _playwright_pkg
@@ -39,9 +43,7 @@ _TRACE_VIEWER_DIR = (
     Path(_playwright_pkg.__file__).parent / 'driver' / 'package' / 'lib' / 'vite' / 'traceViewer'
 )
 
-# Import multi-user modules
-import db
-from auth import init_auth, login_required, get_current_user
+from auth import login_required, get_current_user
 from decorators import workspace_access_required
 
 app = Flask(
@@ -50,14 +52,10 @@ app = Flask(
     static_folder=str(_BASE_DIR / 'static'),
 )
 
-# Apply multi-user configuration
+# Apply configuration
 app.config.from_object(Config)
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
-
-# Initialize authentication
-print("Initializing authentication...")
-init_auth(app)
 
 
 # ========== WORKSPACE HELPER FUNCTIONS ==========
@@ -132,6 +130,7 @@ def update_test_artifacts(
     test_status: str = 'unknown',
     workspace_name: str = None,
     from_tree: bool = True,
+    error_cause: str = None,
 ):
     """Save test artifacts into the workspace directory and update local meta."""
     print(f"📼 update_test_artifacts called: filename={filename}, workspace_name={workspace_name}, status={test_status}")
@@ -159,10 +158,13 @@ def update_test_artifacts(
         if art_dir.is_dir():
             import json as _json
             status_file = art_dir / 'status.json'
-            status_file.write_text(_json.dumps({
+            payload = {
                 'status': test_status,
                 'timestamp': datetime.utcnow().isoformat(),
-            }), encoding='utf-8')
+            }
+            if error_cause:
+                payload['error_cause'] = error_cause
+            status_file.write_text(_json.dumps(payload), encoding='utf-8')
         print(f"📼 Artifact saved: {storage_paths.get('video_path')}")
         if artifact_dir_abs.exists():
             shutil.rmtree(artifact_dir_abs, ignore_errors=True)
@@ -814,6 +816,7 @@ async def run_test_async(task: str, test_filename: str = None, workspace_name: s
     saved_test_filename = test_filename  # Save filename before current_ai_step gets reset
     saved_workspace_name = workspace_name
     test_status = None  # Track test status for artifact metadata
+    test_error_cause = None  # Track error message for status.json
 
     # Get filename and workspace_name from current_ai_step if not provided
     if current_ai_step:
@@ -1143,6 +1146,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
                     break
                 elif 'TEST FAILED:' in message_content:
                     test_status = 'failed'
+                    test_error_cause = message_content.split('TEST FAILED:', 1)[-1].strip()
                     socketio.emit('log', {'type': 'error', 'message': 'Test completed: FAILED'})
                     # Only send playwright_code for regular tests (not AI steps)
                     if not current_ai_step:
@@ -1153,6 +1157,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
                     break
                 elif 'TEST ERROR:' in message_content:
                     test_status = 'error'
+                    test_error_cause = message_content.split('TEST ERROR:', 1)[-1].strip()
                     socketio.emit('log', {'type': 'error', 'message': 'Test completed: ERROR'})
                     # Only send playwright_code for regular tests (not AI steps)
                     if not current_ai_step:
@@ -1164,6 +1169,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
 
             # If loop ended naturally without status (hit max messages)
             if not stop_requested and test_status is None:
+                test_error_cause = 'Test timed out or hit message limit'
                 socketio.emit('log', {'type': 'error', 'message': 'Test ended without clear status (may have hit message limit)'})
                 # Only send playwright_code for regular tests (not AI steps)
                 if not current_ai_step:
@@ -1174,6 +1180,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
 
     except Exception as e:
         error_msg = f"Error during test execution: {str(e)}"
+        test_error_cause = str(e)
         socketio.emit('log', {'type': 'error', 'message': error_msg})
         socketio.emit('test_complete', {'status': 'error', 'message': str(e)})
         test_status = 'error'  # Set for artifact tracking
@@ -1196,6 +1203,7 @@ These rules apply to ALL tasks. Users will give you natural language instruction
                 artifact_dir,
                 test_status or 'unknown',
                 workspace_name=saved_workspace_name,
+                error_cause=test_error_cause,
             )
             # Tell frontend to refresh now that artifacts are saved
             socketio.emit('artifacts_updated', {'filename': saved_test_filename})
@@ -1274,6 +1282,7 @@ def run_playwright_code_with_streaming(
     artifact_dir = None
     video_dir = None
     test_status = None  # Track test status for artifact metadata
+    test_error_cause = None  # Track error message for status.json
     if filename:
         print(f"🎬 Filename provided: {filename}, workspace_name: {workspace_name}")
         from pathlib import Path
@@ -1606,6 +1615,7 @@ def run_playwright_code_with_streaming(
             import traceback
             error_msg = f'Error executing code: {str(e)}'
             test_status = 'error'
+            test_error_cause = str(e)
             socketio.emit('log', {'type': 'error', 'message': error_msg})
             socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
             socketio.emit('test_complete', {'status': 'error', 'message': str(e)})
@@ -1625,6 +1635,7 @@ def run_playwright_code_with_streaming(
     except Exception as e:
         import traceback
         test_status = 'error'
+        test_error_cause = str(e)
         socketio.emit('log', {'type': 'error', 'message': f'Execution error: {str(e)}'})
         socketio.emit('log', {'type': 'error', 'message': f'Traceback: {traceback.format_exc()}'})
         socketio.emit('test_complete', {'status': 'error'})
@@ -1649,6 +1660,7 @@ def run_playwright_code_with_streaming(
                 artifact_dir,
                 test_status or 'unknown',
                 workspace_name=workspace_name,
+                error_cause=test_error_cause,
             )
             # Tell frontend to refresh now that artifacts are saved
             socketio.emit('artifacts_updated', {'filename': filename})
@@ -1710,10 +1722,80 @@ VALID_THEMES = {'mocha', 'macchiato', 'frappe', 'latte'}
 def index():
     """Render main page."""
     is_cloud = bool(os.environ.get('K_SERVICE') or os.environ.get('CLOUD_RUN_JOB') or os.environ.get('GAE_ENV'))
-    theme = request.cookies.get('theme', 'mocha')
+    # File-backed prefs take priority; cookie is fallback for web deployments
+    prefs = _read_prefs()
+    theme = prefs.get('theme') or request.cookies.get('theme', 'mocha')
     if theme not in VALID_THEMES:
         theme = 'mocha'
     return render_template('index.html', is_cloud=is_cloud, theme=theme)
+
+
+@app.route('/api/config/ai-status', methods=['GET'])
+@login_required
+def ai_status():
+    """Return whether an OpenAI API key is configured."""
+    has_key = bool(os.environ.get('OPENAI_API_KEY', '').strip())
+    return jsonify({'ai_enabled': has_key}), 200
+
+
+# ========== USER PREFERENCES (file-backed, ~/.autogen/preferences/) ==========
+
+_PREFS_DIR = Path.home() / '.autogen' / 'preferences'
+_PREFS_FILE = _PREFS_DIR / 'user_prefs.json'
+_ALLOWED_PREF_KEYS = {'theme', 'selectedWorkspaceName', 'editorTabsState',
+                      'fileExplorerWidth', 'aiChatWidth'}
+
+
+def _read_prefs() -> dict:
+    try:
+        return json.loads(_PREFS_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_prefs(prefs: dict) -> None:
+    _PREFS_DIR.mkdir(parents=True, exist_ok=True)
+    _PREFS_FILE.write_text(json.dumps(prefs, indent=2))
+
+
+@app.route('/api/preferences', methods=['GET'])
+@login_required
+def get_preferences():
+    return jsonify(_read_prefs()), 200
+
+
+@app.route('/api/preferences', methods=['PATCH'])
+@login_required
+def patch_preferences():
+    updates = request.get_json(force=True) or {}
+    prefs = _read_prefs()
+    for key, value in updates.items():
+        if key in _ALLOWED_PREF_KEYS:
+            prefs[key] = value
+    _write_prefs(prefs)
+    return jsonify(prefs), 200
+
+
+@app.route('/api/init-status')
+def init_status():
+    ws_dir = Config.AUTOGEN_WORKSPACES_DIR
+    initialized = ws_dir.exists() and any(d.is_dir() for d in ws_dir.iterdir())
+    return jsonify({'initialized': initialized})
+
+
+@app.route('/api/onboarding/setup', methods=['POST'])
+def onboarding_setup():
+    try:
+        workspace_name = 'personal'
+        ws_dir = Config.AUTOGEN_WORKSPACES_DIR / workspace_name
+        ws_dir.mkdir(parents=True, exist_ok=True)
+        (ws_dir / 'saved_tests').mkdir(exist_ok=True)
+        (ws_dir / 'ai_steps').mkdir(exist_ok=True)
+        (ws_dir / '.gitignore').write_text('.github-config.json\n')
+        git_ops.init_repo(ws_dir)
+        return jsonify({'success': True, 'workspace': workspace_name}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 # ========== WORKSPACE MANAGEMENT API ENDPOINTS ==========
@@ -1754,7 +1836,7 @@ def get_workspaces():
 @app.route('/api/workspaces', methods=['POST'])
 @login_required
 def create_workspace():
-    """Create a new workspace directory."""
+    """Create a new workspace directory, optionally cloning from a git URL."""
     try:
         data = request.get_json() or {}
         name = _validate_workspace_name(data.get('name', ''))
@@ -1765,9 +1847,28 @@ def create_workspace():
         if ws_dir.exists():
             return jsonify({'error': 'A workspace with that name already exists'}), 409
 
-        ws_dir.mkdir(parents=True, exist_ok=True)
-        (ws_dir / 'saved_tests').mkdir(exist_ok=True)
-        (ws_dir / 'ai_steps').mkdir(exist_ok=True)
+        clone_url = data.get('clone_url', '').strip()
+        if clone_url:
+            try:
+                git_ops.clone_repo(clone_url, ws_dir)
+            except Exception as e:
+                return jsonify({'error': f'Clone failed: {e}'}), 400
+            (ws_dir / 'saved_tests').mkdir(exist_ok=True)
+            (ws_dir / 'ai_steps').mkdir(exist_ok=True)
+        else:
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            (ws_dir / 'saved_tests').mkdir(exist_ok=True)
+            (ws_dir / 'ai_steps').mkdir(exist_ok=True)
+            git_ops.init_repo(ws_dir)
+        # Ensure .github-config.json is never committed
+        gitignore_path = ws_dir / '.gitignore'
+        gitignore_entry = '.github-config.json\n'
+        if gitignore_path.exists():
+            existing = gitignore_path.read_text()
+            if '.github-config.json' not in existing:
+                gitignore_path.write_text(existing + gitignore_entry)
+        else:
+            gitignore_path.write_text(gitignore_entry)
 
         return jsonify({'message': 'Workspace created', 'workspace': {'name': name}}), 201
 
@@ -1824,10 +1925,359 @@ def delete_workspace(workspace_name):
 # ========== END WORKSPACE MANAGEMENT API ENDPOINTS ==========
 
 
+# ========== GIT API ENDPOINTS ==========
+
+def _ws_dir(workspace_name: str) -> Path:
+    return Config.AUTOGEN_WORKSPACES_DIR / workspace_name
+
+
+def _ensure_git_repo(workspace_name: str) -> None:
+    """Silently initialize a git repo if the workspace dir has no .git/."""
+    ws = _ws_dir(workspace_name)
+    if ws.is_dir() and not (ws / '.git').exists():
+        try:
+            git_ops.init_repo(ws)
+        except Exception:
+            pass
+
+
+def _enrich_tree_git_status(nodes: list, git_status: dict) -> None:
+    """
+    Annotate file nodes in-place with git_status: 'M'|'A'|'D'|None.
+    git_status is the result of git_ops.get_status().
+    """
+    staged_map = {item['path']: item['status'] for item in git_status.get('staged', [])}
+    unstaged_map = {item['path']: item['status'] for item in git_status.get('unstaged', [])}
+    untracked = set(git_status.get('untracked', []))
+
+    _GIT_STATUS_MAP = {'A': 'A', 'M': 'M', 'D': 'D', 'R': 'R'}
+
+    def _annotate(node_list):
+        for node in node_list:
+            if node.get('type') == 'file':
+                p = node.get('path', '')
+                if p in staged_map:
+                    node['git_status'] = _GIT_STATUS_MAP.get(staged_map[p], 'M')
+                elif p in unstaged_map:
+                    node['git_status'] = _GIT_STATUS_MAP.get(unstaged_map[p], 'M')
+                elif p in untracked:
+                    node['git_status'] = 'U'
+                else:
+                    node['git_status'] = None
+            elif node.get('type') == 'folder':
+                _annotate(node.get('children', []))
+
+    _annotate(nodes)
+
+
+@app.route('/api/workspaces/<workspace_name>/git/status', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def git_status(workspace_name):
+    try:
+        _ensure_git_repo(workspace_name)
+        status = git_ops.get_status(_ws_dir(workspace_name))
+        return jsonify(status), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        app.logger.exception("git status error: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/workspaces/<workspace_name>/git/stage', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_stage(workspace_name):
+    data = request.get_json() or {}
+    filepath = data.get('path', '').strip()
+    if not filepath:
+        return jsonify({'error': 'path is required'}), 400
+    try:
+        git_ops.stage_file(_ws_dir(workspace_name), filepath)
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/unstage', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_unstage(workspace_name):
+    data = request.get_json() or {}
+    filepath = data.get('path', '').strip()
+    if not filepath:
+        return jsonify({'error': 'path is required'}), 400
+    try:
+        git_ops.unstage_file(_ws_dir(workspace_name), filepath)
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/stage_all', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_stage_all(workspace_name):
+    try:
+        git_ops.stage_all(_ws_dir(workspace_name))
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/commit', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_commit(workspace_name):
+    data = request.get_json() or {}
+    message = data.get('message', '').strip()
+    if not message:
+        return jsonify({'error': 'Commit message is required'}), 400
+    try:
+        sha = git_ops.commit(_ws_dir(workspace_name), message)
+        return jsonify({'success': True, 'sha': sha}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/push', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_push(workspace_name):
+    data = request.get_json() or {}
+    ws_dir = _ws_dir(workspace_name)
+    token = data.get('token') or github_config.decrypt_token(ws_dir)
+    try:
+        git_ops.push(
+            ws_dir,
+            remote=data.get('remote', 'origin'),
+            branch=data.get('branch') or None,
+            token=token,
+        )
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/pull', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_pull(workspace_name):
+    data = request.get_json() or {}
+    try:
+        git_ops.pull(
+            _ws_dir(workspace_name),
+            remote=data.get('remote', 'origin'),
+            branch=data.get('branch') or None,
+        )
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/branches', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def git_branches(workspace_name):
+    try:
+        branches = git_ops.get_branches(_ws_dir(workspace_name))
+        return jsonify(branches), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/checkout', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def git_checkout(workspace_name):
+    data = request.get_json() or {}
+    branch = data.get('branch', '').strip()
+    if not branch:
+        return jsonify({'error': 'branch is required'}), 400
+    create = bool(data.get('create', False))
+    try:
+        git_ops.checkout_branch(_ws_dir(workspace_name), branch, create=create)
+        return jsonify({'success': True}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/diff', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def git_diff(workspace_name):
+    filepath = request.args.get('path', '').strip()
+    staged = request.args.get('staged', '0') == '1'
+    if not filepath:
+        return jsonify({'error': 'path is required'}), 400
+    try:
+        diff = git_ops.get_diff(_ws_dir(workspace_name), filepath, staged=staged)
+        return jsonify({'diff': diff}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/workspaces/<workspace_name>/git/log', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def git_log(workspace_name):
+    try:
+        limit = int(request.args.get('limit', 20))
+    except ValueError:
+        limit = 20
+    try:
+        commits = git_ops.get_log(_ws_dir(workspace_name), max_count=limit)
+        return jsonify({'commits': commits}), 200
+    except (ValueError, git.exc.GitCommandError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+# ========== GITHUB API ENDPOINTS ==========
+
+
+def _parse_github_repo(remote_url: str) -> tuple[str, str] | None:
+    """Return (owner, repo) from a GitHub HTTPS or SSH remote URL, or None."""
+    import re
+    patterns = [
+        r'github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$',
+    ]
+    for pat in patterns:
+        m = re.search(pat, remote_url)
+        if m:
+            return m.group(1), m.group(2)
+    return None
+
+
+@app.route('/api/workspaces/<workspace_name>/github/config', methods=['GET'])
+@login_required
+@workspace_access_required(permission='read')
+def get_github_config(workspace_name):
+    ws_dir = _ws_dir(workspace_name)
+    cfg = github_config.get_config(ws_dir)
+    if not cfg:
+        return jsonify({'connected': False}), 200
+    remote_url = cfg.get('remote_url', '')
+    parsed = _parse_github_repo(remote_url)
+    return jsonify({
+        'connected': True,
+        'remote_url': remote_url,
+        'owner': parsed[0] if parsed else None,
+        'repo': parsed[1] if parsed else None,
+    }), 200
+
+
+@app.route('/api/workspaces/<workspace_name>/github/connect', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def github_connect(workspace_name):
+    data = request.get_json(force=True) or {}
+    remote_url = data.get('remote_url', '').strip()
+    pat = data.get('pat', '').strip()
+    if not remote_url or not pat:
+        return jsonify({'error': 'remote_url and pat are required'}), 400
+    if not _parse_github_repo(remote_url):
+        return jsonify({'error': 'URL does not look like a GitHub repo'}), 400
+    # Verify token against GitHub API
+    headers = {'Authorization': f'token {pat}', 'Accept': 'application/vnd.github+json'}
+    try:
+        r = _requests.get('https://api.github.com/user', headers=headers, timeout=10)
+        if r.status_code == 401:
+            return jsonify({'error': 'Invalid PAT — authentication failed'}), 400
+        r.raise_for_status()
+    except _requests.RequestException as exc:
+        return jsonify({'error': f'GitHub API error: {exc}'}), 502
+    ws_dir = _ws_dir(workspace_name)
+    github_config.save_config(ws_dir, remote_url, pat)
+    git_ops.add_remote(ws_dir, remote_url)
+    parsed = _parse_github_repo(remote_url)
+    return jsonify({
+        'connected': True,
+        'remote_url': remote_url,
+        'owner': parsed[0] if parsed else None,
+        'repo': parsed[1] if parsed else None,
+    }), 200
+
+
+@app.route('/api/workspaces/<workspace_name>/github/create-repo', methods=['POST'])
+@login_required
+@workspace_access_required(permission='write')
+def github_create_repo(workspace_name):
+    data = request.get_json(force=True) or {}
+    pat = data.get('pat', '').strip()
+    repo_name = data.get('repo_name', '').strip()
+    private = bool(data.get('private', True))
+    description = data.get('description', '').strip()
+    if not pat or not repo_name:
+        return jsonify({'error': 'pat and repo_name are required'}), 400
+    headers = {
+        'Authorization': f'token {pat}',
+        'Accept': 'application/vnd.github+json',
+    }
+    payload = {'name': repo_name, 'private': private, 'description': description, 'auto_init': False}
+    try:
+        r = _requests.post('https://api.github.com/user/repos', json=payload, headers=headers, timeout=15)
+        if r.status_code == 401:
+            return jsonify({'error': 'Invalid PAT — authentication failed'}), 400
+        if r.status_code == 422:
+            return jsonify({'error': 'Repository name already exists or is invalid'}), 400
+        r.raise_for_status()
+        remote_url = r.json().get('clone_url', '')
+    except _requests.RequestException as exc:
+        return jsonify({'error': f'GitHub API error: {exc}'}), 502
+    ws_dir = _ws_dir(workspace_name)
+    github_config.save_config(ws_dir, remote_url, pat)
+    git_ops.add_remote(ws_dir, remote_url)
+    parsed = _parse_github_repo(remote_url)
+    return jsonify({
+        'connected': True,
+        'remote_url': remote_url,
+        'owner': parsed[0] if parsed else None,
+        'repo': parsed[1] if parsed else None,
+    }), 200
+
+
+@app.route('/api/workspaces/<workspace_name>/github/disconnect', methods=['DELETE'])
+@login_required
+@workspace_access_required(permission='write')
+def github_disconnect(workspace_name):
+    ws_dir = _ws_dir(workspace_name)
+    git_ops.remove_remote(ws_dir)
+    github_config.delete_config(ws_dir)
+    return jsonify({'connected': False}), 200
+
+
+# ========== END GIT API ENDPOINTS ==========
+
+
 # ========== LOCAL TREE API (Saved Tests / AI Steps under ~/.autogen/workspaces) ==========
 
 def _tree_root(workspace_name: str, tree_type: str) -> Path:
     return Config.AUTOGEN_WORKSPACES_DIR / workspace_name / tree_type
+
+
+def _remap_git_status_for_subtree(git_status: dict, subtree: str) -> dict:
+    """
+    Remap git status paths so they are relative to the subtree directory
+    (e.g. 'saved_tests/foo.py' → 'foo.py').
+    """
+    prefix = subtree.rstrip('/') + '/'
+
+    def _remap_items(items):
+        result = []
+        for item in items:
+            path = item.get('path', '')
+            if path.startswith(prefix):
+                result.append({'path': path[len(prefix):], 'status': item['status']})
+        return result
+
+    untracked = [p[len(prefix):] for p in git_status.get('untracked', []) if p.startswith(prefix)]
+
+    return {
+        'staged': _remap_items(git_status.get('staged', [])),
+        'unstaged': _remap_items(git_status.get('unstaged', [])),
+        'untracked': untracked,
+    }
 
 
 def _collect_tree_paths(nodes: list) -> set:
@@ -1878,10 +2328,17 @@ def _enrich_tree_artifacts(nodes: list, workspace_name: str, root: Path) -> None
 def get_tree_saved_tests(workspace_name):
     """Get folder tree for Saved Tests (local filesystem only)."""
     try:
+        _ensure_git_repo(workspace_name)
         root = _tree_root(workspace_name, "saved_tests")
         root.mkdir(parents=True, exist_ok=True)
         children = local_tree.list_tree(root, "saved_tests")
         _enrich_tree_artifacts(children, workspace_name, root)
+        try:
+            status = git_ops.get_status(_ws_dir(workspace_name))
+            # Remap paths relative to saved_tests/ root
+            _enrich_tree_git_status(children, _remap_git_status_for_subtree(status, 'saved_tests'))
+        except Exception:
+            pass
         return jsonify({"tree": children}), 200
     except Exception as e:
         app.logger.exception("Error listing saved_tests tree: %s", e)
@@ -1894,9 +2351,15 @@ def get_tree_saved_tests(workspace_name):
 def get_tree_ai_steps(workspace_name):
     """Get folder tree for AI Steps (local filesystem only)."""
     try:
+        _ensure_git_repo(workspace_name)
         root = _tree_root(workspace_name, "ai_steps")
         root.mkdir(parents=True, exist_ok=True)
         children = local_tree.list_tree(root, "ai_steps")
+        try:
+            status = git_ops.get_status(_ws_dir(workspace_name))
+            _enrich_tree_git_status(children, _remap_git_status_for_subtree(status, 'ai_steps'))
+        except Exception:
+            pass
         return jsonify({"tree": children}), 200
     except Exception as e:
         app.logger.exception("Error listing ai_steps tree: %s", e)
@@ -2259,12 +2722,14 @@ def get_recent_recordings():
                 status_file = entry / 'status.json'
                 status = 'unknown'
                 timestamp = ''
+                error_cause = None
                 if status_file.exists():
                     import json as _json
                     try:
                         sd = _json.loads(status_file.read_text(encoding='utf-8'))
                         status = sd.get('status', 'unknown')
                         timestamp = sd.get('timestamp', '')
+                        error_cause = sd.get('error_cause')
                     except Exception:
                         pass
                 if not timestamp:
@@ -2276,6 +2741,7 @@ def get_recent_recordings():
                     'test_name': test_name,
                     'status': status,
                     'timestamp': timestamp,
+                    'error_cause': error_cause,
                 })
         return jsonify(recordings)
     ws_id = _get_workspace_id()
@@ -2613,6 +3079,7 @@ def _get_artifacts_for_test(workspace_name: str, test_name: str) -> list:
     has_trace = (art_dir / 'trace.zip').exists()
     status = 'unknown'
     timestamp = ''
+    error_cause = None
     status_file = art_dir / 'status.json'
     if status_file.exists():
         import json as _json
@@ -2620,6 +3087,7 @@ def _get_artifacts_for_test(workspace_name: str, test_name: str) -> list:
             sd = _json.loads(status_file.read_text(encoding='utf-8'))
             status = sd.get('status', 'unknown')
             timestamp = sd.get('timestamp', '')
+            error_cause = sd.get('error_cause')
         except Exception:
             pass
     if not timestamp:
@@ -2633,6 +3101,7 @@ def _get_artifacts_for_test(workspace_name: str, test_name: str) -> list:
         'timestamp': timestamp,
         'video_size_mb': size_mb,
         'status': status,
+        'error_cause': error_cause,
     }]
 
 
@@ -3016,45 +3485,7 @@ def handle_clear_chat(data=None):
 
 @socketio.on('connect')
 def handle_connect():
-    """Handle client connection."""
-    from auth import _LOCAL_MODE, _LOCAL_TOKEN, _LOCAL_USER
-
-    # In local mode, accept any connection
-    if _LOCAL_MODE:
-        emit('log', {'type': 'info', 'message': 'Connected to AutoGen Web Tester'})
-        return
-
-    # Validate JWT from socket auth params
-    token = request.args.get('token')
-    if not token:
-        auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer '):
-            token = auth_header[7:]
-
-    if not token:
-        emit('log', {'type': 'error', 'message': 'Authentication required'})
-        return False  # Reject connection
-
-    # Validate token and get user
-    try:
-        from supabase_client import get_supabase_client
-        sb = get_supabase_client()
-        auth_response = sb.auth.get_user(token)
-        supabase_user = auth_response.user
-        if not supabase_user:
-            emit('log', {'type': 'error', 'message': 'Authentication required'})
-            return False
-
-        user = db.get_user_by_id(supabase_user.id)
-        if not user:
-            emit('log', {'type': 'error', 'message': 'Authentication required'})
-            return False
-
-        emit('log', {'type': 'info', 'message': f'Connected to AutoGen Web Tester (User: {user["username"]})'})
-    except Exception as e:
-        print(f"Socket auth error: {e}")
-        emit('log', {'type': 'error', 'message': 'Authentication required'})
-        return False
+    emit('connected', {'message': 'Connected to AutoGen Web Tester'})
 
 
 
